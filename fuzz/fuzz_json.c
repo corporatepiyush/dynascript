@@ -1,131 +1,66 @@
 // Copyright 2025 Google LLC
-// Fuzz target for QuickJS JSON operations
+// Fuzz target for the QuickJS JSON reader (JS_ParseJSON).
+//
+// The previous version wrapped the input in snprintf("JSON.parse(%s)")
+// templates and fed the result to JS_Eval. That fuzzed the JS *parser*, not
+// the JSON reader, and the "%s" formatting truncated the input at the first
+// NUL byte, so binary inputs died early. This drives the C JSON reader
+// (JS_ParseJSON / json_parse_value / json_next_token and the string & number
+// lexers) directly on the RAW fuzzer buffer, preserving embedded NULs.
+//
+// NOTE: json_parse_value() is recursive and, unlike the bytecode reader
+// (JS_ReadObjectRec), has NO js_check_stack_overflow guard -- deeply nested
+// input recurses on the native C stack. Run this target with a bounded input
+// length (e.g. -dict=fuzz/fuzz.dict -max_len=4096, which is also libFuzzer's
+// default) so a nesting bomb cannot exhaust the 8 MiB native stack. The memory
+// limit below caps pathological allocations so they fail cleanly instead of
+// being reported as OOM.
 
 #include "quickjs.h"
-#include "quickjs-libc.h"
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
+
+// Free a JS_ParseJSON result on every path, clearing any pending exception.
+static void drop(JSContext *ctx, JSValue v) {
+    if (JS_IsException(v))
+        JS_FreeValue(ctx, JS_GetException(ctx));
+    else
+        JS_FreeValue(ctx, v);
+}
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    if (size < 1) return 0;
-    
-    JSRuntime* rt = JS_NewRuntime();
-    if (!rt) return 0;
-    
-    JSContext* ctx = JS_NewContext(rt);
+    JSRuntime *rt = JS_NewRuntime();
+    if (!rt)
+        return 0;
+    JSContext *ctx = JS_NewContext(rt);
     if (!ctx) {
         JS_FreeRuntime(rt);
         return 0;
     }
-    
-    char* input = malloc(size + 1);
-    if (!input) {
+    // Cap pathological allocations / recursion (64 MiB, 256 KiB stack).
+    JS_SetMemoryLimit(rt, 0x4000000);
+    JS_SetMaxStackSize(rt, 0x40000);
+
+    // JS_ParseJSON requires buf[buf_len] == '\0' but honours buf_len, so
+    // embedded NULs inside [0, size) are preserved (the '%s' harness lost them).
+    char *buf = malloc(size + 1);
+    if (!buf) {
         JS_FreeContext(ctx);
         JS_FreeRuntime(rt);
         return 0;
     }
-    memcpy(input, data, size);
-    input[size] = '\0';
-    
-    char parse_script[8192];
-    snprintf(parse_script, sizeof(parse_script), 
-             "JSON.parse(JSON.stringify(%s))", input);
-    
-    JSValue parse_result = JS_Eval(ctx, parse_script, strlen(parse_script), 
-                                    "<json-fuzz>", 0);
-    
-    if (JS_IsException(parse_result)) {
-        JS_GetException(ctx);
-    } else {
-        JS_FreeValue(ctx, parse_result);
-    }
-    
-    char direct_parse[16384];
-    snprintf(direct_parse, sizeof(direct_parse), "JSON.parse('");
-    
-    size_t script_len = strlen(direct_parse);
-    for (size_t i = 0; i < size && script_len < sizeof(direct_parse) - 20; i++) {
-        char c = input[i];
-        if (c == '\\' || c == '\'') {
-            direct_parse[script_len++] = '\\';
-        }
-        if (c >= 32 && c < 127) {
-            direct_parse[script_len++] = c;
-        }
-    }
-    strcat(direct_parse + script_len, "');");
-    
-    JSValue direct_result = JS_Eval(ctx, direct_parse, strlen(direct_parse), 
-                                     "<json-direct>", 0);
-    if (JS_IsException(direct_result)) {
-        JS_GetException(ctx);
-    } else {
-        JS_FreeValue(ctx, direct_result);
-    }
-    
-    char stringify_script[8192];
-    snprintf(stringify_script, sizeof(stringify_script),
-             "var obj = { data: %s, num: 123, str: 'test', bool: true, nullv: null, "
-             "arr: [1,2,3], nested: { a: 1 } }; JSON.stringify(obj);",
-             input);
-    
-    JSValue stringify_result = JS_Eval(ctx, stringify_script, 
-                                        strlen(stringify_script), "<json-stringify>", 0);
-    if (JS_IsException(stringify_result)) {
-        JS_GetException(ctx);
-    } else {
-        const char* str = JS_ToCString(ctx, stringify_result);
-        if (str) {
-            JS_FreeCString(ctx, str);
-        }
-        JS_FreeValue(ctx, stringify_result);
-    }
-    
-    const char* spacing_tests[] = {
-        "JSON.stringify({a:1,b:2})",
-        "JSON.stringify({a:1,b:2}, null, 2)",
-        "JSON.stringify({a:1,b:2}, null, '  ')",
-        "JSON.stringify([1,2,3])",
-        "JSON.stringify(null)",
-        "JSON.stringify(undefined)",
-        "JSON.stringify(123)",
-        "JSON.stringify('string')",
-        "JSON.stringify(true)",
-    };
-    
-    for (size_t i = 0; i < sizeof(spacing_tests) / sizeof(spacing_tests[0]); i++) {
-        JSValue r = JS_Eval(ctx, spacing_tests[i], strlen(spacing_tests[i]), 
-                            "<json-test>", 0);
-        if (!JS_IsException(r)) {
-            JS_FreeValue(ctx, r);
-        } else {
-            JS_GetException(ctx);
-        }
-    }
-    
-    const char* reviver_test = "JSON.parse('{\"a\":1,\"b\":2}', function(k,v) { return v; })";
-    JSValue reviver_result = JS_Eval(ctx, reviver_test, strlen(reviver_test), 
-                                       "<json-reviver>", 0);
-    if (!JS_IsException(reviver_result)) {
-        JS_FreeValue(ctx, reviver_result);
-    } else {
-        JS_GetException(ctx);
-    }
-    
-    const char* replacer_test = "JSON.stringify({a:1,b:2}, function(k,v) { return v; })";
-    JSValue replacer_result = JS_Eval(ctx, replacer_test, strlen(replacer_test),
-                                       "<json-replacer>", 0);
-    if (!JS_IsException(replacer_result)) {
-        JS_FreeValue(ctx, replacer_result);
-    } else {
-        JS_GetException(ctx);
-    }
-    
-    free(input);
+    if (size)
+        memcpy(buf, data, size);
+    buf[size] = '\0';
+
+    // Strict JSON, then extended JSON (comments / trailing commas / ...).
+    drop(ctx, JS_ParseJSON(ctx, buf, size, "<json-fuzz>"));
+    drop(ctx, JS_ParseJSON2(ctx, buf, size, "<json-fuzz>", JS_PARSE_JSON_EXT));
+
+    free(buf);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
-    
     return 0;
 }

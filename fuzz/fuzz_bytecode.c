@@ -1,142 +1,64 @@
 // Copyright 2025 Google LLC
-// Fuzz target for QuickJS bytecode execution
+// Fuzz target for the QuickJS bytecode / object deserializer (JS_ReadObject).
+//
+// The previous version round-tripped TRUSTED bytecode through
+// JS_WriteObject/JS_ReadObject and only fed a lightly-mutated copy to the
+// reader, so it barely reached the real deserializer on attacker-controlled
+// bytes. This drives JS_ReadObject on the RAW fuzzer buffer, so the reader
+// itself -- JS_ReadObjectRec, JS_ReadFunctionTag, JS_ReadString,
+// JS_ReadBigInt, the typed-array / module readers and the atom fixups -- is
+// fuzzed on fully attacker-controlled input.
+//
+// Flag sets exercised:
+//   * JS_READ_OBJ_BYTECODE               function/module bytecode reader; this
+//     path is reachable in embedders that deserialize precompiled code and is
+//     therefore an untrusted-input surface.
+//   * JS_READ_OBJ_BYTECODE|..._REFERENCE additionally reaches the object
+//     reference-table decoder.
+//   * 0                                  the untrusted object-graph reader
+//     (arrays, typed arrays, dates, maps, bigints, ...); bytecode tags are
+//     rejected here, exercising the "plain object" path.
+//
+// JS_ReadObject does not require NUL termination and is fully bounds-checked
+// against buf_len (bc_get_* -> bc_read_error_end), so the raw const buffer is
+// passed directly with no copy. JS_ReadObjectRec is guarded by
+// js_check_stack_overflow, so nesting bombs fail cleanly rather than crashing.
+// NOTE: the deserialized value is intentionally NOT evaluated -- executing
+// attacker-controlled bytecode is a different (trusted-input) threat model and
+// would only add interpreter noise; the goal here is the reader.
 
 #include "quickjs.h"
-#include "quickjs-libc.h"
+
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
+
+// Read the raw buffer under one flag set and free the result / any exception.
+static void read_and_drop(JSContext *ctx, const uint8_t *buf, size_t len, int flags) {
+    JSValue v = JS_ReadObject(ctx, buf, len, flags);
+    if (JS_IsException(v))
+        JS_FreeValue(ctx, JS_GetException(ctx));
+    else
+        JS_FreeValue(ctx, v);
+}
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    if (size < 8) return 0; // Need at least minimal bytecode header
-    
-    JSRuntime* rt = JS_NewRuntime();
-    if (!rt) return 0;
-    
-    JSContext* ctx = JS_NewContext(rt);
+    JSRuntime *rt = JS_NewRuntime();
+    if (!rt)
+        return 0;
+    JSContext *ctx = JS_NewContext(rt);
     if (!ctx) {
         JS_FreeRuntime(rt);
         return 0;
     }
-    
-    char load_script[256];
-    snprintf(load_script, sizeof(load_script),
-             "(function() { "
-             "  var buf = new Uint8Array(%zu); "
-             "  for (var i = 0; i < %zu; i++) buf[i] = 0; "
-             "  return evalBinary(buf); "
-             "})()", size, size);
-    
-    JSValue eval_result = JS_Eval(ctx, load_script, strlen(load_script), 
-                                   "<bytecode-load>", 0);
-    
-    if (!JS_IsException(eval_result)) {
-        JS_FreeValue(ctx, eval_result);
-    } else {
-        JS_GetException(ctx);
-    }
-    
-    const char* simple_script = "({ a: 1, b: 'test', c: function() { return 42; } })";
-    
-    JSValue bytecode = JS_Eval(ctx, simple_script, strlen(simple_script),
-                                "<compile>", JS_EVAL_FLAG_COMPILE_ONLY);
-    
-    if (!JS_IsException(bytecode)) {
-        size_t bytecode_len;
-        uint8_t* bytecode_buf = JS_WriteObject(ctx, &bytecode_len, bytecode, 
-                                                JS_WRITE_OBJ_BYTECODE);
-        
-        if (bytecode_buf) {
-            JSValue loaded = JS_ReadObject(ctx, bytecode_buf, bytecode_len,
-                                            JS_READ_OBJ_BYTECODE);
-            
-            if (!JS_IsException(loaded)) {
-                JSValue result = JS_EvalFunction(ctx, loaded);
-                if (!JS_IsException(result)) {
-                    JS_FreeValue(ctx, result);
-                } else {
-                    JS_GetException(ctx);
-                }
-            } else {
-                JS_GetException(ctx);
-            }
-            
-            js_free(ctx, bytecode_buf);
-        }
-        
-        JS_FreeValue(ctx, bytecode);
-    } else {
-        JS_GetException(ctx);
-    }
-    
-    if (size >= 8) {
-        uint8_t* fake_bytecode = malloc(size);
-        if (fake_bytecode) {
-            memcpy(fake_bytecode, data, size);
-            
-            if (data[0] % 2 == 0) {
-                fake_bytecode[0] = 'Q';
-                fake_bytecode[1] = 'C';
-                fake_bytecode[2] = 'A';
-                fake_bytecode[3] = 'M';
-            }
-            
-            JSValue malformed = JS_ReadObject(ctx, fake_bytecode, size,
-                                               JS_READ_OBJ_BYTECODE);
-            if (!JS_IsException(malformed)) {
-                JS_FreeValue(ctx, malformed);
-            } else {
-                JS_GetException(ctx);
-            }
-            
-            free(fake_bytecode);
-        }
-    }
-    
-    const char* eval_script_test = "typeof std !== 'undefined' ? std.evalScript : null";
-    JSValue std_check = JS_Eval(ctx, eval_script_test, strlen(eval_script_test),
-                                 "<std-check>", 0);
-    if (!JS_IsException(std_check)) {
-        JS_FreeValue(ctx, std_check);
-    } else {
-        JS_GetException(ctx);
-    }
-    
-    const char* module_script = "export default 42; export const x = 123;";
-    JSValue module_bytecode = JS_Eval(ctx, module_script, strlen(module_script),
-                                       "<module-compile>", 
-                                       JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
-    
-    if (!JS_IsException(module_bytecode)) {
-        size_t mod_bc_len;
-        uint8_t* mod_bc_buf = JS_WriteObject(ctx, &mod_bc_len, module_bytecode,
-                                              JS_WRITE_OBJ_BYTECODE);
-        
-        if (mod_bc_buf) {
-            JSValue mod_loaded = JS_ReadObject(ctx, mod_bc_buf, mod_bc_len,
-                                                JS_READ_OBJ_BYTECODE);
-            if (!JS_IsException(mod_loaded)) {
-                JSValue mod_result = JS_EvalFunction(ctx, mod_loaded);
-                if (!JS_IsException(mod_result)) {
-                    JS_FreeValue(ctx, mod_result);
-                } else {
-                    JS_GetException(ctx);
-                }
-            } else {
-                JS_GetException(ctx);
-            }
-            
-            js_free(ctx, mod_bc_buf);
-        }
-        
-        JS_FreeValue(ctx, module_bytecode);
-    } else {
-        JS_GetException(ctx);
-    }
-    
+    // Cap pathological allocations / recursion (64 MiB, 256 KiB stack).
+    JS_SetMemoryLimit(rt, 0x4000000);
+    JS_SetMaxStackSize(rt, 0x40000);
+
+    read_and_drop(ctx, data, size, JS_READ_OBJ_BYTECODE);
+    read_and_drop(ctx, data, size, JS_READ_OBJ_BYTECODE | JS_READ_OBJ_REFERENCE);
+    read_and_drop(ctx, data, size, 0);
+
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
-    
     return 0;
 }

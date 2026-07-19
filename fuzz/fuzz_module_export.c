@@ -1,105 +1,60 @@
 // Copyright 2025 Google LLC
-// Fuzz target for QuickJS ES6 module parsing
+// Fuzz target for the QuickJS module + script parser on raw input.
+//
+// The previous version wrapped the input in snprintf("export ... %s", input)
+// templates. That truncated the input at the first NUL byte and only ever fed
+// a handful of fixed syntactic shells to the parser. This feeds the RAW fuzzer
+// buffer (length-delimited, so embedded NULs survive) straight to the parser,
+// in both module and plain-script mode, with JS_EVAL_FLAG_COMPILE_ONLY so the
+// parser + codegen is fuzzed on arbitrary bytes without executing anything
+// (no interrupt handler / event loop needed).
 
 #include "quickjs.h"
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
+
+// Compile the raw buffer under one eval mode and free the result / exception.
+static void compile_and_drop(JSContext *ctx, const char *buf, size_t len, int mode) {
+    JSValue v = JS_Eval(ctx, buf, len, "<module-fuzz>", mode | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(v))
+        JS_FreeValue(ctx, JS_GetException(ctx));
+    else
+        JS_FreeValue(ctx, v);
+}
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    if (size < 1) return 0;
-    
-    JSRuntime* rt = JS_NewRuntime();
-    if (!rt) return 0;
-    
-    JSContext* ctx = JS_NewContext(rt);
+    JSRuntime *rt = JS_NewRuntime();
+    if (!rt)
+        return 0;
+    JSContext *ctx = JS_NewContext(rt);
     if (!ctx) {
         JS_FreeRuntime(rt);
         return 0;
     }
-    
-    char* input = malloc(size + 1);
-    if (!input) {
+    // Cap pathological allocations / recursion (64 MiB, 256 KiB stack).
+    JS_SetMemoryLimit(rt, 0x4000000);
+    JS_SetMaxStackSize(rt, 0x40000);
+
+    // JS_Eval requires buf[buf_len] == '\0' but honours buf_len, so embedded
+    // NULs inside [0, size) are preserved (the '%s' harness lost them).
+    char *buf = malloc(size + 1);
+    if (!buf) {
         JS_FreeContext(ctx);
         JS_FreeRuntime(rt);
         return 0;
     }
-    memcpy(input, data, size);
-    input[size] = '\0';
-    
-    const char* export_patterns[] = {
-        "export default %s;",
-        "export const x = %s;",
-        "export let x = %s;",
-        "export var x = %s;",
-        "export function f() { %s }",
-        "export class C { %s }",
-        "export { %s };",
-        "export * from '%s';",
-        "export { %s } from 'module';",
-        "export { default as x } from '%s';",
-    };
-    
-    int pattern_idx = data[0] % (sizeof(export_patterns) / sizeof(export_patterns[0]));
-    
-    char script[8192];
-    snprintf(script, sizeof(script), export_patterns[pattern_idx], input);
-    
-    JSValue result = JS_Eval(ctx, script, strlen(script), "<input>",
-                               JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
-    
-    if (!JS_IsException(result)) {
-        JS_FreeValue(ctx, result);
-    } else {
-        JS_GetException(ctx);
-    }
-    
-    JSValue result2 = JS_Eval(ctx, input, size, "<input>", JS_EVAL_FLAG_COMPILE_ONLY);
-    if (!JS_IsException(result2)) {
-        JS_FreeValue(ctx, result2);
-    } else {
-        JS_GetException(ctx);
-    }
-    
-    const char* import_patterns[] = {
-        "import '%s';",
-        "import x from '%s';",
-        "import * as x from '%s';",
-        "import { x } from '%s';",
-        "import { x as y } from '%s';",
-        "import x, { y } from '%s';",
-        "import x, * as y from '%s';",
-    };
-    
-    int import_idx = (data[0] >> 4) % (sizeof(import_patterns) / sizeof(import_patterns[0]));
-    char import_script[8192];
-    char* sanitized = malloc(size + 1);
-    if (sanitized) {
-        size_t j = 0;
-        for (size_t i = 0; i < size && j < size; i++) {
-            if (data[i] != '\'' && data[i] != '"' && data[i] != '\n' && data[i] != '\r') {
-                sanitized[j++] = data[i];
-            }
-        }
-        sanitized[j] = '\0';
-        
-        snprintf(import_script, sizeof(import_script), import_patterns[import_idx], sanitized);
-        
-        JSValue import_result = JS_Eval(ctx, import_script, strlen(import_script), "<input>",
-                                         JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
-        if (!JS_IsException(import_result)) {
-            JS_FreeValue(ctx, import_result);
-        } else {
-            JS_GetException(ctx);
-        }
-        
-        free(sanitized);
-    }
-    
-    free(input);
+    if (size)
+        memcpy(buf, data, size);
+    buf[size] = '\0';
+
+    // Module grammar (import/export) then plain-script grammar; parse only.
+    compile_and_drop(ctx, buf, size, JS_EVAL_TYPE_MODULE);
+    compile_and_drop(ctx, buf, size, JS_EVAL_TYPE_GLOBAL);
+
+    free(buf);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
-    
     return 0;
 }
