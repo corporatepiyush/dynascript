@@ -126,10 +126,12 @@ static JSValue js_scl_getter_closed(JSContext *ctx, JSValueConst this_val)
     return JS_ThrowTypeError(ctx, "not a native resource");
 }
 
-/* close/dispose/closed installed on every scl resource proto */
+/* close/dispose/[Symbol.dispose]/closed installed on every scl resource proto.
+ * [Symbol.dispose] makes these work with `using` and DisposableStack.use(). */
 static const JSCFunctionListEntry js_scl_common_funcs[] = {
     JS_CFUNC_DEF("close", 0, js_scl_method_close),
     JS_CFUNC_DEF("dispose", 0, js_scl_method_close),
+    JS_CFUNC_DEF("[Symbol.dispose]", 0, js_scl_method_close),
     JS_CGETSET_DEF("closed", js_scl_getter_closed, NULL),
 };
 

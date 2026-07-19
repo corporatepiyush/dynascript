@@ -75,6 +75,24 @@ print("HashMap demo: final size =", msize);
 const n = demo_deterministic_free();
 print("Deterministic-free demo:", n, "objects created+closed in constant memory");
 
+/* ---- DisposableStack: standard-protocol deterministic cleanup ---- */
+/* scl objects expose [Symbol.dispose], so DisposableStack.use() (and, once
+ * `using` syntax lands, `using v = new Vector()`) auto-close them in reverse
+ * order at scope exit -- even on throw. */
+function demo_disposable_stack() {
+    const stack = new DisposableStack();
+    const v = stack.use(new Vector());
+    const m = stack.use(new HashMap());
+    v.push(42);
+    m.set(1, 42);
+    const ok = v.get(0) === 42 && m.get(1) === 42;
+    stack.dispose();                 // closes m then v (reverse order)
+    assert(v.closed && m.closed, "DisposableStack closed both");
+    return ok;
+}
+assert(demo_disposable_stack(), "disposable stack");
+print("DisposableStack demo: both resources auto-disposed at scope exit");
+
 // closed resources reject further use (fail fast, not silent corruption)
 const dead = new Vector();
 dead.close();
