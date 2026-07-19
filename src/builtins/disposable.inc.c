@@ -352,12 +352,222 @@ static JSValue js_disposable_stack_dispose(JSContext *ctx,
 }
 
 static JSValue js_disposable_stack_get_disposed(JSContext *ctx,
-                                                JSValueConst this_val)
+                                                JSValueConst this_val,
+                                                int magic)
 {
-    JSDisposableStackData *s = js_disposable_stack_get(ctx, this_val, FALSE);
+    JSDisposableStackData *s = js_disposable_stack_get(ctx, this_val, magic);
     if (!s)
         return JS_EXCEPTION;
     return JS_NewBool(ctx, s->disposed);
+}
+
+/* ---- AsyncDisposableStack: async DisposeResources reaction chain ----
+
+   disposeAsync drives the resource stack (in reverse) as a chain of promise
+   reactions, using the same throwaway-capability await idiom as async
+   functions. State is threaded through the reaction closures' func_data. */
+
+enum {
+    ASYNC_DISPOSE_RESOLVE = 0, /* capability resolve */
+    ASYNC_DISPOSE_REJECT,      /* capability reject */
+    ASYNC_DISPOSE_STACK,       /* the AsyncDisposableStack object */
+    ASYNC_DISPOSE_INDEX,       /* int: next resource index (counting down) */
+    ASYNC_DISPOSE_ERROR,       /* accumulated error, or JS_UNINITIALIZED */
+    ASYNC_DISPOSE_DATA_COUNT,
+};
+
+/* Fold 'thrown' into the accumulated completion. Consumes both references
+   (error may be JS_UNINITIALIZED = no prior error). Returns the new owned
+   error. */
+static JSValue js_async_dispose_accumulate(JSContext *ctx, JSValue error,
+                                           JSValue thrown)
+{
+    if (JS_IsUninitialized(error))
+        return thrown;
+    return js_new_suppressed_error(ctx, thrown, error);
+}
+
+/* All resources processed: free them and settle the capability. Consumes
+   'error'. */
+static void js_async_dispose_finish(JSContext *ctx, JSDisposableStackData *s,
+                                    JSValueConst resolve, JSValueConst reject,
+                                    JSValue error)
+{
+    JSValueConst undef = JS_UNDEFINED;
+    JSValue r;
+    int i;
+
+    for (i = 0; i < s->count; i++) {
+        JS_FreeValue(ctx, s->resources[i].value);
+        JS_FreeValue(ctx, s->resources[i].method);
+    }
+    js_free(ctx, s->resources);
+    s->resources = NULL;
+    s->count = 0;
+    s->size = 0;
+
+    if (JS_IsUninitialized(error)) {
+        r = JS_Call(ctx, resolve, JS_UNDEFINED, 1, &undef);
+    } else {
+        r = JS_Call(ctx, reject, JS_UNDEFINED, 1, (JSValueConst *)&error);
+    }
+    if (JS_IsException(r))
+        JS_FreeValue(ctx, JS_GetException(ctx));
+    JS_FreeValue(ctx, r);
+    JS_FreeValue(ctx, error);
+}
+
+static void js_async_dispose_loop(JSContext *ctx, JSValueConst resolve,
+                                  JSValueConst reject, JSValueConst stack_obj,
+                                  int start_index, JSValue error);
+
+/* Reaction run when an awaited disposal settles. magic bit 0 = rejected. */
+static JSValue js_async_dispose_resume(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv, int magic,
+                                       JSValue *func_data)
+{
+    JSValueConst resolve = func_data[ASYNC_DISPOSE_RESOLVE];
+    JSValueConst reject = func_data[ASYNC_DISPOSE_REJECT];
+    JSValueConst stack_obj = func_data[ASYNC_DISPOSE_STACK];
+    int index = JS_VALUE_GET_INT(func_data[ASYNC_DISPOSE_INDEX]);
+    JSValue error = JS_DupValue(ctx, func_data[ASYNC_DISPOSE_ERROR]);
+
+    if (magic) /* the awaited disposal rejected: fold in the reason */
+        error = js_async_dispose_accumulate(ctx, error,
+                                            JS_DupValue(ctx, argv[0]));
+    js_async_dispose_loop(ctx, resolve, reject, stack_obj, index, error);
+    return JS_UNDEFINED;
+}
+
+/* Await(result), then resume the loop at next_index. Consumes error and
+   result; settles the capability with the pending exception on failure. */
+static void js_async_dispose_await(JSContext *ctx, JSValueConst resolve,
+                                   JSValueConst reject, JSValueConst stack_obj,
+                                   int next_index, JSValue error,
+                                   JSValue result)
+{
+    JSValue promise, on_settled[2], r, exc;
+    JSValueConst throwaway[2] = { JS_UNDEFINED, JS_UNDEFINED };
+    JSValueConst data[ASYNC_DISPOSE_DATA_COUNT];
+    int i, res;
+
+    promise = js_promise_resolve(ctx, ctx->promise_ctor, 1,
+                                 (JSValueConst *)&result, 0);
+    JS_FreeValue(ctx, result);
+    if (JS_IsException(promise))
+        goto fail;
+    data[ASYNC_DISPOSE_RESOLVE] = resolve;
+    data[ASYNC_DISPOSE_REJECT] = reject;
+    data[ASYNC_DISPOSE_STACK] = stack_obj;
+    data[ASYNC_DISPOSE_INDEX] = JS_NewInt32(ctx, next_index);
+    data[ASYNC_DISPOSE_ERROR] = error;
+    for (i = 0; i < 2; i++) {
+        on_settled[i] = JS_NewCFunctionData(ctx, js_async_dispose_resume, 1,
+                                            i, ASYNC_DISPOSE_DATA_COUNT,
+                                            (JSValueConst *)data);
+        if (JS_IsException(on_settled[i])) {
+            if (i)
+                JS_FreeValue(ctx, on_settled[0]);
+            JS_FreeValue(ctx, promise);
+            goto fail;
+        }
+    }
+    JS_FreeValue(ctx, error); /* the closures hold their own dup */
+    res = perform_promise_then(ctx, promise, (JSValueConst *)on_settled,
+                               throwaway);
+    JS_FreeValue(ctx, on_settled[0]);
+    JS_FreeValue(ctx, on_settled[1]);
+    JS_FreeValue(ctx, promise);
+    if (res < 0) {
+        /* OOM registering the reactions: reject with the pending exception */
+        exc = JS_GetException(ctx);
+        r = JS_Call(ctx, reject, JS_UNDEFINED, 1, (JSValueConst *)&exc);
+        if (JS_IsException(r))
+            JS_FreeValue(ctx, JS_GetException(ctx));
+        JS_FreeValue(ctx, r);
+        JS_FreeValue(ctx, exc);
+    }
+    return;
+ fail:
+    exc = JS_GetException(ctx);
+    JS_FreeValue(ctx, error);
+    r = JS_Call(ctx, reject, JS_UNDEFINED, 1, (JSValueConst *)&exc);
+    if (JS_IsException(r))
+        JS_FreeValue(ctx, JS_GetException(ctx));
+    JS_FreeValue(ctx, r);
+    JS_FreeValue(ctx, exc);
+}
+
+/* Dispose resources[start_index..0] in order, running synchronously until an
+   Await is needed (a disposer that returns), at which point the continuation
+   is scheduled and control returns. Consumes 'error'. */
+static void js_async_dispose_loop(JSContext *ctx, JSValueConst resolve,
+                                  JSValueConst reject, JSValueConst stack_obj,
+                                  int start_index, JSValue error)
+{
+    JSObject *p = JS_VALUE_GET_OBJ(stack_obj);
+    JSDisposableStackData *s = p->u.opaque;
+    int i = start_index;
+
+    while (i >= 0) {
+        JSValueConst method = s->resources[i].method;
+        JSValueConst value = s->resources[i].value;
+        JSValue result;
+
+        if (JS_IsUndefined(method)) {
+            /* null/undefined async resource: Await(undefined) */
+            js_async_dispose_await(ctx, resolve, reject, stack_obj, i - 1,
+                                   error, JS_UNDEFINED);
+            return;
+        }
+        result = JS_Call(ctx, method, value, 0, NULL);
+        if (JS_IsException(result)) {
+            /* Dispose threw synchronously: no Await, continue in order */
+            error = js_async_dispose_accumulate(ctx, error,
+                                                JS_GetException(ctx));
+            i--;
+            continue;
+        }
+        js_async_dispose_await(ctx, resolve, reject, stack_obj, i - 1,
+                               error, result);
+        return;
+    }
+    js_async_dispose_finish(ctx, s, resolve, reject, error);
+}
+
+/* AsyncDisposableStack.prototype.disposeAsync */
+static JSValue js_async_disposable_stack_dispose_async(JSContext *ctx,
+                                                       JSValueConst this_val,
+                                                       int argc,
+                                                       JSValueConst *argv)
+{
+    JSValue promise, resolving_funcs[2], r, exc;
+    JSValueConst undef = JS_UNDEFINED;
+    JSDisposableStackData *s;
+
+    promise = JS_NewPromiseCapability(ctx, resolving_funcs);
+    if (JS_IsException(promise))
+        return JS_EXCEPTION;
+
+    s = JS_GetOpaque(this_val, JS_CLASS_ASYNC_DISPOSABLE_STACK);
+    if (!s) {
+        JS_ThrowTypeErrorInvalidClass(ctx, JS_CLASS_ASYNC_DISPOSABLE_STACK);
+        exc = JS_GetException(ctx);
+        r = JS_Call(ctx, resolving_funcs[1], JS_UNDEFINED, 1,
+                    (JSValueConst *)&exc);
+        JS_FreeValue(ctx, r);
+        JS_FreeValue(ctx, exc);
+    } else if (s->disposed) {
+        r = JS_Call(ctx, resolving_funcs[0], JS_UNDEFINED, 1, &undef);
+        JS_FreeValue(ctx, r);
+    } else {
+        s->disposed = TRUE;
+        js_async_dispose_loop(ctx, resolving_funcs[0], resolving_funcs[1],
+                              this_val, s->count - 1, JS_UNINITIALIZED);
+    }
+    JS_FreeValue(ctx, resolving_funcs[0]);
+    JS_FreeValue(ctx, resolving_funcs[1]);
+    return promise;
 }
 
 static const JSCFunctionListEntry js_disposable_stack_proto_funcs[] = {
@@ -366,9 +576,20 @@ static const JSCFunctionListEntry js_disposable_stack_proto_funcs[] = {
     JS_CFUNC_MAGIC_DEF("defer", 1, js_disposable_stack_defer, 0 ),
     JS_CFUNC_MAGIC_DEF("move", 0, js_disposable_stack_move, 0 ),
     JS_CFUNC_DEF("dispose", 0, js_disposable_stack_dispose ),
-    JS_CGETSET_DEF("disposed", js_disposable_stack_get_disposed, NULL ),
+    JS_CGETSET_MAGIC_DEF("disposed", js_disposable_stack_get_disposed, NULL, 0 ),
     JS_ALIAS_DEF("[Symbol.dispose]", "dispose" ),
     JS_PROP_STRING_DEF("[Symbol.toStringTag]", "DisposableStack", JS_PROP_CONFIGURABLE ),
+};
+
+static const JSCFunctionListEntry js_async_disposable_stack_proto_funcs[] = {
+    JS_CFUNC_MAGIC_DEF("use", 1, js_disposable_stack_use, 1 ),
+    JS_CFUNC_MAGIC_DEF("adopt", 2, js_disposable_stack_adopt, 1 ),
+    JS_CFUNC_MAGIC_DEF("defer", 1, js_disposable_stack_defer, 1 ),
+    JS_CFUNC_MAGIC_DEF("move", 0, js_disposable_stack_move, 1 ),
+    JS_CFUNC_DEF("disposeAsync", 0, js_async_disposable_stack_dispose_async ),
+    JS_CGETSET_MAGIC_DEF("disposed", js_disposable_stack_get_disposed, NULL, 1 ),
+    JS_ALIAS_DEF("[Symbol.asyncDispose]", "disposeAsync" ),
+    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "AsyncDisposableStack", JS_PROP_CONFIGURABLE ),
 };
 
 static const JSClassShortDef js_disposable_stack_class_def[] = {
@@ -396,6 +617,20 @@ int JS_AddIntrinsicDisposableStack(JSContext *ctx)
                              NULL, 0,
                              js_disposable_stack_proto_funcs,
                              countof(js_disposable_stack_proto_funcs),
+                             0);
+    if (JS_IsException(obj))
+        return -1;
+    JS_FreeValue(ctx, obj);
+
+    ft.constructor_magic = js_disposable_stack_constructor;
+    obj = JS_NewCConstructor(ctx, JS_CLASS_ASYNC_DISPOSABLE_STACK,
+                             "AsyncDisposableStack",
+                             ft.generic, 0,
+                             JS_CFUNC_constructor_magic, 1,
+                             JS_UNDEFINED,
+                             NULL, 0,
+                             js_async_disposable_stack_proto_funcs,
+                             countof(js_async_disposable_stack_proto_funcs),
                              0);
     if (JS_IsException(obj))
         return -1;
