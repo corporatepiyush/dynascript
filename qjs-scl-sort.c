@@ -58,9 +58,12 @@ static int js_scl_sort_cmp_double(const void *pa, const void *pb)
 static int js_scl_sort_len(JSContext *ctx, JSValueConst v, uint32_t *out_len)
 {
     JSValue lval;
-    int ret;
+    int ret, isarr;
 
-    if (!JS_IsArray(ctx, v)) {
+    isarr = JS_IsArray(ctx, v);   /* tri-state: <0 = exception (revoked proxy) */
+    if (isarr < 0)
+        return -1;
+    if (!isarr) {
         JS_ThrowTypeError(ctx, "scl:sort: expected an Array");
         return -1;
     }

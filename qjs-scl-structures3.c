@@ -61,6 +61,10 @@ static JSValue js_scl_lru_ctor(JSContext *ctx, JSValueConst new_target,
         return JS_EXCEPTION;
     if (capacity < 1)
         return JS_ThrowRangeError(ctx, "capacity must be >= 1");
+    /* cap so the backing allocation stays within the arena (a size near 2^60
+       would overflow the arena's doubling loop and hang, not OOM) */
+    if ((uint64_t)capacity > JS_SCL_ARENA_MAX / 32)
+        return JS_ThrowRangeError(ctx, "capacity too large");
 
     arena = js_scl_arena_new(ctx);
     if (!arena)
@@ -162,6 +166,10 @@ static JSValue js_scl_unionfind_ctor(JSContext *ctx, JSValueConst new_target,
         return JS_EXCEPTION;
     if (n < 1)
         return JS_ThrowRangeError(ctx, "size must be >= 1");
+    /* cap so parent+rank (2 * size_t per element) stay within the arena;
+       a size near 2^60 would overflow the arena's doubling loop and hang */
+    if ((uint64_t)n > JS_SCL_ARENA_MAX / (2 * sizeof(size_t)))
+        return JS_ThrowRangeError(ctx, "size too large");
 
     arena = js_scl_arena_new(ctx);
     if (!arena)
