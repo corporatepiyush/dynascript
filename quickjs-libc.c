@@ -174,9 +174,17 @@ static _Atomic uint64_t os_pending_signals;
 typedef int (*JSOSPollFunc)(JSContext *ctx);
 static _Atomic(JSOSPollFunc) os_poll_func;
 
+/* Correctly-typed DynBufReallocFunc adapter: calling js_realloc_rt (first arg
+   JSRuntime*) through the DynBufReallocFunc type (first arg void*) is C UB and
+   traps under -fsanitize=function / CFI / LTO. */
+static void *js_std_dbuf_realloc(void *opaque, void *ptr, size_t size)
+{
+    return js_realloc_rt((JSRuntime *)opaque, ptr, size);
+}
+
 static void js_std_dbuf_init(JSContext *ctx, DynBuf *s)
 {
-    dbuf_init2(s, JS_GetRuntime(ctx), (DynBufReallocFunc *)js_realloc_rt);
+    dbuf_init2(s, JS_GetRuntime(ctx), js_std_dbuf_realloc);
 }
 
 static BOOL my_isdigit(int c)
@@ -4198,6 +4206,542 @@ static JSValue js_std_queueMicrotask(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/**********************************************************/
+/* WHATWG TextEncoder / TextDecoder (UTF-8 only) */
+
+static JSClassID js_textencoder_class_id;
+static JSClassID js_textdecoder_class_id;
+
+/* TextEncoder is stateless; the heap marker only makes the class opaque
+   non-NULL so JS_GetOpaque2() can be used as a brand check. */
+typedef struct {
+    uint8_t brand;
+} JSTextEncoder;
+
+typedef struct {
+    BOOL fatal;
+    BOOL ignore_bom;
+} JSTextDecoder;
+
+static const uint8_t utf8_replacement[3] = { 0xEF, 0xBF, 0xBD };
+
+static void js_textencoder_finalizer(JSRuntime *rt, JSValue val)
+{
+    JSTextEncoder *te = JS_GetOpaque(val, js_textencoder_class_id);
+    if (te)
+        js_free_rt(rt, te);
+}
+
+static void js_textdecoder_finalizer(JSRuntime *rt, JSValue val)
+{
+    JSTextDecoder *td = JS_GetOpaque(val, js_textdecoder_class_id);
+    if (td)
+        js_free_rt(rt, td);
+}
+
+static JSClassDef js_textencoder_class = {
+    "TextEncoder",
+    .finalizer = js_textencoder_finalizer,
+};
+
+static JSClassDef js_textdecoder_class = {
+    "TextDecoder",
+    .finalizer = js_textdecoder_finalizer,
+};
+
+/* the only labels this UTF-8 decoder accepts (case-insensitive, trimmed) */
+static BOOL js_textdecoder_label_is_utf8(const char *s)
+{
+    char buf[32];
+    size_t start = 0, len, i;
+
+    while (s[start] == 0x09 || s[start] == 0x0A || s[start] == 0x0C ||
+           s[start] == 0x0D || s[start] == 0x20)
+        start++;
+    len = strlen(s + start);
+    while (len > 0) {
+        char c = s[start + len - 1];
+        if (c == 0x09 || c == 0x0A || c == 0x0C || c == 0x0D || c == 0x20)
+            len--;
+        else
+            break;
+    }
+    if (len >= sizeof(buf))
+        return FALSE;
+    for (i = 0; i < len; i++) {
+        char c = s[start + i];
+        if (c >= 'A' && c <= 'Z')
+            c += 'a' - 'A';
+        buf[i] = c;
+    }
+    buf[len] = '\0';
+    return !strcmp(buf, "utf-8") || !strcmp(buf, "utf8") ||
+           !strcmp(buf, "unicode-1-1-utf-8");
+}
+
+/* Copy the bytes of a BufferSource (ArrayBuffer, TypedArray or DataView)
+   into a freshly js_malloc'd buffer (caller frees with js_free). The backing
+   pointer is fetched last and copied with no intervening JS call, so a getter
+   that detaches the buffer during argument resolution cannot cause a
+   use-after-free. Returns 0 on success, -1 with a pending exception. */
+static int js_textcodec_get_bytes(JSContext *ctx, JSValueConst obj,
+                                  uint8_t **pbuf, size_t *plen)
+{
+    JSValue buffer;
+    uint8_t *ptr, *out;
+    size_t offset, length, abuf_size;
+
+    *pbuf = NULL;
+    *plen = 0;
+
+    if (JS_GetArrayBuffer(ctx, &abuf_size, obj)) {
+        buffer = JS_DupValue(ctx, obj);
+        offset = 0;
+        length = abuf_size;
+    } else {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        buffer = JS_GetTypedArrayBuffer(ctx, obj, &offset, &length, NULL);
+        if (JS_IsException(buffer)) {
+            JSValue v;
+            int64_t v_off, v_len;
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            /* DataView (or generic view) via its public accessors */
+            buffer = JS_GetPropertyStr(ctx, obj, "buffer");
+            if (JS_IsException(buffer))
+                return -1;
+            if (!JS_GetArrayBuffer(ctx, &abuf_size, buffer)) {
+                JS_FreeValue(ctx, JS_GetException(ctx));
+                JS_FreeValue(ctx, buffer);
+                JS_ThrowTypeError(ctx, "decode() argument is not a BufferSource");
+                return -1;
+            }
+            v = JS_GetPropertyStr(ctx, obj, "byteOffset");
+            if (JS_ToInt64(ctx, &v_off, v)) {
+                JS_FreeValue(ctx, v);
+                JS_FreeValue(ctx, buffer);
+                return -1;
+            }
+            JS_FreeValue(ctx, v);
+            v = JS_GetPropertyStr(ctx, obj, "byteLength");
+            if (JS_ToInt64(ctx, &v_len, v)) {
+                JS_FreeValue(ctx, v);
+                JS_FreeValue(ctx, buffer);
+                return -1;
+            }
+            JS_FreeValue(ctx, v);
+            offset = (v_off > 0) ? (size_t)v_off : 0;
+            length = (v_len > 0) ? (size_t)v_len : 0;
+        }
+    }
+
+    ptr = JS_GetArrayBuffer(ctx, &abuf_size, buffer);
+    if (!ptr) {
+        JS_FreeValue(ctx, buffer);
+        return -1;
+    }
+    if (offset > abuf_size || length > abuf_size - offset) {
+        JS_FreeValue(ctx, buffer);
+        JS_ThrowRangeError(ctx, "buffer source out of bounds");
+        return -1;
+    }
+    out = js_malloc(ctx, length + 1);
+    if (!out) {
+        JS_FreeValue(ctx, buffer);
+        return -1;
+    }
+    memcpy(out, ptr + offset, length);
+    JS_FreeValue(ctx, buffer);
+    *pbuf = out;
+    *plen = length;
+    return 0;
+}
+
+/* WHATWG UTF-8 decoder: appends the decoded text to dbuf as clean UTF-8.
+   Invalid sequences become U+FFFD; if fatal, a TypeError is set instead.
+   Returns 0 on success, -1 with a pending exception (fatal error or OOM). */
+static int js_utf8_decode_whatwg(JSContext *ctx, DynBuf *dbuf,
+                                 const uint8_t *buf, size_t len, BOOL fatal)
+{
+    size_t i = 0;
+    uint32_t codepoint = 0;
+    int bytes_needed = 0, bytes_seen = 0;
+    uint8_t lower = 0x80, upper = 0xBF;
+    uint8_t cbuf[UTF8_CHAR_LEN_MAX];
+
+    while (i < len) {
+        uint8_t b = buf[i];
+        if (bytes_needed == 0) {
+            if (b <= 0x7F) {
+                dbuf_putc(dbuf, b);
+                i++;
+            } else if (b >= 0xC2 && b <= 0xDF) {
+                bytes_needed = 1;
+                codepoint = b & 0x1F;
+                i++;
+            } else if (b >= 0xE0 && b <= 0xEF) {
+                if (b == 0xE0)
+                    lower = 0xA0;
+                if (b == 0xED)
+                    upper = 0x9F;
+                bytes_needed = 2;
+                codepoint = b & 0x0F;
+                i++;
+            } else if (b >= 0xF0 && b <= 0xF4) {
+                if (b == 0xF0)
+                    lower = 0x90;
+                if (b == 0xF4)
+                    upper = 0x8F;
+                bytes_needed = 3;
+                codepoint = b & 0x07;
+                i++;
+            } else {
+                if (fatal)
+                    goto fatal_error;
+                dbuf_put(dbuf, utf8_replacement, 3);
+                i++;
+            }
+        } else if (b < lower || b > upper) {
+            /* invalid continuation: reset and reprocess b as a lead byte */
+            codepoint = 0;
+            bytes_needed = 0;
+            bytes_seen = 0;
+            lower = 0x80;
+            upper = 0xBF;
+            if (fatal)
+                goto fatal_error;
+            dbuf_put(dbuf, utf8_replacement, 3);
+        } else {
+            lower = 0x80;
+            upper = 0xBF;
+            codepoint = (codepoint << 6) | (b & 0x3F);
+            bytes_seen++;
+            i++;
+            if (bytes_seen == bytes_needed) {
+                dbuf_put(dbuf, cbuf, unicode_to_utf8(cbuf, codepoint));
+                codepoint = 0;
+                bytes_needed = 0;
+                bytes_seen = 0;
+            }
+        }
+    }
+    if (bytes_needed != 0) {
+        /* incomplete trailing sequence */
+        if (fatal)
+            goto fatal_error;
+        dbuf_put(dbuf, utf8_replacement, 3);
+    }
+    if (dbuf->error) {
+        JS_ThrowOutOfMemory(ctx);
+        return -1;
+    }
+    return 0;
+ fatal_error:
+    JS_ThrowTypeError(ctx, "invalid UTF-8 sequence");
+    return -1;
+}
+
+static JSValue js_textencoder_ctor(JSContext *ctx, JSValueConst new_target,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj = JS_UNDEFINED, proto;
+    JSTextEncoder *te;
+
+    if (JS_IsUndefined(new_target)) {
+        proto = JS_GetClassProto(ctx, js_textencoder_class_id);
+    } else {
+        proto = JS_GetPropertyStr(ctx, new_target, "prototype");
+        if (JS_IsException(proto))
+            goto fail;
+    }
+    obj = JS_NewObjectProtoClass(ctx, proto, js_textencoder_class_id);
+    JS_FreeValue(ctx, proto);
+    if (JS_IsException(obj))
+        goto fail;
+    te = js_mallocz(ctx, sizeof(*te));
+    if (!te)
+        goto fail;
+    JS_SetOpaque(obj, te);
+    return obj;
+ fail:
+    JS_FreeValue(ctx, obj);
+    return JS_EXCEPTION;
+}
+
+static JSValue js_textencoder_get_encoding(JSContext *ctx, JSValueConst this_val)
+{
+    if (!JS_GetOpaque2(ctx, this_val, js_textencoder_class_id))
+        return JS_EXCEPTION;
+    return JS_NewString(ctx, "utf-8");
+}
+
+static JSValue js_textencoder_encode(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    const char *str = NULL;
+    size_t len = 0;
+    JSValue ab, u8;
+    JSValueConst args[3];
+
+    if (!JS_GetOpaque2(ctx, this_val, js_textencoder_class_id))
+        return JS_EXCEPTION;
+    if (argc >= 1 && !JS_IsUndefined(argv[0])) {
+        str = JS_ToCStringLen(ctx, &len, argv[0]);
+        if (!str)
+            return JS_EXCEPTION;
+    }
+    ab = JS_NewArrayBufferCopy(ctx, (const uint8_t *)(str ? str : ""), len);
+    if (str)
+        JS_FreeCString(ctx, str);
+    if (JS_IsException(ab))
+        return JS_EXCEPTION;
+    /* the typed-array constructor reads argv[1]/argv[2] (offset/length) */
+    args[0] = ab;
+    args[1] = JS_UNDEFINED;
+    args[2] = JS_UNDEFINED;
+    u8 = JS_NewTypedArray(ctx, 3, args, JS_TYPED_ARRAY_UINT8);
+    JS_FreeValue(ctx, ab);
+    return u8;
+}
+
+static JSValue js_textencoder_encodeInto(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv)
+{
+    const char *src;
+    size_t src_len, offset, dst_len, abuf_size, bpe, si = 0, di = 0;
+    int64_t read = 0, written = 0;
+    uint8_t *abuf, *dst;
+    JSValue buffer, res;
+
+    if (!JS_GetOpaque2(ctx, this_val, js_textencoder_class_id))
+        return JS_EXCEPTION;
+    /* coerce the source (runs JS) before resolving the destination */
+    src = JS_ToCStringLen(ctx, &src_len, argc >= 1 ? argv[0] : JS_UNDEFINED);
+    if (!src)
+        return JS_EXCEPTION;
+    buffer = JS_GetTypedArrayBuffer(ctx, argc >= 2 ? argv[1] : JS_UNDEFINED,
+                                    &offset, &dst_len, &bpe);
+    if (JS_IsException(buffer)) {
+        JS_FreeCString(ctx, src);
+        return JS_EXCEPTION;
+    }
+    if (bpe != 1) {
+        JS_FreeValue(ctx, buffer);
+        JS_FreeCString(ctx, src);
+        return JS_ThrowTypeError(ctx, "encodeInto() destination must be a Uint8Array");
+    }
+    abuf = JS_GetArrayBuffer(ctx, &abuf_size, buffer);
+    if (!abuf) {
+        JS_FreeValue(ctx, buffer);
+        JS_FreeCString(ctx, src);
+        return JS_EXCEPTION;
+    }
+    if (offset > abuf_size || dst_len > abuf_size - offset) {
+        JS_FreeValue(ctx, buffer);
+        JS_FreeCString(ctx, src);
+        return JS_ThrowRangeError(ctx, "destination out of bounds");
+    }
+    dst = abuf + offset;
+    /* copy whole code points until the next one would overrun the buffer;
+       src is well-formed UTF-8 from JS_ToCStringLen, so no JS runs here */
+    while (si < src_len) {
+        const uint8_t *p = (const uint8_t *)src + si;
+        const uint8_t *pnext;
+        int max_len = (src_len - si) > UTF8_CHAR_LEN_MAX ?
+                      UTF8_CHAR_LEN_MAX : (int)(src_len - si);
+        int c = unicode_from_utf8(p, max_len, &pnext);
+        int clen;
+        if (c < 0) {
+            c = 0xFFFD;
+            clen = 1;
+        } else {
+            clen = (int)(pnext - p);
+        }
+        if (di + (size_t)clen > dst_len)
+            break;
+        memcpy(dst + di, p, clen);
+        di += clen;
+        si += clen;
+        written += clen;
+        read += (c >= 0x10000) ? 2 : 1;
+    }
+    JS_FreeValue(ctx, buffer);
+    JS_FreeCString(ctx, src);
+
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res))
+        return JS_EXCEPTION;
+    JS_SetPropertyStr(ctx, res, "read", JS_NewInt64(ctx, read));
+    JS_SetPropertyStr(ctx, res, "written", JS_NewInt64(ctx, written));
+    return res;
+}
+
+static JSValue js_textdecoder_ctor(JSContext *ctx, JSValueConst new_target,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj = JS_UNDEFINED, proto;
+    JSTextDecoder *td;
+    BOOL fatal = FALSE, ignore_bom = FALSE;
+
+    /* coerce all JS args to C locals first */
+    if (argc >= 1 && !JS_IsUndefined(argv[0])) {
+        const char *label = JS_ToCString(ctx, argv[0]);
+        BOOL ok;
+        if (!label)
+            return JS_EXCEPTION;
+        ok = js_textdecoder_label_is_utf8(label);
+        JS_FreeCString(ctx, label);
+        if (!ok)
+            return JS_ThrowRangeError(ctx, "unsupported encoding label");
+    }
+    if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        JSValue v;
+        int b;
+        v = JS_GetPropertyStr(ctx, argv[1], "fatal");
+        if (JS_IsException(v))
+            return JS_EXCEPTION;
+        b = JS_ToBool(ctx, v);
+        JS_FreeValue(ctx, v);
+        if (b < 0)
+            return JS_EXCEPTION;
+        fatal = b;
+        v = JS_GetPropertyStr(ctx, argv[1], "ignoreBOM");
+        if (JS_IsException(v))
+            return JS_EXCEPTION;
+        b = JS_ToBool(ctx, v);
+        JS_FreeValue(ctx, v);
+        if (b < 0)
+            return JS_EXCEPTION;
+        ignore_bom = b;
+    }
+
+    if (JS_IsUndefined(new_target)) {
+        proto = JS_GetClassProto(ctx, js_textdecoder_class_id);
+    } else {
+        proto = JS_GetPropertyStr(ctx, new_target, "prototype");
+        if (JS_IsException(proto))
+            goto fail;
+    }
+    obj = JS_NewObjectProtoClass(ctx, proto, js_textdecoder_class_id);
+    JS_FreeValue(ctx, proto);
+    if (JS_IsException(obj))
+        goto fail;
+    td = js_mallocz(ctx, sizeof(*td));
+    if (!td)
+        goto fail;
+    td->fatal = fatal;
+    td->ignore_bom = ignore_bom;
+    JS_SetOpaque(obj, td);
+    return obj;
+ fail:
+    JS_FreeValue(ctx, obj);
+    return JS_EXCEPTION;
+}
+
+static JSValue js_textdecoder_get_encoding(JSContext *ctx, JSValueConst this_val)
+{
+    if (!JS_GetOpaque2(ctx, this_val, js_textdecoder_class_id))
+        return JS_EXCEPTION;
+    return JS_NewString(ctx, "utf-8");
+}
+
+static JSValue js_textdecoder_get_fatal(JSContext *ctx, JSValueConst this_val)
+{
+    JSTextDecoder *td = JS_GetOpaque2(ctx, this_val, js_textdecoder_class_id);
+    if (!td)
+        return JS_EXCEPTION;
+    return JS_NewBool(ctx, td->fatal);
+}
+
+static JSValue js_textdecoder_get_ignoreBOM(JSContext *ctx, JSValueConst this_val)
+{
+    JSTextDecoder *td = JS_GetOpaque2(ctx, this_val, js_textdecoder_class_id);
+    if (!td)
+        return JS_EXCEPTION;
+    return JS_NewBool(ctx, td->ignore_bom);
+}
+
+/* Streaming is not stateful here: each decode() is independent and an
+   incomplete trailing sequence becomes U+FFFD (or throws when fatal). */
+static JSValue js_textdecoder_decode(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSTextDecoder *td = JS_GetOpaque2(ctx, this_val, js_textdecoder_class_id);
+    BOOL fatal, ignore_bom;
+    const uint8_t *p;
+    uint8_t *buf;
+    size_t len, n;
+    DynBuf dbuf;
+    JSValue ret;
+
+    if (!td)
+        return JS_EXCEPTION;
+    fatal = td->fatal;
+    ignore_bom = td->ignore_bom;
+
+    if (argc < 1 || JS_IsUndefined(argv[0]))
+        return JS_NewStringLen(ctx, "", 0);
+    if (js_textcodec_get_bytes(ctx, argv[0], &buf, &len))
+        return JS_EXCEPTION;
+
+    p = buf;
+    n = len;
+    if (!ignore_bom && n >= 3 && p[0] == 0xEF && p[1] == 0xBB && p[2] == 0xBF) {
+        p += 3;
+        n -= 3;
+    }
+    js_std_dbuf_init(ctx, &dbuf);
+    if (js_utf8_decode_whatwg(ctx, &dbuf, p, n, fatal)) {
+        dbuf_free(&dbuf);
+        js_free(ctx, buf);
+        return JS_EXCEPTION;
+    }
+    ret = JS_NewStringLen(ctx, (const char *)dbuf.buf, dbuf.size);
+    dbuf_free(&dbuf);
+    js_free(ctx, buf);
+    return ret;
+}
+
+static const JSCFunctionListEntry js_textencoder_proto_funcs[] = {
+    JS_CGETSET_DEF("encoding", js_textencoder_get_encoding, NULL),
+    JS_CFUNC_DEF("encode", 1, js_textencoder_encode),
+    JS_CFUNC_DEF("encodeInto", 2, js_textencoder_encodeInto),
+};
+
+static const JSCFunctionListEntry js_textdecoder_proto_funcs[] = {
+    JS_CGETSET_DEF("encoding", js_textdecoder_get_encoding, NULL),
+    JS_CGETSET_DEF("fatal", js_textdecoder_get_fatal, NULL),
+    JS_CGETSET_DEF("ignoreBOM", js_textdecoder_get_ignoreBOM, NULL),
+    JS_CFUNC_DEF("decode", 1, js_textdecoder_decode),
+};
+
+static void js_textcodec_install(JSContext *ctx, JSValueConst global_obj)
+{
+    JSRuntime *rt = JS_GetRuntime(ctx);
+    JSValue proto, ctor;
+
+    JS_NewClassID(&js_textencoder_class_id);
+    JS_NewClass(rt, js_textencoder_class_id, &js_textencoder_class);
+    proto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, proto, js_textencoder_proto_funcs,
+                               countof(js_textencoder_proto_funcs));
+    ctor = JS_NewCFunction2(ctx, js_textencoder_ctor, "TextEncoder", 0,
+                            JS_CFUNC_constructor, 0);
+    JS_SetConstructor(ctx, ctor, proto);
+    JS_SetClassProto(ctx, js_textencoder_class_id, proto);
+    JS_SetPropertyStr(ctx, global_obj, "TextEncoder", ctor);
+
+    JS_NewClassID(&js_textdecoder_class_id);
+    JS_NewClass(rt, js_textdecoder_class_id, &js_textdecoder_class);
+    proto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, proto, js_textdecoder_proto_funcs,
+                               countof(js_textdecoder_proto_funcs));
+    ctor = JS_NewCFunction2(ctx, js_textdecoder_ctor, "TextDecoder", 0,
+                            JS_CFUNC_constructor, 0);
+    JS_SetConstructor(ctx, ctor, proto);
+    JS_SetClassProto(ctx, js_textdecoder_class_id, proto);
+    JS_SetPropertyStr(ctx, global_obj, "TextDecoder", ctor);
+}
+
 void js_std_add_helpers(JSContext *ctx, int argc, char **argv)
 {
     JSValue global_obj, console, args, performance;
@@ -4254,6 +4798,8 @@ void js_std_add_helpers(JSContext *ctx, int argc, char **argv)
                       JS_NewCFunction(ctx, js_print, "print", 1));
     JS_SetPropertyStr(ctx, global_obj, "__loadScript",
                       JS_NewCFunction(ctx, js_loadScript, "__loadScript", 1));
+
+    js_textcodec_install(ctx, global_obj);
 
     JS_FreeValue(ctx, global_obj);
 }
