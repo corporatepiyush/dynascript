@@ -1732,6 +1732,194 @@ static JSValue js_typed_array_copyWithin(JSContext *ctx, JSValueConst this_val,
     return JS_DupValue(ctx, this_val);
 }
 
+/* P1.22/P1.23: block-accelerated TypedArray fill / indexOf / lastIndexOf /
+   includes for 2/4/8-byte elements. arm64 NEON when available; a hoisted-pointer
+   scalar loop otherwise (the naive `p->u.array.u.T_ptr[k]=v` form defeats
+   vectorization because the store may alias the reloaded base pointer). Semantics
+   are identical to the scalar path: the NEON compare is only a coarse block filter;
+   a scalar re-scan of the flagged block selects the exact first/last index, so the
+   authoritative predicate is always the C `==` (correct NaN / -0 / +0 behavior). */
+#if defined(__aarch64__) || defined(__ARM_NEON)
+#include <arm_neon.h>
+#define TA_NEON 1
+#endif
+
+/* Scan pv[k], pv[k+inc], ... up to (exclusive) stop for the first == v.
+   inc is +1 (indexOf/includes) or -1 (lastIndexOf). Returns index or -1. */
+static int ta_scan_u16(const uint16_t *pv, int k, int stop, int inc, uint16_t v)
+{
+#ifdef TA_NEON
+    uint16x8_t vv = vdupq_n_u16(v);
+    if (inc > 0) {
+        for (; k + 8 <= stop; k += 8)
+            if (vmaxvq_u16(vceqq_u16(vld1q_u16(pv + k), vv)))
+                for (int j = k; j < k + 8; j++) if (pv[j] == v) return j;
+    } else {
+        for (; k - 8 >= stop; k -= 8)
+            if (vmaxvq_u16(vceqq_u16(vld1q_u16(pv + k - 7), vv)))
+                for (int j = k; j > k - 8; j--) if (pv[j] == v) return j;
+    }
+#endif
+    for (; k != stop; k += inc) if (pv[k] == v) return k;
+    return -1;
+}
+
+static int ta_scan_u32(const uint32_t *pv, int k, int stop, int inc, uint32_t v)
+{
+#ifdef TA_NEON
+    uint32x4_t vv = vdupq_n_u32(v);
+    if (inc > 0) {
+        for (; k + 4 <= stop; k += 4)
+            if (vmaxvq_u32(vceqq_u32(vld1q_u32(pv + k), vv)))
+                for (int j = k; j < k + 4; j++) if (pv[j] == v) return j;
+    } else {
+        for (; k - 4 >= stop; k -= 4)
+            if (vmaxvq_u32(vceqq_u32(vld1q_u32(pv + k - 3), vv)))
+                for (int j = k; j > k - 4; j--) if (pv[j] == v) return j;
+    }
+#endif
+    for (; k != stop; k += inc) if (pv[k] == v) return k;
+    return -1;
+}
+
+static int ta_scan_u64(const uint64_t *pv, int k, int stop, int inc, uint64_t v)
+{
+#ifdef TA_NEON
+    uint64x2_t vv = vdupq_n_u64(v);
+    if (inc > 0) {
+        for (; k + 2 <= stop; k += 2)
+            if (vmaxvq_u32(vreinterpretq_u32_u64(vceqq_u64(vld1q_u64(pv + k), vv)))) {
+                if (pv[k] == v) return k;
+                if (pv[k + 1] == v) return k + 1;
+            }
+    } else {
+        for (; k - 2 >= stop; k -= 2)
+            if (vmaxvq_u32(vreinterpretq_u32_u64(vceqq_u64(vld1q_u64(pv + k - 1), vv)))) {
+                if (pv[k] == v) return k;
+                if (pv[k - 1] == v) return k - 1;
+            }
+    }
+#endif
+    for (; k != stop; k += inc) if (pv[k] == v) return k;
+    return -1;
+}
+
+/* Float value scan (v is finite / non-NaN; FP compare gives IEEE -0 == +0). */
+static int ta_scan_f32(const float *pv, int k, int stop, int inc, float v)
+{
+#ifdef TA_NEON
+    float32x4_t vv = vdupq_n_f32(v);
+    if (inc > 0) {
+        for (; k + 4 <= stop; k += 4)
+            if (vmaxvq_u32(vceqq_f32(vld1q_f32(pv + k), vv)))
+                for (int j = k; j < k + 4; j++) if (pv[j] == v) return j;
+    } else {
+        for (; k - 4 >= stop; k -= 4)
+            if (vmaxvq_u32(vceqq_f32(vld1q_f32(pv + k - 3), vv)))
+                for (int j = k; j > k - 4; j--) if (pv[j] == v) return j;
+    }
+#endif
+    for (; k != stop; k += inc) if (pv[k] == v) return k;
+    return -1;
+}
+
+static int ta_scan_f64(const double *pv, int k, int stop, int inc, double v)
+{
+#ifdef TA_NEON
+    float64x2_t vv = vdupq_n_f64(v);
+    if (inc > 0) {
+        for (; k + 2 <= stop; k += 2)
+            if (vmaxvq_u32(vreinterpretq_u32_u64(vceqq_f64(vld1q_f64(pv + k), vv)))) {
+                if (pv[k] == v) return k;
+                if (pv[k + 1] == v) return k + 1;
+            }
+    } else {
+        for (; k - 2 >= stop; k -= 2)
+            if (vmaxvq_u32(vreinterpretq_u32_u64(vceqq_f64(vld1q_f64(pv + k - 1), vv)))) {
+                if (pv[k] == v) return k;
+                if (pv[k - 1] == v) return k - 1;
+            }
+    }
+#endif
+    for (; k != stop; k += inc) if (pv[k] == v) return k;
+    return -1;
+}
+
+/* NaN scan for includes (SameValueZero: NaN matches NaN). Forward only:
+   includes always scans forward. vceqq(x,x) is 0 exactly on NaN lanes. */
+static int ta_scan_f32_nan(const float *pv, int k, int stop)
+{
+#ifdef TA_NEON
+    for (; k + 4 <= stop; k += 4) {
+        float32x4_t x = vld1q_f32(pv + k);
+        if (vminvq_u32(vceqq_f32(x, x)) == 0)
+            for (int j = k; j < k + 4; j++) if (isnan(pv[j])) return j;
+    }
+#endif
+    for (; k < stop; k++) if (isnan(pv[k])) return k;
+    return -1;
+}
+
+static int ta_scan_f64_nan(const double *pv, int k, int stop)
+{
+#ifdef TA_NEON
+    for (; k + 2 <= stop; k += 2) {
+        float64x2_t x = vld1q_f64(pv + k);
+        if (vminvq_u32(vreinterpretq_u32_u64(vceqq_f64(x, x))) == 0) {
+            if (isnan(pv[k])) return k;
+            if (isnan(pv[k + 1])) return k + 1;
+        }
+    }
+#endif
+    for (; k < stop; k++) if (isnan(pv[k])) return k;
+    return -1;
+}
+
+/* Block fill of [k, final) elements of 2^shift bytes, value in the low bytes of
+   v64. Pointer is a local (not a reloaded struct field) so the fallback loop
+   vectorizes; darwin uses libSystem's tuned memset_pattern. */
+static void ta_block_fill(void *base, int k, int final, int shift, uint64_t v64)
+{
+    int n = final - k;
+    if (n <= 0)
+        return;
+    switch (shift) {
+    case 0:
+        memset((uint8_t *)base + k, (uint8_t)v64, (size_t)n);
+        break;
+    case 1: {
+        uint16_t *p = (uint16_t *)base + k, v = (uint16_t)v64;
+#if defined(__APPLE__)
+        uint32_t pat = (uint32_t)v | ((uint32_t)v << 16);
+        memset_pattern4(p, &pat, (size_t)n * 2);
+#else
+        for (int i = 0; i < n; i++) p[i] = v;
+#endif
+        break;
+    }
+    case 2: {
+        uint32_t *p = (uint32_t *)base + k, v = (uint32_t)v64;
+#if defined(__APPLE__)
+        memset_pattern4(p, &v, (size_t)n * 4);
+#else
+        for (int i = 0; i < n; i++) p[i] = v;
+#endif
+        break;
+    }
+    case 3: {
+        uint64_t *p = (uint64_t *)base + k;
+#if defined(__APPLE__)
+        memset_pattern8(p, &v64, (size_t)n * 8);
+#else
+        for (int i = 0; i < n; i++) p[i] = v64;
+#endif
+        break;
+    }
+    default:
+        abort();
+    }
+}
+
 static JSValue js_typed_array_fill(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv)
 {
@@ -1797,30 +1985,7 @@ static JSValue js_typed_array_fill(JSContext *ctx, JSValueConst this_val,
     // RAB may have been resized by evil .valueOf method
     final = min_int(final, p->u.array.count);
     shift = typed_array_size_log2(p->class_id);
-    switch(shift) {
-    case 0:
-        if (k < final) {
-            memset(p->u.array.u.uint8_ptr + k, v64, final - k);
-        }
-        break;
-    case 1:
-        for(; k < final; k++) {
-            p->u.array.u.uint16_ptr[k] = v64;
-        }
-        break;
-    case 2:
-        for(; k < final; k++) {
-            p->u.array.u.uint32_ptr[k] = v64;
-        }
-        break;
-    case 3:
-        for(; k < final; k++) {
-            p->u.array.u.uint64_ptr[k] = v64;
-        }
-        break;
-    default:
-        abort();
-    }
+    ta_block_fill(p->u.array.u.uint8_ptr, k, final, shift, v64);
     return JS_DupValue(ctx, this_val);
 }
 
@@ -2032,17 +2197,8 @@ static JSValue js_typed_array_indexOf(JSContext *ctx, JSValueConst this_val,
         break;
     case JS_CLASS_UINT16_ARRAY:
         if (is_int && (uint16_t)v64 == v64) {
-            const uint16_t *pv;
-            uint16_t v;
         scan16:
-            pv = p->u.array.u.uint16_ptr;
-            v = v64;
-            for (; k != stop; k += inc) {
-                if (pv[k] == v) {
-                    res = k;
-                    break;
-                }
-            }
+            res = ta_scan_u16(p->u.array.u.uint16_ptr, k, stop, inc, (uint16_t)v64);
         }
         break;
     case JS_CLASS_INT32_ARRAY:
@@ -2051,17 +2207,8 @@ static JSValue js_typed_array_indexOf(JSContext *ctx, JSValueConst this_val,
         break;
     case JS_CLASS_UINT32_ARRAY:
         if (is_int && (uint32_t)v64 == v64) {
-            const uint32_t *pv;
-            uint32_t v;
         scan32:
-            pv = p->u.array.u.uint32_ptr;
-            v = v64;
-            for (; k != stop; k += inc) {
-                if (pv[k] == v) {
-                    res = k;
-                    break;
-                }
-            }
+            res = ta_scan_u32(p->u.array.u.uint32_ptr, k, stop, inc, (uint32_t)v64);
         }
         break;
     case JS_CLASS_FLOAT16_ARRAY:
@@ -2088,61 +2235,32 @@ static JSValue js_typed_array_indexOf(JSContext *ctx, JSValueConst this_val,
                 }
             }
         } else if (hf = tofp16(d), d == fromfp16(hf)) {
-            const uint16_t *pv = p->u.array.u.fp16_ptr;
-            for (; k != stop; k += inc) {
-                if (pv[k] == hf) {
-                    res = k;
-                    break;
-                }
-            }
+            /* exact nonzero non-NaN fp16 bit pattern: plain uint16 compare */
+            res = ta_scan_u16(p->u.array.u.fp16_ptr, k, stop, inc, hf);
         }
         break;
     case JS_CLASS_FLOAT32_ARRAY:
         if (is_bigint)
             break;
         if (isnan(d)) {
-            const float *pv = p->u.array.u.float_ptr;
-            /* special case: indexOf returns -1, includes finds NaN */
+            /* special case: indexOf returns -1, includes finds NaN (forward) */
             if (special != special_includes)
                 goto done;
-            for (; k != stop; k += inc) {
-                if (isnan(pv[k])) {
-                    res = k;
-                    break;
-                }
-            }
+            res = ta_scan_f32_nan(p->u.array.u.float_ptr, k, stop);
         } else if ((f = (float)d) == d) {
-            const float *pv = p->u.array.u.float_ptr;
-            for (; k != stop; k += inc) {
-                if (pv[k] == f) {
-                    res = k;
-                    break;
-                }
-            }
+            res = ta_scan_f32(p->u.array.u.float_ptr, k, stop, inc, f);
         }
         break;
     case JS_CLASS_FLOAT64_ARRAY:
         if (is_bigint)
             break;
         if (isnan(d)) {
-            const double *pv = p->u.array.u.double_ptr;
-            /* special case: indexOf returns -1, includes finds NaN */
+            /* special case: indexOf returns -1, includes finds NaN (forward) */
             if (special != special_includes)
                 goto done;
-            for (; k != stop; k += inc) {
-                if (isnan(pv[k])) {
-                    res = k;
-                    break;
-                }
-            }
+            res = ta_scan_f64_nan(p->u.array.u.double_ptr, k, stop);
         } else {
-            const double *pv = p->u.array.u.double_ptr;
-            for (; k != stop; k += inc) {
-                if (pv[k] == d) {
-                    res = k;
-                    break;
-                }
-            }
+            res = ta_scan_f64(p->u.array.u.double_ptr, k, stop, inc, d);
         }
         break;
     case JS_CLASS_BIG_INT64_ARRAY:
@@ -2152,17 +2270,8 @@ static JSValue js_typed_array_indexOf(JSContext *ctx, JSValueConst this_val,
         break;
     case JS_CLASS_BIG_UINT64_ARRAY:
         if (is_bigint) {
-            const uint64_t *pv;
-            uint64_t v;
         scan64:
-            pv = p->u.array.u.uint64_ptr;
-            v = v64;
-            for (; k != stop; k += inc) {
-                if (pv[k] == v) {
-                    res = k;
-                    break;
-                }
-            }
+            res = ta_scan_u64(p->u.array.u.uint64_ptr, k, stop, inc, (uint64_t)v64);
         }
         break;
     }
