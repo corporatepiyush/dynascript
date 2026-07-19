@@ -1522,15 +1522,27 @@ double js_atod(const char *str, const char **pnext, int radix, int flags,
 #ifndef JS_ATOD_NO_FASTPATH
         /* Accumulate the significant digits into a u64 for the exact fast
            path. Cap at 16 digits: beyond that the value cannot stay below
-           2^53, and we avoid any u64 overflow. Runs for every significant
-           digit so fast_m holds them all (no truncation) when fast_ok. */
+           2^53, and we avoid any u64 overflow. While the fast path is still
+           viable the mantissa bignum is left unbuilt -- it is pure waste when
+           the fast path fires. It is instead materialised from fast_m in the
+           slow path below (<= 16 digits), or, once a 17th digit kills the fast
+           path, seeded here from the 16 digits already in fast_m so the loop
+           carries on building it inline with no re-scan. */
         if (fast_ok) {
-            if (fast_ndig < 16) {
+            if (likely(fast_ndig < 16)) {
                 fast_m = fast_m * 10 + (uint64_t)c;
                 fast_ndig++;
-            } else {
-                fast_ok = FALSE;
+                if (digit_count < max_digits)
+                    digit_count++;
+                continue;
             }
+            fast_ok = FALSE;
+            /* fast_m now holds exactly 16 base-10 digits (>= 10^15, hence two
+               limbs); store it as the running bignum, then fall through to
+               append this 17th digit inline. cur_limb/limb_digit_count are 0. */
+            tmp0->tab[0] = (limb_t)fast_m;
+            tmp0->tab[1] = (limb_t)(fast_m >> 32);
+            tmp0->len = 2;
         }
 #endif
         if (digit_count < max_digits) {
@@ -1667,6 +1679,17 @@ double js_atod(const char *str, const char **pnext, int radix, int flags,
                 goto overflow;
             else if (expn1 <= min_exponent[radix - 2])
                 goto underflow;
+#ifndef JS_ATOD_NO_FASTPATH
+            /* <= 16 base-10 digits but outside the fast-path domain (fast_m
+               >= 2^53 or |expn| > 22): the whole mantissa integer is fast_m,
+               so materialise the bignum from it (it was never built in the
+               loop) rather than re-scanning the digits. */
+            if (fast_ok) {
+                tmp0->tab[0] = (limb_t)fast_m;
+                tmp0->tab[1] = (limb_t)(fast_m >> 32);
+                tmp0->len = (fast_m >> 32) ? 2 : 1;
+            }
+#endif
             m = mul_pow_round_to_d(&e, tmp0, radix1, radix_shift, expn, JS_RNDN);
         }
         if (m == 0) {
