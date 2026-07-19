@@ -1327,7 +1327,8 @@ JSContext *JS_NewContext(JSRuntime *rt)
         JS_AddIntrinsicMapSet(ctx) ||
         JS_AddIntrinsicTypedArrays(ctx) ||
         JS_AddIntrinsicPromise(ctx) ||
-        JS_AddIntrinsicWeakRef(ctx)) {
+        JS_AddIntrinsicWeakRef(ctx) ||
+        JS_AddIntrinsicDisposableStack(ctx)) {
         JS_FreeContext(ctx);
         return NULL;
     }

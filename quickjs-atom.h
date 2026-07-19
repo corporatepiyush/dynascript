@@ -234,6 +234,8 @@ DEF(DataView, "DataView")
 DEF(BigInt, "BigInt")
 DEF(WeakRef, "WeakRef")
 DEF(FinalizationRegistry, "FinalizationRegistry")
+DEF(DisposableStack, "DisposableStack")
+DEF(AsyncDisposableStack, "AsyncDisposableStack")
 DEF(Map, "Map")
 DEF(Set, "Set") /* Map + 1 */
 DEF(WeakMap, "WeakMap") /* Map + 2 */
