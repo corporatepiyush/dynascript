@@ -12476,6 +12476,11 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
     cc.bc_buf = bc_buf = s->byte_code.buf;
     cc.bc_len = bc_len = s->byte_code.size;
     js_dbuf_bytecode_init(ctx, &bc_out);
+    /* The rewritten bytecode is ~the same size as the input, so reserve it up
+       front: without this each pass grows bc_out from empty via ~10 realloc+copy
+       steps per function (~13k functions on a 100k-line program). Byte-identical
+       output; just fewer allocations. */
+    dbuf_claim(&bc_out, bc_len);
 
     /* first pass for runtime checks (must be done before the
        variables are created) */
@@ -13093,6 +13098,11 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
     cc.bc_buf = bc_buf = s->byte_code.buf;
     cc.bc_len = bc_len = s->byte_code.size;
     js_dbuf_bytecode_init(ctx, &bc_out);
+    /* The rewritten bytecode is ~the same size as the input, so reserve it up
+       front: without this each pass grows bc_out from empty via ~10 realloc+copy
+       steps per function (~13k functions on a 100k-line program). Byte-identical
+       output; just fewer allocations. */
+    dbuf_claim(&bc_out, bc_len);
 
 #if SHORT_OPCODES
     if (s->jump_size) {

@@ -500,6 +500,11 @@ static no_inline int js_realloc_array(JSContext *ctx, void **parray,
     /* compute growth in 64-bit and reject int/byte overflow */
     grow = (int64_t)*psize * 3 / 2;
     want = req_size > grow ? req_size : grow;
+    /* first-touch reserve: growing from empty otherwise reallocs on nearly
+       every add (1,2,3,4,6,9,…). Reserve a small floor so tiny arrays (the
+       common per-function parser scaffolding) allocate once. */
+    if (*psize == 0 && want < 8)
+        want = 8;
     new_bytes = (size_t)want * (size_t)elem_size;
     if (want > INT32_MAX ||
         (elem_size != 0 && new_bytes / (size_t)elem_size != (size_t)want)) {
