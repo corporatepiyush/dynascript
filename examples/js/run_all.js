@@ -40,9 +40,16 @@ function scriptDir() {
   return slash < 0 ? "." : self.slice(0, slash);
 }
 
-/** Which qjs to spawn: explicit arg, then $QJS, then "qjs" on PATH. */
+/** Which qjs to spawn: explicit arg, then $QJS, then the freshly-built
+ *  ./qjs at the repo root (some examples use dynascript-only features such
+ *  as Array.fromAsync), then "qjs" on PATH. */
 function resolveQjs() {
-  return scriptArgs[1] || std.getenv("QJS") || "qjs";
+  if (scriptArgs[1]) return scriptArgs[1];
+  const env = std.getenv("QJS");
+  if (env) return env;
+  const [f, err] = [std.open("./qjs", "r"), 0];
+  if (f) { f.close(); return "./qjs"; }
+  return "qjs";
 }
 
 /** print + flush, so our lines interleave correctly with child stdio. */
