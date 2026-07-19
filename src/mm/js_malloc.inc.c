@@ -501,7 +501,7 @@ static no_inline int js_realloc_array(JSContext *ctx, void **parray,
     grow = (int64_t)*psize * 3 / 2;
     want = req_size > grow ? req_size : grow;
     new_bytes = (size_t)want * (size_t)elem_size;
-    if (want > INT_MAX ||
+    if (want > INT32_MAX ||
         (elem_size != 0 && new_bytes / (size_t)elem_size != (size_t)want)) {
         JS_ThrowOutOfMemory(ctx);
         return -1;
