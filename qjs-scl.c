@@ -145,6 +145,8 @@ int js_scl_init_all(JSContext *ctx)
 {
     if (js_scl_init_structures(ctx))
         return -1;
+    if (js_scl_init_structures_ext(ctx))
+        return -1;
 #ifdef CONFIG_SCL_MODULE_HTTP
     if (js_scl_init_http(ctx))
         return -1;

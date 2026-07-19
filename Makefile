@@ -286,6 +286,9 @@ QJS_OBJS=$(OBJDIR)/qjs.o $(OBJDIR)/repl.o $(QJS_LIB_OBJS)
 ifdef CONFIG_SCL_MODULES
 # scl:* native module binding objects (each family's object added as it lands)
 SCL_MODULE_OBJS=$(OBJDIR)/qjs-scl.o $(OBJDIR)/qjs-scl-structures.o
+ifneq ($(wildcard qjs-scl-structures-ext.c),)
+SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-structures-ext.o
+endif
 ifneq ($(or $(wildcard qjs-scl-http.c),$(CONFIG_SCL_MODULE_HTTP)),)
 SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-http.o
 endif

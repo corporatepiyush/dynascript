@@ -61,6 +61,7 @@ void js_scl_finalizer(JSRuntime *rt, JSValue val);
 
 /* Per-family module initializers (each defined in its own translation unit). */
 int js_scl_init_structures(JSContext *ctx);
+int js_scl_init_structures_ext(JSContext *ctx);
 #ifdef CONFIG_SCL_MODULE_HTTP
 int js_scl_init_http(JSContext *ctx);
 #endif
