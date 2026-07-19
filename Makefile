@@ -71,6 +71,9 @@ endif
 ifdef CONFIG_UBSAN
 OBJDIR:=$(OBJDIR)/ubsan
 endif
+ifdef CONFIG_TSAN
+OBJDIR:=$(OBJDIR)/tsan
+endif
 
 ifdef CONFIG_DARWIN
 # use clang instead of gcc

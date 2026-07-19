@@ -164,7 +164,12 @@ typedef struct JSThreadState {
 } JSThreadState;
 
 static uint64_t os_pending_signals;
-static int (*os_poll_func)(JSContext *ctx);
+/* process-global poll hook: written by std/os init on every thread that
+   creates a runtime (main + workers) and read by each thread's event loop.
+   All writes store the same value (js_os_poll) and readers only need to see
+   NULL or js_os_poll, so relaxed atomics are sufficient and race-free. */
+typedef int (*JSOSPollFunc)(JSContext *ctx);
+static _Atomic(JSOSPollFunc) os_poll_func;
 
 static void js_std_dbuf_init(JSContext *ctx, DynBuf *s)
 {
@@ -4037,7 +4042,7 @@ static const JSCFunctionListEntry js_os_funcs[] = {
 
 static int js_os_init(JSContext *ctx, JSModuleDef *m)
 {
-    os_poll_func = js_os_poll;
+    atomic_store_explicit(&os_poll_func, js_os_poll, memory_order_relaxed);
 
 #ifdef USE_WORKER
     {
@@ -4191,7 +4196,7 @@ void js_std_add_helpers(JSContext *ctx, int argc, char **argv)
        js_std_init_handlers() to have been called on the runtime. The
        event loop poll hook is normally armed by the 'os' module init;
        arm it here too so global timers fire without importing 'os'. */
-    os_poll_func = js_os_poll;
+    atomic_store_explicit(&os_poll_func, js_os_poll, memory_order_relaxed);
     JS_SetPropertyStr(ctx, global_obj, "setTimeout",
                       JS_NewCFunctionMagic(ctx, js_os_setTimeout, "setTimeout",
                                            2, JS_CFUNC_generic_magic, 0));
@@ -4402,8 +4407,10 @@ void js_std_loop(JSContext *ctx)
         }
 
         js_std_promise_rejection_check(ctx);
-        
-        if (!os_poll_func || os_poll_func(ctx))
+
+        JSOSPollFunc poll = atomic_load_explicit(&os_poll_func,
+                                                 memory_order_relaxed);
+        if (!poll || poll(ctx))
             break;
     }
 }
@@ -4433,10 +4440,13 @@ JSValue js_std_await(JSContext *ctx, JSValue obj)
                 js_std_dump_error(ctx);
             }
             if (err == 0) {
+                JSOSPollFunc poll;
                 js_std_promise_rejection_check(ctx);
 
-                if (os_poll_func)
-                    os_poll_func(ctx);
+                poll = atomic_load_explicit(&os_poll_func,
+                                            memory_order_relaxed);
+                if (poll)
+                    poll(ctx);
             }
         } else {
             /* not a promise */
