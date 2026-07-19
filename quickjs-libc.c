@@ -163,7 +163,10 @@ typedef struct JSThreadState {
 #endif    
 } JSThreadState;
 
-static uint64_t os_pending_signals;
+/* set from an async signal handler, read/cleared on the main thread: must be
+   atomic to avoid a torn access / data race. It only gates a flag check (no
+   data is published through it), so relaxed ordering is sufficient. */
+static _Atomic uint64_t os_pending_signals;
 /* process-global poll hook: written by std/os init on every thread that
    creates a runtime (main + workers) and read by each thread's event loop.
    All writes store the same value (js_os_poll) and readers only need to see
@@ -866,7 +869,7 @@ static JSValue js_std_gc(JSContext *ctx, JSValueConst this_val,
 
 static int interrupt_handler(JSRuntime *rt, void *opaque)
 {
-    return (os_pending_signals >> SIGINT) & 1;
+    return (atomic_load_explicit(&os_pending_signals, memory_order_relaxed) >> SIGINT) & 1;
 }
 
 static int get_bool_option(JSContext *ctx, BOOL *pbool,
@@ -924,7 +927,8 @@ static JSValue js_evalScript(JSContext *ctx, JSValueConst this_val,
     if (!ts->recv_pipe && --ts->eval_script_recurse == 0) {
         /* remove the interrupt handler */
         JS_SetInterruptHandler(JS_GetRuntime(ctx), NULL, NULL);
-        os_pending_signals &= ~((uint64_t)1 << SIGINT);
+        atomic_fetch_and_explicit(&os_pending_signals,
+                                  ~((uint64_t)1 << SIGINT), memory_order_relaxed);
         /* convert the uncatchable "interrupted" error into a normal error
            so that it can be caught by the REPL */
         if (JS_IsException(ret))
@@ -2081,7 +2085,8 @@ static void free_sh(JSRuntime *rt, JSOSSignalHandler *sh)
 
 static void os_signal_handler(int sig_num)
 {
-    os_pending_signals |= ((uint64_t)1 << sig_num);
+    atomic_fetch_or_explicit(&os_pending_signals,
+                             (uint64_t)1 << sig_num, memory_order_relaxed);
 }
 
 #if defined(_WIN32)
@@ -2179,6 +2184,24 @@ static void free_timer(JSRuntime *rt, JSOSTimer *th)
     js_free_rt(rt, th);
 }
 
+/* keep ts->os_timers sorted by ascending 'timeout' so the earliest timer is
+   always at the head: firing the next due timer and computing the poll delay
+   become O(1) instead of an O(n) rescan (and firing n due timers O(n) instead
+   of O(n^2)). Ties keep insertion order (stable) so same-deadline timers fire
+   FIFO, matching the HTML timer ordering. */
+static void insert_timer_sorted(JSThreadState *ts, JSOSTimer *th)
+{
+    struct list_head *el;
+    list_for_each(el, &ts->os_timers) {
+        JSOSTimer *e = list_entry(el, JSOSTimer, link);
+        if (e->timeout > th->timeout)
+            break;
+    }
+    /* list_add_tail(x, el) inserts x right before el; if the loop ran to the
+       end 'el' is the list head, so this appends at the tail */
+    list_add_tail(&th->link, el);
+}
+
 static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv, int magic)
 {
@@ -2211,7 +2234,7 @@ static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
     th->delay = delay;
     th->timeout = get_time_ms() + delay;
     th->func = JS_DupValue(ctx, func);
-    list_add_tail(&th->link, &ts->os_timers);
+    insert_timer_sorted(ts, th);
     return JS_NewInt32(ctx, th->timer_id);
 }
 
@@ -2271,7 +2294,7 @@ static JSValue js_os_sleepAsync(JSContext *ctx, JSValueConst this_val,
     th->timer_id = -1;
     th->timeout = get_time_ms() + delay;
     th->func = JS_DupValue(ctx, resolving_funcs[0]);
-    list_add_tail(&th->link, &ts->os_timers);
+    insert_timer_sorted(ts, th);
     JS_FreeValue(ctx, resolving_funcs[0]);
     JS_FreeValue(ctx, resolving_funcs[1]);
     return promise;
@@ -2337,7 +2360,7 @@ static void js_waker_signal(JSWaker *w)
         ret = write(w->write_fd, "", 1);
         if (ret == 1)
             break;
-        if (ret < 0 && (errno != EAGAIN || errno != EINTR))
+        if (ret < 0 && errno != EAGAIN && errno != EINTR)
             break;
     }
 }
@@ -2452,31 +2475,32 @@ static int js_os_poll(JSContext *ctx)
     }
     
     if (!list_empty(&ts->os_timers)) {
+        /* timers are kept sorted by 'timeout', so the head is the earliest:
+           check/fire it in O(1). Fire at most one timer per poll so the caller
+           runs a microtask checkpoint between timer callbacks (task ordering). */
+        JSOSTimer *th = list_entry(ts->os_timers.next, JSOSTimer, link);
         cur_time = get_time_ms();
-        min_delay = 10000;
-        list_for_each(el, &ts->os_timers) {
-            JSOSTimer *th = list_entry(el, JSOSTimer, link);
-            delay = th->timeout - cur_time;
-            if (delay <= 0) {
-                JSValue func;
-                /* the timer expired */
-                if (th->repeat) {
-                    /* re-arm before the call: the handler may clear
-                       this timer, so 'th' cannot be used afterwards */
-                    th->timeout = cur_time + th->delay;
-                    call_handler(ctx, th->func);
-                    return 0;
-                }
-                func = th->func;
-                th->func = JS_UNDEFINED;
-                free_timer(rt, th);
-                call_handler(ctx, func);
-                JS_FreeValue(ctx, func);
+        delay = th->timeout - cur_time;
+        if (delay <= 0) {
+            JSValue func;
+            /* the timer expired */
+            if (th->repeat) {
+                /* re-arm and re-sort before the call: the handler may clear
+                   this timer, so 'th' cannot be used afterwards */
+                th->timeout = cur_time + th->delay;
+                list_del(&th->link);
+                insert_timer_sorted(ts, th);
+                call_handler(ctx, th->func);
                 return 0;
-            } else if (delay < min_delay) {
-                min_delay = delay;
             }
+            func = th->func;
+            th->func = JS_UNDEFINED;
+            free_timer(rt, th);
+            call_handler(ctx, func);
+            JS_FreeValue(ctx, func);
+            return 0;
         }
+        min_delay = delay < 10000 ? delay : 10000;
     } else {
         min_delay = -1;
     }
@@ -2577,15 +2601,16 @@ static int js_os_poll(JSContext *ctx)
 
     /* only check signals in the main thread */
     if (!ts->recv_pipe &&
-        unlikely(os_pending_signals != 0)) {
+        unlikely(atomic_load_explicit(&os_pending_signals, memory_order_relaxed) != 0)) {
         JSOSSignalHandler *sh;
         uint64_t mask;
 
         list_for_each(el, &ts->os_signal_handlers) {
             sh = list_entry(el, JSOSSignalHandler, link);
             mask = (uint64_t)1 << sh->sig_num;
-            if (os_pending_signals & mask) {
-                os_pending_signals &= ~mask;
+            if (atomic_load_explicit(&os_pending_signals, memory_order_relaxed) & mask) {
+                atomic_fetch_and_explicit(&os_pending_signals, ~mask,
+                                          memory_order_relaxed);
                 call_handler(ctx, sh->func);
                 return 0;
             }
@@ -2597,31 +2622,32 @@ static int js_os_poll(JSContext *ctx)
         return -1; /* no more events */
 
     if (!list_empty(&ts->os_timers)) {
+        /* timers are kept sorted by 'timeout', so the head is the earliest:
+           check/fire it in O(1). Fire at most one timer per poll so the caller
+           runs a microtask checkpoint between timer callbacks (task ordering). */
+        JSOSTimer *th = list_entry(ts->os_timers.next, JSOSTimer, link);
         cur_time = get_time_ms();
-        min_delay = 10000;
-        list_for_each(el, &ts->os_timers) {
-            JSOSTimer *th = list_entry(el, JSOSTimer, link);
-            delay = th->timeout - cur_time;
-            if (delay <= 0) {
-                JSValue func;
-                /* the timer expired */
-                if (th->repeat) {
-                    /* re-arm before the call: the handler may clear
-                       this timer, so 'th' cannot be used afterwards */
-                    th->timeout = cur_time + th->delay;
-                    call_handler(ctx, th->func);
-                    return 0;
-                }
-                func = th->func;
-                th->func = JS_UNDEFINED;
-                free_timer(rt, th);
-                call_handler(ctx, func);
-                JS_FreeValue(ctx, func);
+        delay = th->timeout - cur_time;
+        if (delay <= 0) {
+            JSValue func;
+            /* the timer expired */
+            if (th->repeat) {
+                /* re-arm and re-sort before the call: the handler may clear
+                   this timer, so 'th' cannot be used afterwards */
+                th->timeout = cur_time + th->delay;
+                list_del(&th->link);
+                insert_timer_sorted(ts, th);
+                call_handler(ctx, th->func);
                 return 0;
-            } else if (delay < min_delay) {
-                min_delay = delay;
             }
+            func = th->func;
+            th->func = JS_UNDEFINED;
+            free_timer(rt, th);
+            call_handler(ctx, func);
+            JS_FreeValue(ctx, func);
+            return 0;
         }
+        min_delay = delay < 10000 ? delay : 10000;
     } else {
         min_delay = -1; /* infinite */
     }
