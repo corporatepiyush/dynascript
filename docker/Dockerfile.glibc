@@ -1,0 +1,20 @@
+# Build + test dynascript against glibc with clang/LLVM.
+# The Makefile only auto-selects clang on Darwin (keys off CONFIG_DARWIN), so
+# on Linux we must pass CONFIG_CLANG=y to use clang instead of the gcc default.
+FROM debian:trixie-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      clang lld make libc6-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+# clean any host build artifacts that slipped past .dockerignore, then build
+# and run the in-tree test suite (make test only needs qjs + tests/*.js).
+RUN make clean || true
+RUN make CONFIG_CLANG=y -j"$(nproc)"
+RUN make CONFIG_CLANG=y test
+
+CMD ["./qjs", "-e", "print('dynascript on glibc (' + (typeof Array.fromAsync) + ' fromAsync) OK')"]

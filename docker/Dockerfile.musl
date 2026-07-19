@@ -1,0 +1,19 @@
+# Build + test dynascript against musl libc with clang/LLVM.
+# Alpine's clang defaults to the gcc runtime, so we install compiler-rt + lld
+# and link with them. CONFIG_CLANG=y forces clang (the Makefile defaults to gcc
+# on Linux). The default build is self-contained (CONFIG_SCL_ALLOC is opt-in),
+# so no secure-c-libs dependency is needed here.
+FROM alpine:3.20
+
+RUN apk add --no-cache clang lld make musl-dev compiler-rt
+
+WORKDIR /src
+COPY . .
+
+RUN make clean || true
+RUN make CONFIG_CLANG=y \
+      LDFLAGS="-g -fuse-ld=lld --rtlib=compiler-rt" -j"$(nproc)"
+RUN make CONFIG_CLANG=y \
+      LDFLAGS="-g -fuse-ld=lld --rtlib=compiler-rt" test
+
+CMD ["./qjs", "-e", "print('dynascript on musl (' + (typeof Array.fromAsync) + ' fromAsync) OK')"]

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Build dynascript and run its in-tree test suite under both libc
+# implementations (glibc via Debian, musl via Alpine), each with clang/LLVM.
+# `make test` runs inside each image build, so a failing suite fails the build.
+# Exits non-zero if either libc fails.
+set -u
+
+cd "$(dirname "$0")/.."   # repo root = docker build context
+
+run_one() {
+    local name=$1 dockerfile=$2
+    echo "=============================================================="
+    echo ">> building + testing dynascript on ${name}"
+    echo "=============================================================="
+    if docker build -f "${dockerfile}" -t "dynascript:${name}" . ; then
+        echo ">> ${name}: PASS"
+        return 0
+    else
+        echo ">> ${name}: FAIL"
+        return 1
+    fi
+}
+
+rc=0
+run_one glibc docker/Dockerfile.glibc || rc=1
+run_one musl  docker/Dockerfile.musl  || rc=1
+
+echo "=============================================================="
+if [ "$rc" -eq 0 ]; then
+    echo "RESULT: both glibc and musl PASS"
+else
+    echo "RESULT: at least one libc FAILED"
+fi
+echo "=============================================================="
+exit "$rc"
