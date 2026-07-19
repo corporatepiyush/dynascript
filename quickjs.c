@@ -1909,11 +1909,20 @@ static no_inline int js_realloc_array(JSContext *ctx, void **parray,
                                       int elem_size, int *psize, int req_size)
 {
     int new_size;
-    size_t slack;
+    int64_t grow, want;
+    size_t slack, new_bytes;
     void *new_array;
-    /* XXX: potential arithmetic overflow */
-    new_size = max_int(req_size, *psize * 3 / 2);
-    new_array = js_realloc2(ctx, *parray, new_size * elem_size, &slack);
+    /* compute growth in 64-bit and reject int/byte overflow */
+    grow = (int64_t)*psize * 3 / 2;
+    want = req_size > grow ? req_size : grow;
+    new_bytes = (size_t)want * (size_t)elem_size;
+    if (want > INT_MAX ||
+        (elem_size != 0 && new_bytes / (size_t)elem_size != (size_t)want)) {
+        JS_ThrowOutOfMemory(ctx);
+        return -1;
+    }
+    new_size = (int)want;
+    new_array = js_realloc2(ctx, *parray, new_bytes, &slack);
     if (!new_array)
         return -1;
     new_size += slack / elem_size;
@@ -12167,14 +12176,18 @@ static JSBigInt *js_bigint_pow(JSContext *ctx, const JSBigInt *a, JSBigInt *b)
     memcpy(r->tab, a->tab, a->len * sizeof(a->tab[0]));
     for(i = n_bits - 2; i >= 0; i--) {
         r1 = js_bigint_mul(ctx, r, r);
-        if (!r1)
+        if (!r1) {
+            js_free(ctx, r);
             return NULL;
+        }
         js_free(ctx, r);
         r = r1;
         if ((e >> i) & 1) {
             r1 = js_bigint_mul(ctx, r, a);
-            if (!r1)
+            if (!r1) {
+                js_free(ctx, r);
                 return NULL;
+            }
             js_free(ctx, r);
             r = r1;
         }
@@ -61380,10 +61393,12 @@ static JSValue js_atomics_wait(JSContext *ctx,
        'ptr' value */
     /* XXX: use Linux futexes when available ? */
     pthread_mutex_lock(&js_atomics_mutex);
+    /* atomic load: writers use atomic_store/atomic_fetch_* on this cell, so a
+       plain load here would be a data race (the mutex does not cover writers) */
     if (size_log2 == 3) {
-        res = *(int64_t *)ptr != v;
+        res = atomic_load((_Atomic(int64_t) *)ptr) != v;
     } else {
-        res = *(int32_t *)ptr != v;
+        res = atomic_load((_Atomic(int32_t) *)ptr) != (int32_t)v;
     }
     if (res) {
         pthread_mutex_unlock(&js_atomics_mutex);
