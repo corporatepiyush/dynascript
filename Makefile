@@ -294,7 +294,18 @@ fuzz_compile: $(OBJDIR)/fuzz_compile.o $(OBJDIR)/fuzz_common.o libquickjs.fuzz.a
 fuzz_regexp: $(OBJDIR)/fuzz_regexp.o $(OBJDIR)/libregexp.fuzz.o $(OBJDIR)/cutils.fuzz.o $(OBJDIR)/libunicode.fuzz.o
 	$(CC) $(CFLAGS_OPT) $^ -o fuzz_regexp $(LIB_FUZZING_ENGINE)
 
-libfuzzer: fuzz_eval fuzz_compile fuzz_regexp
+# reader targets drive JS_ParseJSON / JS_ReadObject on the raw buffer; they
+# do not use fuzz_common's test_one_input_init
+fuzz_json: $(OBJDIR)/fuzz_json.o libquickjs.fuzz.a
+	$(CC) $(CFLAGS_OPT) $^ -o fuzz_json $(LIB_FUZZING_ENGINE)
+
+fuzz_bytecode: $(OBJDIR)/fuzz_bytecode.o libquickjs.fuzz.a
+	$(CC) $(CFLAGS_OPT) $^ -o fuzz_bytecode $(LIB_FUZZING_ENGINE)
+
+fuzz_module_export: $(OBJDIR)/fuzz_module_export.o libquickjs.fuzz.a
+	$(CC) $(CFLAGS_OPT) $^ -o fuzz_module_export $(LIB_FUZZING_ENGINE)
+
+libfuzzer: fuzz_eval fuzz_compile fuzz_regexp fuzz_json fuzz_bytecode fuzz_module_export
 
 ifneq ($(CROSS_PREFIX),)
 

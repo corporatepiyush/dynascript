@@ -518,6 +518,14 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
         goto fail;
     if (bc_get_leb128_int(s, &local_count))
         goto fail;
+    /* local_count sizes the vardefs array, but free_function_bytecode walks it
+       over (arg_count + var_count); a malformed blob with a smaller local_count
+       would overflow the array on the reader's own free path. Reject it here,
+       before allocating, so the invariant the writer guarantees holds. */
+    if (local_count != (int)bc.arg_count + (int)bc.var_count) {
+        JS_ThrowInternalError(ctx, "invalid function bytecode (local_count)");
+        goto fail;
+    }
 
     if (bc.has_debug) {
         function_size = sizeof(*b);
