@@ -266,32 +266,6 @@ static const JSMallocFunctions trace_mf = {
     js_trace_malloc_usable_size,
 };
 
-static size_t get_suffixed_size(const char *str)
-{
-    char *p;
-    size_t v;
-    v = (size_t)strtod(str, &p);
-    switch(*p) {
-    case 'G':
-        v <<= 30;
-        break;
-    case 'M':
-        v <<= 20;
-        break;
-    case 'k':
-    case 'K':
-        v <<= 10;
-        break;
-    default:
-        if (*p != '\0') {
-            fprintf(stderr, "qjs: invalid suffix: %s\n", p);
-            exit(1);
-        }
-        break;
-    }
-    return v;
-}
-
 #define PROG_NAME "qjs"
 
 void help(void)
@@ -308,8 +282,6 @@ void help(void)
            "    --std          make 'std' and 'os' available to the loaded script\n"
            "-T  --trace        trace memory allocation\n"
            "-d  --dump         dump the memory usage stats\n"
-           "    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n"
-           "    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n"
            "    --no-unhandled-rejection  ignore unhandled promise rejections\n"
            "-s                    strip all the debug info\n"
            "    --strip-source    strip the source code\n"
@@ -332,11 +304,9 @@ int main(int argc, char **argv)
     int strict = 0;
     int load_std = 0;
     int dump_unhandled_promise_rejection = 1;
-    size_t memory_limit = 0;
     char *include_list[32];
     int i, include_count = 0;
     int strip_flags = 0;
-    size_t stack_size = 0;
 
     /* cannot use getopt because we want to pass the command line to
        the script */
@@ -423,22 +393,6 @@ int main(int argc, char **argv)
                 empty_run++;
                 continue;
             }
-            if (!strcmp(longopt, "memory-limit")) {
-                if (optind >= argc) {
-                    fprintf(stderr, "expecting memory limit");
-                    exit(1);
-                }
-                memory_limit = get_suffixed_size(argv[optind++]);
-                continue;
-            }
-            if (!strcmp(longopt, "stack-size")) {
-                if (optind >= argc) {
-                    fprintf(stderr, "expecting stack size");
-                    exit(1);
-                }
-                stack_size = get_suffixed_size(argv[optind++]);
-                continue;
-            }
             if (opt == 's') {
                 strip_flags = JS_STRIP_DEBUG;
                 continue;
@@ -466,10 +420,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "qjs: cannot allocate JS runtime\n");
         exit(2);
     }
-    if (memory_limit != 0)
-        JS_SetMemoryLimit(rt, memory_limit);
-    if (stack_size != 0)
-        JS_SetMaxStackSize(rt, stack_size);
     JS_SetStripInfo(rt, strip_flags);
     js_std_set_worker_new_context_func(JS_NewCustomContext);
     js_std_init_handlers(rt);
