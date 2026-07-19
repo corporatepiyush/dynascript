@@ -529,6 +529,15 @@ static void mul_log2_radix_test(void)
 }
 #endif
 
+/* two ASCII decimal digits per byte-pair, indexed by (value * 2); the array
+   is exactly 200 bytes plus the literal's implicit NUL (unused) */
+static const char digits_pair[] =
+    "0001020304050607080910111213141516171819"
+    "2021222324252627282930313233343536373839"
+    "4041424344454647484950515253545556575859"
+    "6061626364656667686970717273747576777879"
+    "8081828384858687888990919293949596979899";
+
 static void u32toa_len(char *buf, uint32_t n, size_t len)
 {
     int digit, i;
@@ -591,12 +600,22 @@ size_t u32toa(char *buf, uint32_t n)
 {
     char buf1[10], *q;
     size_t len;
-    
+
     q = buf1 + sizeof(buf1);
-    do {
-        *--q = n % 10 + '0';
-        n /= 10;
-    } while (n != 0);
+    /* two digits per step; the tail emits the leading 1 or 2 digits */
+    while (n >= 100) {
+        uint32_t r = (n % 100) * 2;
+        n /= 100;
+        *--q = digits_pair[r + 1];
+        *--q = digits_pair[r];
+    }
+    if (n >= 10) {
+        uint32_t r = n * 2;
+        *--q = digits_pair[r + 1];
+        *--q = digits_pair[r];
+    } else {
+        *--q = n + '0';
+    }
     len = buf1 + sizeof(buf1) - q;
     memcpy(buf, q, len);
     return len;
