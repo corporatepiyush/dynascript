@@ -1088,38 +1088,145 @@ static int unicode_get_cc(uint32_t c)
     }
 }
 
-static void sort_cc(int *buf, int len)
-{
-    int i, j, k, cc, cc1, start, ch1;
+/* Combining marks that follow a starter are put into canonical order, which is
+   a stable sort on the Canonical Combining Class (CCC). unicode_get_cc() is an
+   index binary-search plus an RLE table walk, and the previous insertion sort
+   re-decoded the class on every comparison, so a run of k marks cost O(k^2)
+   decodes and moves. An adversarial "zalgo" string (hundreds of marks on one
+   base) was therefore quadratic and reachable through String.prototype.normalize.
 
-    for(i = 0; i < len; i++) {
+   Each mark's cc is decoded exactly once and packed, with a tie-break index and
+   the code point, into a 64-bit key:
+
+       bits 53..60 : combining class (8 bits)
+       bits 21..52 : original position within the run (32 bits, for stability)
+       bits  0..20 : code point (21 bits)
+
+   Sorting the keys ascending yields CCC ascending; equal classes keep their
+   original order because the position tie-break is unique, so the output is
+   byte-for-byte identical to the stable insertion sort it replaces. Short runs
+   (the common case) use insertion sort; longer runs use heapsort, giving a
+   guaranteed O(k log k) bound even on attacker-controlled input. */
+#define CC_KEY_CP_BITS   21
+#define CC_KEY_CP_MASK   ((1u << CC_KEY_CP_BITS) - 1)
+#define CC_KEY_IDX_SHIFT CC_KEY_CP_BITS
+#define CC_KEY_CC_SHIFT  (CC_KEY_CP_BITS + 32)
+/* runs no longer than this pack into the on-stack key buffer without malloc */
+#define CC_SORT_STACK         256
+/* runs no longer than this use insertion sort rather than heapsort */
+#define CC_SORT_INSERTION_MAX 32
+
+static inline uint64_t cc_pack(unsigned cc, unsigned idx, unsigned cp)
+{
+    return ((uint64_t)cc << CC_KEY_CC_SHIFT) |
+           ((uint64_t)idx << CC_KEY_IDX_SHIFT) | cp;
+}
+
+static void cc_key_siftdown(uint64_t *a, int root, int n)
+{
+    for (;;) {
+        int child = 2 * root + 1;
+        if (child >= n)
+            break;
+        if (child + 1 < n && a[child] < a[child + 1])
+            child++;
+        if (a[root] >= a[child])
+            break;
+        uint64_t t = a[root]; a[root] = a[child]; a[child] = t;
+        root = child;
+    }
+}
+
+/* Sort already-packed keys (no cc decoding). The keys are unique thanks to the
+   position field, so the ordering is fully determined and stable. */
+static void cc_key_sort(uint64_t *a, int n)
+{
+    int p;
+    if (n <= CC_SORT_INSERTION_MAX) {
+        for (p = 1; p < n; p++) {
+            uint64_t x = a[p];
+            int q = p - 1;
+            while (q >= 0 && a[q] > x) {
+                a[q + 1] = a[q];
+                q--;
+            }
+            a[q + 1] = x;
+        }
+    } else {
+        for (p = n / 2 - 1; p >= 0; p--)
+            cc_key_siftdown(a, p, n);
+        for (p = n - 1; p > 0; p--) {
+            uint64_t t = a[0]; a[0] = a[p]; a[p] = t;
+            cc_key_siftdown(a, 0, p);
+        }
+    }
+}
+
+/* In-place stable insertion sort that decodes cc directly; the out-of-memory
+   fallback for runs too long to buffer. Same ordering as cc_key_sort. */
+static void cc_insertion_sort(int *buf, int start, int runlen)
+{
+    int p, q, cc, ch;
+    for (p = 1; p < runlen; p++) {
+        ch = buf[start + p];
+        cc = unicode_get_cc(ch);
+        q = p - 1;
+        while (q >= 0 && unicode_get_cc(buf[start + q]) > cc) {
+            buf[start + q + 1] = buf[start + q];
+            q--;
+        }
+        buf[start + q + 1] = ch;
+    }
+}
+
+static void sort_cc(int *buf, int len, void *opaque,
+                    DynBufReallocFunc *realloc_func)
+{
+    uint64_t stackbuf[CC_SORT_STACK];
+    int i, cc, start, end, runlen, p;
+
+    for (i = 0; i < len; i++) {
         cc = unicode_get_cc(buf[i]);
-        if (cc != 0) {
-            start = i;
-            j = i + 1;
-            while (j < len) {
-                ch1 = buf[j];
-                cc1 = unicode_get_cc(ch1);
-                if (cc1 == 0)
-                    break;
-                k = j - 1;
-                while (k >= start) {
-                    if (unicode_get_cc(buf[k]) <= cc1)
-                        break;
-                    buf[k + 1] = buf[k];
-                    k--;
-                }
-                buf[k + 1] = ch1;
-                j++;
+        if (cc == 0)
+            continue;
+        /* [start, end) is a maximal run of combining marks (cc != 0); pack the
+           first CC_SORT_STACK of them as we scan, decoding each cc once. */
+        start = i;
+        stackbuf[0] = cc_pack(cc, 0, buf[i]);
+        end = i + 1;
+        while (end < len) {
+            cc = unicode_get_cc(buf[end]);
+            if (cc == 0)
+                break;
+            if (end - start < CC_SORT_STACK)
+                stackbuf[end - start] = cc_pack(cc, end - start, buf[end]);
+            end++;
+        }
+        runlen = end - start;
+        i = end;                     /* the loop step resumes past the starter */
+        if (runlen <= 1)
+            continue;
+
+        if (runlen <= CC_SORT_STACK) {
+            cc_key_sort(stackbuf, runlen);
+            for (p = 0; p < runlen; p++)
+                buf[start + p] = (int)(stackbuf[p] & CC_KEY_CP_MASK);
+        } else {
+            /* run longer than the stack buffer: decode into a heap buffer */
+            uint64_t *keys = realloc_func(opaque, NULL,
+                                          (size_t)runlen * sizeof(*keys));
+            if (!keys) {
+                cc_insertion_sort(buf, start, runlen);
+                continue;
             }
-#if 0
-            printf("cc:");
-            for(k = start; k < j; k++) {
-                printf(" %3d", unicode_get_cc(buf[k]));
+            for (p = 0; p < runlen; p++) {
+                unsigned cp = buf[start + p];
+                keys[p] = cc_pack(unicode_get_cc(cp), p, cp);
             }
-            printf("\n");
-#endif
-            i = j;
+            cc_key_sort(keys, runlen);
+            for (p = 0; p < runlen; p++)
+                buf[start + p] = (int)(keys[p] & CC_KEY_CP_MASK);
+            realloc_func(opaque, keys, 0);
         }
     }
 }
@@ -1205,7 +1312,7 @@ int unicode_normalize(uint32_t **pdst, const uint32_t *src, int src_len,
     buf = (int *)dbuf->buf;
     buf_len = dbuf->size / sizeof(int);
 
-    sort_cc(buf, buf_len);
+    sort_cc(buf, buf_len, opaque, realloc_func);
 
     if (buf_len <= 1 || (n_type & 1) != 0) {
         /* NFD / NFKD */
