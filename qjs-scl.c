@@ -14,8 +14,17 @@
 
 /* Registry of class ids the framework owns, so the shared close() method can
  * validate `this` before treating its opaque as a JSSclResource (a foreign
- * object passed via close.call(x) must not be reinterpreted). */
-#define JS_SCL_MAX_CLASSES 64
+ * object passed via close.call(x) must not be reinterpreted -- and a foreign
+ * class may store a non-pointer opaque, so a magic-tag check would be unsafe).
+ *
+ * Registration happens only from js_scl_init_all(), which the CLI calls on the
+ * main context at startup (worker threads do NOT register scl modules), so
+ * there is no concurrent mutation of this table. Class ids are process-unique
+ * (JS_NewClassID) and never reset, so the table accumulates across runtimes in
+ * a long-lived multi-runtime embed; the cap is sized well beyond the number of
+ * scl classes so registration never silently drops (which would make close() a
+ * no-op). A per-JSRuntime registry is the architectural follow-up. */
+#define JS_SCL_MAX_CLASSES 256
 static JSClassID js_scl_class_ids[JS_SCL_MAX_CLASSES];
 static int js_scl_n_classes;
 

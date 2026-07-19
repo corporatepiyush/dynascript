@@ -112,17 +112,22 @@ static scl_bloom_t *bloom_this(JSContext *ctx, JSValueConst this_val)
     return r ? (scl_bloom_t *)r->native : NULL;
 }
 
+/* coerce args before resolving the native handle -- coercion can run JS that
+ * close()s this object (see the note in qjs-scl-structures.c) */
 static JSValue js_scl_bloom_add(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv)
 {
-    scl_bloom_t *bf = bloom_this(ctx, this_val);
+    scl_bloom_t *bf;
     const char *s;
     size_t len;
-    if (!bf)
-        return JS_EXCEPTION;
     s = JS_ToCStringLen(ctx, &len, argv[0]);
     if (!s)
         return JS_EXCEPTION;
+    bf = bloom_this(ctx, this_val);
+    if (!bf) {
+        JS_FreeCString(ctx, s);
+        return JS_EXCEPTION;
+    }
     if (scl_bloom_insert(bf, s, len) != SCL_OK) {
         JS_FreeCString(ctx, s);
         return JS_ThrowInternalError(ctx, "BloomFilter.add failed");
@@ -134,15 +139,18 @@ static JSValue js_scl_bloom_add(JSContext *ctx, JSValueConst this_val,
 static JSValue js_scl_bloom_contains(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv)
 {
-    scl_bloom_t *bf = bloom_this(ctx, this_val);
+    scl_bloom_t *bf;
     const char *s;
     size_t len;
     bool present;
-    if (!bf)
-        return JS_EXCEPTION;
     s = JS_ToCStringLen(ctx, &len, argv[0]);
     if (!s)
         return JS_EXCEPTION;
+    bf = bloom_this(ctx, this_val);
+    if (!bf) {
+        JS_FreeCString(ctx, s);
+        return JS_EXCEPTION;
+    }
     present = scl_bloom_maybe_contains(bf, s, len);
     JS_FreeCString(ctx, s);
     return JS_NewBool(ctx, present);
@@ -234,11 +242,12 @@ static scl_heap_t *heap_this(JSContext *ctx, JSValueConst this_val)
 static JSValue js_scl_heap_push(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, js_scl_heap_class_id);
+    JSSclResource *r;
     double x;
-    if (!r)
-        return JS_EXCEPTION;
     if (JS_ToFloat64(ctx, &x, argv[0]))
+        return JS_EXCEPTION;
+    r = js_scl_resource_get(ctx, this_val, js_scl_heap_class_id);
+    if (!r)
         return JS_EXCEPTION;
     if (scl_heap_push(r->arena, (scl_heap_t *)r->native, &x) != SCL_OK)
         return JS_ThrowOutOfMemory(ctx);
@@ -351,11 +360,12 @@ static scl_ringbuf_t *ringbuf_this(JSContext *ctx, JSValueConst this_val)
 static JSValue js_scl_ringbuf_push(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv)
 {
-    scl_ringbuf_t *rb = ringbuf_this(ctx, this_val);
+    scl_ringbuf_t *rb;
     double x;
-    if (!rb)
-        return JS_EXCEPTION;
     if (JS_ToFloat64(ctx, &x, argv[0]))
+        return JS_EXCEPTION;
+    rb = ringbuf_this(ctx, this_val);
+    if (!rb)
         return JS_EXCEPTION;
     /* true if accepted; false if full and not in overwrite mode. */
     return JS_NewBool(ctx, scl_ringbuf_push(rb, &x) == SCL_OK);
@@ -376,15 +386,16 @@ static JSValue js_scl_ringbuf_pop(JSContext *ctx, JSValueConst this_val,
 static JSValue js_scl_ringbuf_peek(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv)
 {
-    scl_ringbuf_t *rb = ringbuf_this(ctx, this_val);
+    scl_ringbuf_t *rb;
     int64_t idx = 0;
     double x;
-    if (!rb)
-        return JS_EXCEPTION;
     if (!JS_IsUndefined(argv[0])) {
         if (JS_ToInt64(ctx, &idx, argv[0]))
             return JS_EXCEPTION;
     }
+    rb = ringbuf_this(ctx, this_val);
+    if (!rb)
+        return JS_EXCEPTION;
     if (idx < 0)
         return JS_UNDEFINED;
     if (scl_ringbuf_peek(rb, (size_t)idx, &x) != SCL_OK)
@@ -484,11 +495,12 @@ static scl_deque_t *deque_this(JSContext *ctx, JSValueConst this_val)
 static JSValue js_scl_deque_push_front(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, js_scl_deque_class_id);
+    JSSclResource *r;
     double x;
-    if (!r)
-        return JS_EXCEPTION;
     if (JS_ToFloat64(ctx, &x, argv[0]))
+        return JS_EXCEPTION;
+    r = js_scl_resource_get(ctx, this_val, js_scl_deque_class_id);
+    if (!r)
         return JS_EXCEPTION;
     if (scl_deque_push_front(r->arena, (scl_deque_t *)r->native, &x) != SCL_OK)
         return JS_ThrowOutOfMemory(ctx);
@@ -498,11 +510,12 @@ static JSValue js_scl_deque_push_front(JSContext *ctx, JSValueConst this_val,
 static JSValue js_scl_deque_push_back(JSContext *ctx, JSValueConst this_val,
                                       int argc, JSValueConst *argv)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, js_scl_deque_class_id);
+    JSSclResource *r;
     double x;
-    if (!r)
-        return JS_EXCEPTION;
     if (JS_ToFloat64(ctx, &x, argv[0]))
+        return JS_EXCEPTION;
+    r = js_scl_resource_get(ctx, this_val, js_scl_deque_class_id);
+    if (!r)
         return JS_EXCEPTION;
     if (scl_deque_push_back(r->arena, (scl_deque_t *)r->native, &x) != SCL_OK)
         return JS_ThrowOutOfMemory(ctx);

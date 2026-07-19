@@ -244,14 +244,12 @@ static JSValue js_scl_ml_fit(JSContext *ctx, JSValueConst this_val,
                              JSClassID cid, ml_kind_t kind, int argc,
                              JSValueConst *argv)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, cid);
+    JSSclResource *r;
     int has_y = (kind != ML_KMEANS);
     scl_allocator_t *ta;
     scl_ml_dataset_t ds;
     scl_error_t err;
 
-    if (!r)
-        return JS_EXCEPTION;
     if (has_y && argc < 2)
         return JS_ThrowTypeError(ctx, "fit(X, y) requires two arguments");
     ta = js_scl_arena_new(ctx);
@@ -259,6 +257,14 @@ static JSValue js_scl_ml_fit(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     if (js_scl_ml_build(ctx, ta, argv[0], has_y ? argv[1] : JS_UNDEFINED,
                         has_y, &ds)) {
+        scl_alloc_arena_destroy(ta);
+        return JS_EXCEPTION;
+    }
+    /* resolve AFTER the build: reading the JS X/y arrays can run user JS that
+       close()s this model; resource_get throws if so, before touching native */
+    r = js_scl_resource_get(ctx, this_val, cid);
+    if (!r) {
+        scl_ml_dataset_destroy(&ds, ta);
         scl_alloc_arena_destroy(ta);
         return JS_EXCEPTION;
     }
@@ -276,7 +282,7 @@ static JSValue js_scl_ml_predict_real(JSContext *ctx, JSValueConst this_val,
                                       JSClassID cid, ml_kind_t kind, int proba,
                                       JSValueConst x)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, cid);
+    JSSclResource *r;
     scl_allocator_t *ta;
     scl_ml_dataset_t ds;
     SCL_ML_FLOAT *yout;
@@ -284,12 +290,17 @@ static JSValue js_scl_ml_predict_real(JSContext *ctx, JSValueConst this_val,
     JSValue result;
     size_t n;
 
-    if (!r)
-        return JS_EXCEPTION;
     ta = js_scl_arena_new(ctx);
     if (!ta)
         return JS_EXCEPTION;
     if (js_scl_ml_build(ctx, ta, x, JS_UNDEFINED, 0, &ds)) {
+        scl_alloc_arena_destroy(ta);
+        return JS_EXCEPTION;
+    }
+    /* resolve AFTER the build (which reads the JS X array and may close us) */
+    r = js_scl_resource_get(ctx, this_val, cid);
+    if (!r) {
+        scl_ml_dataset_destroy(&ds, ta);
         scl_alloc_arena_destroy(ta);
         return JS_EXCEPTION;
     }
@@ -495,7 +506,7 @@ static JSValue js_scl_kmeans_fit(JSContext *ctx, JSValueConst this_val,
 static JSValue js_scl_kmeans_predict(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, js_scl_kmeans_class_id);
+    JSSclResource *r;
     scl_allocator_t *ta;
     scl_ml_dataset_t ds;
     int *labels;
@@ -503,12 +514,17 @@ static JSValue js_scl_kmeans_predict(JSContext *ctx, JSValueConst this_val,
     JSValue result;
     size_t n;
 
-    if (!r)
-        return JS_EXCEPTION;
     ta = js_scl_arena_new(ctx);
     if (!ta)
         return JS_EXCEPTION;
     if (js_scl_ml_build(ctx, ta, argv[0], JS_UNDEFINED, 0, &ds)) {
+        scl_alloc_arena_destroy(ta);
+        return JS_EXCEPTION;
+    }
+    /* resolve AFTER the build (which reads the JS X array and may close us) */
+    r = js_scl_resource_get(ctx, this_val, js_scl_kmeans_class_id);
+    if (!r) {
+        scl_ml_dataset_destroy(&ds, ta);
         scl_alloc_arena_destroy(ta);
         return JS_EXCEPTION;
     }

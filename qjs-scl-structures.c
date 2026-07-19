@@ -53,6 +53,12 @@ static JSValue js_scl_vector_ctor(JSContext *ctx, JSValueConst new_target,
                                 js_scl_vector_dispose);
 }
 
+/* NOTE: coerce every JS argument to a C local BEFORE resolving the native
+ * handle. Coercion can run arbitrary JS (valueOf/@@toPrimitive/Proxy) which
+ * may close() this very object; resolving after coercion means
+ * js_scl_resource_get() sees r->closed and throws instead of using a freed
+ * arena. No JS-invoking call may sit between the resolve and the native use. */
+
 static scl_array_t *vector_this(JSContext *ctx, JSValueConst this_val)
 {
     JSSclResource *r = js_scl_resource_get(ctx, this_val, js_scl_vector_class_id);
@@ -62,14 +68,15 @@ static scl_array_t *vector_this(JSContext *ctx, JSValueConst this_val)
 static JSValue js_scl_vector_push(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
-    scl_array_t *arr = vector_this(ctx, this_val);
     JSSclResource *r;
+    scl_array_t *arr;
     double x;
-    if (!arr)
-        return JS_EXCEPTION;
     if (JS_ToFloat64(ctx, &x, argv[0]))
         return JS_EXCEPTION;
-    r = JS_GetOpaque(this_val, js_scl_vector_class_id);
+    r = js_scl_resource_get(ctx, this_val, js_scl_vector_class_id);
+    if (!r)
+        return JS_EXCEPTION;
+    arr = (scl_array_t *)r->native;
     if (scl_array_push(r->arena, arr, &x) != SCL_OK)
         return JS_ThrowOutOfMemory(ctx);
     return JS_NewInt64(ctx, (int64_t)arr->count);
@@ -78,12 +85,13 @@ static JSValue js_scl_vector_push(JSContext *ctx, JSValueConst this_val,
 static JSValue js_scl_vector_get(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
 {
-    scl_array_t *arr = vector_this(ctx, this_val);
+    scl_array_t *arr;
     uint32_t i;
     double x;
-    if (!arr)
-        return JS_EXCEPTION;
     if (JS_ToUint32(ctx, &i, argv[0]))
+        return JS_EXCEPTION;
+    arr = vector_this(ctx, this_val);
+    if (!arr)
         return JS_EXCEPTION;
     if (i >= arr->count)
         return JS_UNDEFINED;
@@ -95,12 +103,13 @@ static JSValue js_scl_vector_get(JSContext *ctx, JSValueConst this_val,
 static JSValue js_scl_vector_set(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
 {
-    scl_array_t *arr = vector_this(ctx, this_val);
+    scl_array_t *arr;
     uint32_t i;
     double x;
-    if (!arr)
-        return JS_EXCEPTION;
     if (JS_ToUint32(ctx, &i, argv[0]) || JS_ToFloat64(ctx, &x, argv[1]))
+        return JS_EXCEPTION;
+    arr = vector_this(ctx, this_val);
+    if (!arr)
         return JS_EXCEPTION;
     if (i >= arr->count)
         return JS_ThrowRangeError(ctx, "index out of range");
@@ -181,12 +190,13 @@ static JSValue js_scl_hashmap_ctor(JSContext *ctx, JSValueConst new_target,
 static JSValue js_scl_hashmap_set(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, js_scl_hashmap_class_id);
+    JSSclResource *r;
     int32_t k;
     double v;
-    if (!r)
-        return JS_EXCEPTION;
     if (JS_ToInt32(ctx, &k, argv[0]) || JS_ToFloat64(ctx, &v, argv[1]))
+        return JS_EXCEPTION;
+    r = js_scl_resource_get(ctx, this_val, js_scl_hashmap_class_id);
+    if (!r)
         return JS_EXCEPTION;
     if (scl_hash_insert(r->arena, (scl_hash_t *)r->native, &k, &v) != SCL_OK)
         return JS_ThrowOutOfMemory(ctx);
@@ -196,12 +206,13 @@ static JSValue js_scl_hashmap_set(JSContext *ctx, JSValueConst this_val,
 static JSValue js_scl_hashmap_get(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, js_scl_hashmap_class_id);
+    JSSclResource *r;
     int32_t k;
     double v;
-    if (!r)
-        return JS_EXCEPTION;
     if (JS_ToInt32(ctx, &k, argv[0]))
+        return JS_EXCEPTION;
+    r = js_scl_resource_get(ctx, this_val, js_scl_hashmap_class_id);
+    if (!r)
         return JS_EXCEPTION;
     if (scl_hash_get((scl_hash_t *)r->native, &k, &v) != SCL_OK)
         return JS_UNDEFINED;
@@ -211,11 +222,12 @@ static JSValue js_scl_hashmap_get(JSContext *ctx, JSValueConst this_val,
 static JSValue js_scl_hashmap_has(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, js_scl_hashmap_class_id);
+    JSSclResource *r;
     int32_t k;
-    if (!r)
-        return JS_EXCEPTION;
     if (JS_ToInt32(ctx, &k, argv[0]))
+        return JS_EXCEPTION;
+    r = js_scl_resource_get(ctx, this_val, js_scl_hashmap_class_id);
+    if (!r)
         return JS_EXCEPTION;
     return JS_NewBool(ctx, scl_hash_contains((scl_hash_t *)r->native, &k));
 }
@@ -223,11 +235,12 @@ static JSValue js_scl_hashmap_has(JSContext *ctx, JSValueConst this_val,
 static JSValue js_scl_hashmap_delete(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv)
 {
-    JSSclResource *r = js_scl_resource_get(ctx, this_val, js_scl_hashmap_class_id);
+    JSSclResource *r;
     int32_t k;
-    if (!r)
-        return JS_EXCEPTION;
     if (JS_ToInt32(ctx, &k, argv[0]))
+        return JS_EXCEPTION;
+    r = js_scl_resource_get(ctx, this_val, js_scl_hashmap_class_id);
+    if (!r)
         return JS_EXCEPTION;
     return JS_NewBool(ctx, scl_hash_remove(r->arena, (scl_hash_t *)r->native, &k) == SCL_OK);
 }

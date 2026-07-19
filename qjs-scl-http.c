@@ -323,9 +323,6 @@ static JSValue http_perform(JSContext *ctx, JSValueConst this_val,
     scl_error_t err;
     JSValue result;
 
-    r = js_scl_resource_get(ctx, this_val, js_scl_http_client_class_id);
-    if (!r)
-        return JS_EXCEPTION;
     if (JS_IsUndefined(url_val) || JS_IsNull(url_val))
         return JS_ThrowTypeError(ctx, "url is required");
 
@@ -343,6 +340,18 @@ static JSValue http_perform(JSContext *ctx, JSValueConst this_val,
 
     hdr = http_headers_to_string(ctx, headers_val, &hdr_err);
     if (hdr_err) {
+        if (body)
+            JS_FreeCString(ctx, body);
+        JS_FreeCString(ctx, url);
+        return JS_EXCEPTION;
+    }
+
+    /* Resolve the client AFTER all the JS-invoking coercions above: coercing
+     * url/body/headers can run user JS (valueOf/toString/Proxy) that close()s
+     * this client; resource_get throws if so, before we touch r->native. */
+    r = js_scl_resource_get(ctx, this_val, js_scl_http_client_class_id);
+    if (!r) {
+        js_free(ctx, hdr);
         if (body)
             JS_FreeCString(ctx, body);
         JS_FreeCString(ctx, url);
@@ -415,13 +424,13 @@ static JSValue js_scl_http_client_set_timeout(JSContext *ctx,
                                               JSValueConst this_val, int argc,
                                               JSValueConst *argv)
 {
-    JSSclResource *r =
-        js_scl_resource_get(ctx, this_val, js_scl_http_client_class_id);
+    JSSclResource *r;
     int64_t ms;
 
-    if (!r)
-        return JS_EXCEPTION;
     if (JS_ToInt64(ctx, &ms, argv[0]))
+        return JS_EXCEPTION;
+    r = js_scl_resource_get(ctx, this_val, js_scl_http_client_class_id);
+    if (!r)
         return JS_EXCEPTION;
     scl_http_client_set_timeout((scl_http_client_t *)r->native, ms);
     return JS_UNDEFINED;
