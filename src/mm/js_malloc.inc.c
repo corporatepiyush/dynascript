@@ -872,6 +872,13 @@ static void *js_scl_realloc(JSMallocState *s, void *ptr, size_t size)
     }
     if (s->malloc_size + size - old_size > s->malloc_limit)
         return NULL;
+    /* Contract: on failure realloc_fn must return NULL and leave the old block
+       intact (standard C realloc semantics), because the engine keeps using
+       `ptr` after a failed grow. The default scl allocator (libc realloc)
+       honors this; a backend that frees-on-failure (e.g. scl built with
+       SCL_ALLOC_MAX_SIZE below the engine's needs, or a future arena/tlsf that
+       reclaims on error) would leave the caller a dangling pointer -- such a
+       backend must not be used here, or this path needs a copy-based grow. */
     ptr = a->realloc_fn(a->state, ptr, old_size, size, 0);
     if (!ptr)
         return NULL;
