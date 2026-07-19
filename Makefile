@@ -211,6 +211,15 @@ ifdef CONFIG_SCL_ALLOC
 CFLAGS+=-DCONFIG_SCL_ALLOC
 EXTRA_LIBS+=$(SCL_DIR)/libscl.a
 endif
+# expose secure-c-libs modules to JS as scl:* native modules (opt-in).
+ifdef CONFIG_SCL_MODULES
+CFLAGS+=-DCONFIG_SCL_MODULES
+# -I every secure-c-libs header directory
+CFLAGS+=$(addprefix -I,$(sort $(dir $(wildcard $(SCL_DIR)/libs/*/*.h $(SCL_DIR)/libs/*/*/*.h))))
+EXTRA_LIBS+=$(SCL_DIR)/libscl.a
+# per-family flags are enabled here as each module's .c file lands:
+#   CONFIG_SCL_MODULE_HTTP / _ML / _DOCPARSE
+endif
 ifdef CONFIG_WIN32
 LDEXPORT=
 else
@@ -265,6 +274,20 @@ all: $(OBJDIR) $(OBJDIR)/quickjs.check.o $(OBJDIR)/qjs.check.o $(PROGS)
 QJS_LIB_OBJS=$(OBJDIR)/quickjs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/quickjs-libc.o
 
 QJS_OBJS=$(OBJDIR)/qjs.o $(OBJDIR)/repl.o $(QJS_LIB_OBJS)
+ifdef CONFIG_SCL_MODULES
+# scl:* native module binding objects (each family's object added as it lands)
+SCL_MODULE_OBJS=$(OBJDIR)/qjs-scl.o $(OBJDIR)/qjs-scl-structures.o
+ifdef CONFIG_SCL_MODULE_HTTP
+SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-http.o
+endif
+ifdef CONFIG_SCL_MODULE_ML
+SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-ml.o
+endif
+ifdef CONFIG_SCL_MODULE_DOCPARSE
+SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-docparse.o
+endif
+QJS_OBJS+=$(SCL_MODULE_OBJS)
+endif
 
 HOST_LIBS=-lm -ldl -lpthread
 LIBS=-lm -lpthread
