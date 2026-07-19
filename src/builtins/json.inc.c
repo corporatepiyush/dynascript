@@ -605,9 +605,238 @@ static JSValue js_json_rawJSON(JSContext *ctx, JSValueConst this_val,
 }
 
 
+/* JSON.stringify cycle-detection set.
+   The serializer must reject a value that is an ancestor of the node being
+   emitted (a circular reference). The traversal is a strict DFS, so this is a
+   stack: an object is pushed on entry and popped on exit, and "is it already
+   on the stack" is the cycle test. For objects SameValueZero is pointer
+   identity, so this is an identity set of JSObject*.
+
+   entries[] holds the live ancestors in push order (top == entries[count-1]),
+   accelerated by a chained hash index once nesting passes a small threshold
+   (mirrors json_parse_record_*). A push prepends to its bucket chain and the
+   DFS always pops the most-recently-pushed object, so the object being popped
+   is always at the head of its bucket -> pop is O(1) with no scan; a rehash on
+   grow re-links in push order to preserve that invariant. All ops are O(1)
+   amortized, replacing the old O(n*depth) js_array_includes linear scan. */
+typedef struct JSONStackEntry {
+    JSObject *obj;
+    uint32_t hash_next; /* next entries[] index in the same bucket, or -1 */
+} JSONStackEntry;
+
+typedef struct JSONCycleStack {
+    JSONStackEntry *entries; /* live ancestors, push order; top == [count-1] */
+    uint32_t *hash_table;    /* hash_size buckets, each an entries[] idx or -1 */
+    int count;
+    int size;                /* allocated capacity of entries */
+    uint32_t hash_size;      /* bucket count (power of two), 0 = no hash yet */
+} JSONCycleStack;
+
+static void json_cycle_stack_init(JSONCycleStack *cs)
+{
+    cs->entries = NULL;
+    cs->hash_table = NULL;
+    cs->count = 0;
+    cs->size = 0;
+    cs->hash_size = 0;
+}
+
+static void json_cycle_stack_free(JSContext *ctx, JSONCycleStack *cs)
+{
+    js_free(ctx, cs->entries);
+    js_free(ctx, cs->hash_table);
+    cs->entries = NULL;
+    cs->hash_table = NULL;
+}
+
+/* splitmix64 finalizer: full avalanche independent of pointer alignment, so
+   masking the low bits for a power-of-two table is sound. */
+static uint32_t json_ptr_hash(JSObject *p)
+{
+    uint64_t x = (uint64_t)(uintptr_t)p;
+    x = (x ^ (x >> 30)) * (uint64_t)0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * (uint64_t)0x94d049bb133111ebULL;
+    x = x ^ (x >> 31);
+    return (uint32_t)x;
+}
+
+static int json_cycle_stack_rehash(JSContext *ctx, JSONCycleStack *cs,
+                                   uint32_t new_hash_size)
+{
+    uint32_t *new_table, h, mask;
+    int i;
+
+    new_table = js_malloc(ctx, sizeof(new_table[0]) * new_hash_size);
+    if (!new_table)
+        return -1;
+    js_free(ctx, cs->hash_table);
+    cs->hash_table = new_table;
+    cs->hash_size = new_hash_size;
+    mask = new_hash_size - 1;
+    for (i = 0; i < (int)new_hash_size; i++)
+        cs->hash_table[i] = -1;
+    /* re-link in push order so the newest entry of each bucket lands at the
+       chain head (keeps pop() O(1)) */
+    for (i = 0; i < cs->count; i++) {
+        h = json_ptr_hash(cs->entries[i].obj) & mask;
+        cs->entries[i].hash_next = cs->hash_table[h];
+        cs->hash_table[h] = i;
+    }
+    return 0;
+}
+
+static int json_cycle_stack_push(JSContext *ctx, JSONCycleStack *cs, JSObject *p)
+{
+    int idx;
+    uint32_t h;
+
+    if (js_resize_array(ctx, (void **)&cs->entries, sizeof(cs->entries[0]),
+                        &cs->size, cs->count + 1))
+        return -1;
+    /* below the threshold a linear scan is cheaper than a hash */
+    if (cs->count >= 8 && (uint32_t)(cs->count + 1) > cs->hash_size) {
+        int hash_bits = 32 - clz32(cs->count);
+        if (json_cycle_stack_rehash(ctx, cs, 1u << hash_bits))
+            return -1;
+    }
+    idx = cs->count;
+    cs->entries[idx].obj = p;
+    if (cs->hash_size != 0) {
+        h = json_ptr_hash(p) & (cs->hash_size - 1);
+        cs->entries[idx].hash_next = cs->hash_table[h];
+        cs->hash_table[h] = idx;
+    }
+    cs->count++;
+    return 0;
+}
+
+static void json_cycle_stack_pop(JSONCycleStack *cs)
+{
+    uint32_t h;
+
+    cs->count--;
+    /* the popped entry (DFS top) is the newest in its bucket, hence the chain
+       head, so removal needs no scan */
+    if (cs->hash_size != 0) {
+        h = json_ptr_hash(cs->entries[cs->count].obj) & (cs->hash_size - 1);
+        cs->hash_table[h] = cs->entries[cs->count].hash_next;
+    }
+}
+
+static BOOL json_cycle_stack_has(const JSONCycleStack *cs, JSObject *p)
+{
+    uint32_t i;
+    int k;
+
+    if (cs->hash_size == 0) {
+        for (k = 0; k < cs->count; k++) {
+            if (cs->entries[k].obj == p)
+                return TRUE;
+        }
+    } else {
+        i = cs->hash_table[json_ptr_hash(p) & (cs->hash_size - 1)];
+        while (i != -1) {
+            if (cs->entries[i].obj == p)
+                return TRUE;
+            i = cs->entries[i].hash_next;
+        }
+    }
+    return FALSE;
+}
+
+/* JSON.stringify replacer-array de-duplication set.
+   An array replacer yields a first-occurrence-ordered list of unique property
+   names. Names are interned to atoms; interning is injective on string
+   content, so atom identity equals SameValueZero on the resulting strings.
+   An open-addressed atom set replaces the old O(n^2) js_array_includes scan.
+   The set owns one reference per stored atom. */
+typedef struct JSONAtomSet {
+    JSAtom *atoms;  /* open-addressed; JS_ATOM_NULL (0) marks an empty slot */
+    uint32_t size;  /* slot count (power of two), 0 = unallocated */
+    uint32_t count; /* number of stored atoms */
+} JSONAtomSet;
+
+static void json_atom_set_init(JSONAtomSet *s)
+{
+    s->atoms = NULL;
+    s->size = 0;
+    s->count = 0;
+}
+
+static void json_atom_set_free(JSContext *ctx, JSONAtomSet *s)
+{
+    uint32_t i;
+    if (s->atoms) {
+        for (i = 0; i < s->size; i++) {
+            if (s->atoms[i] != JS_ATOM_NULL)
+                JS_FreeAtom(ctx, s->atoms[i]);
+        }
+        js_free(ctx, s->atoms);
+        s->atoms = NULL;
+    }
+    s->size = 0;
+    s->count = 0;
+}
+
+static uint32_t json_atom_hash(JSAtom atom)
+{
+    uint32_t h = atom;
+    h = (h ^ (h >> 16)) * 0x45d9f3bu;
+    h = (h ^ (h >> 16)) * 0x45d9f3bu;
+    return h ^ (h >> 16);
+}
+
+static int json_atom_set_grow(JSContext *ctx, JSONAtomSet *s, uint32_t new_size)
+{
+    JSAtom *new_atoms;
+    uint32_t i, j, mask = new_size - 1;
+
+    new_atoms = js_malloc(ctx, sizeof(new_atoms[0]) * new_size);
+    if (!new_atoms)
+        return -1;
+    for (i = 0; i < new_size; i++)
+        new_atoms[i] = JS_ATOM_NULL;
+    for (i = 0; i < s->size; i++) {
+        JSAtom a = s->atoms[i];
+        if (a != JS_ATOM_NULL) {
+            j = json_atom_hash(a) & mask;
+            while (new_atoms[j] != JS_ATOM_NULL)
+                j = (j + 1) & mask;
+            new_atoms[j] = a;
+        }
+    }
+    js_free(ctx, s->atoms);
+    s->atoms = new_atoms;
+    s->size = new_size;
+    return 0;
+}
+
+/* returns 1 if newly added (set takes ownership of the atom reference), 0 if
+   already present (caller keeps ownership), -1 on error */
+static int json_atom_set_add(JSContext *ctx, JSONAtomSet *s, JSAtom atom)
+{
+    uint32_t j, mask;
+
+    /* keep load factor <= 1/2 for short probe chains */
+    if ((s->count + 1) * 2 > s->size) {
+        if (json_atom_set_grow(ctx, s, s->size ? s->size * 2 : 8))
+            return -1;
+    }
+    mask = s->size - 1;
+    j = json_atom_hash(atom) & mask;
+    while (s->atoms[j] != JS_ATOM_NULL) {
+        if (s->atoms[j] == atom)
+            return 0; /* duplicate */
+        j = (j + 1) & mask;
+    }
+    s->atoms[j] = atom;
+    s->count++;
+    return 1;
+}
+
 typedef struct JSONStringifyContext {
     JSValueConst replacer_func;
-    JSValue stack;
+    JSONCycleStack stack;
     JSValue property_list;
     JSValue gap;
     JSValue empty;
@@ -787,10 +1016,7 @@ static int js_json_to_str(JSContext *ctx, JSONStringifyContext *jsc,
             val = val1;
             goto concat_value;
         }
-        v = js_array_includes(ctx, jsc->stack, 1, (JSValueConst *)&val);
-        if (JS_IsException(v))
-            goto exception;
-        if (JS_ToBoolFree(ctx, v)) {
+        if (json_cycle_stack_has(&jsc->stack, p)) {
             JS_ThrowTypeError(ctx, "circular reference");
             goto exception;
         }
@@ -808,8 +1034,7 @@ static int js_json_to_str(JSContext *ctx, JSONStringifyContext *jsc,
             sep = JS_DupValue(ctx, jsc->empty);
             sep1 = JS_DupValue(ctx, jsc->empty);
         }
-        v = js_array_push(ctx, jsc->stack, 1, (JSValueConst *)&val, 0);
-        if (check_exception_free(ctx, v))
+        if (json_cycle_stack_push(ctx, &jsc->stack, p))
             goto exception;
         ret = JS_IsArray(ctx, val);
         if (ret < 0)
@@ -887,8 +1112,7 @@ static int js_json_to_str(JSContext *ctx, JSONStringifyContext *jsc,
             }
             string_buffer_putc8(jsc->b, '}');
         }
-        if (check_exception_free(ctx, js_array_pop(ctx, jsc->stack, 0, NULL, 0)))
-            goto exception;
+        json_cycle_stack_pop(&jsc->stack);
         JS_FreeValue(ctx, val);
         JS_FreeValue(ctx, tab);
         JS_FreeValue(ctx, sep);
@@ -937,23 +1161,22 @@ JSValue JS_JSONStringify(JSContext *ctx, JSValueConst obj,
 {
     StringBuffer b_s;
     JSONStringifyContext jsc_s, *jsc = &jsc_s;
+    JSONAtomSet key_set;
     JSValue val, v, space, ret, wrapper;
     int res;
     int64_t i, j, n;
 
     jsc->replacer_func = JS_UNDEFINED;
-    jsc->stack = JS_UNDEFINED;
+    json_cycle_stack_init(&jsc->stack);
     jsc->property_list = JS_UNDEFINED;
     jsc->gap = JS_UNDEFINED;
     jsc->b = &b_s;
     jsc->empty = JS_AtomToString(ctx, JS_ATOM_empty_string);
+    json_atom_set_init(&key_set);
     ret = JS_UNDEFINED;
     wrapper = JS_UNDEFINED;
 
     string_buffer_init(ctx, jsc->b, 0);
-    jsc->stack = JS_NewArray(ctx);
-    if (JS_IsException(jsc->stack))
-        goto exception;
     if (JS_IsFunction(ctx, replacer)) {
         jsc->replacer_func = replacer;
     } else {
@@ -968,7 +1191,8 @@ JSValue JS_JSONStringify(JSContext *ctx, JSValueConst obj,
             if (js_get_length64(ctx, &n, replacer))
                 goto exception;
             for (i = j = 0; i < n; i++) {
-                JSValue present;
+                JSAtom key_atom;
+                int added;
                 v = JS_GetPropertyInt64(ctx, replacer, i);
                 if (JS_IsException(v))
                     goto exception;
@@ -991,15 +1215,23 @@ JSValue JS_JSONStringify(JSContext *ctx, JSValueConst obj,
                     JS_FreeValue(ctx, v);
                     continue;
                 }
-                present = js_array_includes(ctx, jsc->property_list,
-                                            1, (JSValueConst *)&v);
-                if (JS_IsException(present)) {
+                /* dedup by interned name: atom identity == SameValueZero on
+                   the string values, in O(1) amortized */
+                key_atom = JS_ValueToAtom(ctx, v);
+                if (key_atom == JS_ATOM_NULL) {
                     JS_FreeValue(ctx, v);
                     goto exception;
                 }
-                if (!JS_ToBoolFree(ctx, present)) {
+                added = json_atom_set_add(ctx, &key_set, key_atom);
+                if (added < 0) {
+                    JS_FreeAtom(ctx, key_atom);
+                    JS_FreeValue(ctx, v);
+                    goto exception;
+                }
+                if (added) {
                     JS_SetPropertyInt64(ctx, jsc->property_list, j++, v);
                 } else {
+                    JS_FreeAtom(ctx, key_atom);
                     JS_FreeValue(ctx, v);
                 }
             }
@@ -1062,7 +1294,8 @@ done:
     JS_FreeValue(ctx, jsc->empty);
     JS_FreeValue(ctx, jsc->gap);
     JS_FreeValue(ctx, jsc->property_list);
-    JS_FreeValue(ctx, jsc->stack);
+    json_cycle_stack_free(ctx, &jsc->stack);
+    json_atom_set_free(ctx, &key_set);
     return ret;
 }
 
