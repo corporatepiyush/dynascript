@@ -167,6 +167,9 @@ endif
 endif
 
 CFLAGS+=$(DEFINES)
+# repo root on the include path so quickjs.c's src/*.inc.c fragments can
+# resolve project headers (e.g. quickjs-opcode.h) regardless of their subdir
+CFLAGS+=-I.
 CFLAGS_DEBUG=$(CFLAGS) -O0
 CFLAGS_SMALL=$(CFLAGS) -Os
 CFLAGS_OPT=$(CFLAGS) -O2
