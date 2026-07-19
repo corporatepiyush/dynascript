@@ -253,7 +253,10 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
         char buf[ATOM_GET_STR_BUF_SIZE];
         const char *name = JS_AtomGetStr(ctx, buf, sizeof(buf),
                                          JS_ATOM_EvalError + i);
-        n_args = 1 + (i == JS_AGGREGATE_ERROR);
+        if (i == JS_SUPPRESSED_ERROR)
+            n_args = 3;
+        else
+            n_args = 1 + (i == JS_AGGREGATE_ERROR);
         funcs = js_native_error_proto_funcs + 2 * i;
         func_obj = JS_NewCConstructor(ctx, -1, name,
                                       ft.generic, n_args, JS_CFUNC_constructor_or_func_magic, i,

@@ -1993,7 +1993,10 @@ static JSValue js_error_constructor(JSContext *ctx, JSValueConst new_target,
     JS_FreeValue(ctx, proto);
     if (JS_IsException(obj))
         return obj;
-    arg_index = (magic == JS_AGGREGATE_ERROR);
+    if (magic == JS_SUPPRESSED_ERROR)
+        arg_index = 2; /* SuppressedError(error, suppressed, message) */
+    else
+        arg_index = (magic == JS_AGGREGATE_ERROR);
 
     message = argv[arg_index++];
     if (!JS_IsUndefined(message)) {
@@ -2004,28 +2007,39 @@ static JSValue js_error_constructor(JSContext *ctx, JSValueConst new_target,
                                JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
     }
 
-    if (arg_index < argc) {
-        options = argv[arg_index];
-        if (JS_IsObject(options)) {
-            int present = JS_HasProperty(ctx, options, JS_ATOM_cause);
-            if (present < 0)
-                goto exception;
-            if (present) {
-                JSValue cause = JS_GetProperty(ctx, options, JS_ATOM_cause);
-                if (JS_IsException(cause))
+    /* SuppressedError has no options argument; its own "error" and
+       "suppressed" data properties are defined after "message". */
+    if (magic == JS_SUPPRESSED_ERROR) {
+        JS_DefinePropertyValue(ctx, obj, JS_ATOM_error,
+                               JS_DupValue(ctx, argv[0]),
+                               JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+        JS_DefinePropertyValue(ctx, obj, JS_ATOM_suppressed,
+                               JS_DupValue(ctx, argv[1]),
+                               JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+    } else {
+        if (arg_index < argc) {
+            options = argv[arg_index];
+            if (JS_IsObject(options)) {
+                int present = JS_HasProperty(ctx, options, JS_ATOM_cause);
+                if (present < 0)
                     goto exception;
-                JS_DefinePropertyValue(ctx, obj, JS_ATOM_cause, cause,
-                                       JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+                if (present) {
+                    JSValue cause = JS_GetProperty(ctx, options, JS_ATOM_cause);
+                    if (JS_IsException(cause))
+                        goto exception;
+                    JS_DefinePropertyValue(ctx, obj, JS_ATOM_cause, cause,
+                                           JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+                }
             }
         }
-    }
 
-    if (magic == JS_AGGREGATE_ERROR) {
-        JSValue error_list = iterator_to_array(ctx, argv[0]);
-        if (JS_IsException(error_list))
-            goto exception;
-        JS_DefinePropertyValue(ctx, obj, JS_ATOM_errors, error_list,
-                               JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+        if (magic == JS_AGGREGATE_ERROR) {
+            JSValue error_list = iterator_to_array(ctx, argv[0]);
+            if (JS_IsException(error_list))
+                goto exception;
+            JS_DefinePropertyValue(ctx, obj, JS_ATOM_errors, error_list,
+                                   JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
+        }
     }
 
     /* skip the Error() function in the backtrace */
@@ -2087,7 +2101,8 @@ static const JSCFunctionListEntry js_native_error_proto_funcs[] = {
     DEF(JS_ATOM_URIError)
     DEF(JS_ATOM_InternalError)
     DEF(JS_ATOM_AggregateError)
-#undef DEF    
+    DEF(JS_ATOM_SuppressedError)
+#undef DEF
 };
 
 static JSValue js_error_isError(JSContext *ctx, JSValueConst this_val,
