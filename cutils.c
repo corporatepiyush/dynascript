@@ -116,6 +116,9 @@ int dbuf_claim(DynBuf *s, size_t len)
             return -1; /* overflow case */
         if (size > new_size)
             new_size = size;
+        /* growth floor: only ever raises new_size, never below requested */
+        if (new_size < 64)
+            new_size = 64;
         new_buf = s->realloc_func(s->opaque, s->buf, new_size);
         if (!new_buf) {
             s->error = TRUE;
