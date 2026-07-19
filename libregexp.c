@@ -2811,23 +2811,23 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
         capture[idx] = (value);                         \
     }
 
-    /* avoid saving the previous value if already saved */
-#define SAVE_CAPTURE_CHECK(idx, value)          \
-    {                                           \
-        StackElem *sp1;                         \
-        sp1 = sp;                               \
-        for(;;) {                               \
-            if (sp1 > bp) {                             \
-                if (sp1[-2].val == idx)                 \
-                    break;                              \
-                sp1 -= 2;                               \
-            } else {                                    \
-                CHECK_STACK_SPACE(2);                   \
-                sp[0].val = idx;                        \
-                sp[1].ptr = capture[idx];               \
-                sp += 2;                                \
-                break;                                  \
-            }                                           \
+    /* Avoid re-saving a register that already has an undo entry at the top
+       of the current backtrack frame. Checking only the top entry is O(1);
+       the previous full scan of the frame was O(n) per call and O(n^2) over
+       a counted quantifier. Duplicate (idx, old_ptr) undo entries are safe:
+       the 'no_match' unwind replays the frame sp->bp in reverse push order,
+       so for any idx the OLDEST entry pushed since bp -- the one holding
+       capture[idx] as of the checkpoint (bp) -- is applied last and wins.
+       The first save since bp still records that checkpoint value (it reads
+       capture[idx] before overwriting it), so the restored capture[] is
+       byte-identical to the full-scan version. */
+#define SAVE_CAPTURE_CHECK(idx, value)                  \
+    {                                                   \
+        if (sp == bp || sp[-2].val != (idx)) {          \
+            CHECK_STACK_SPACE(2);                       \
+            sp[0].val = (idx);                          \
+            sp[1].ptr = capture[idx];                   \
+            sp += 2;                                    \
         }                                               \
         capture[idx] = (value);                         \
     }
