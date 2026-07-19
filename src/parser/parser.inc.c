@@ -220,31 +220,39 @@ typedef struct JSFunctionDef {
     struct list_head child_list; /* list of JSFunctionDef.link */
     struct list_head link;
 
-    BOOL is_eval; /* TRUE if eval code */
-    int eval_type; /* only valid if is_eval = TRUE */
-    BOOL is_global_var; /* TRUE if variables are not defined locally:
-                           eval global, eval module or non strict eval */
-    BOOL is_func_expr; /* TRUE if function expression */
-    BOOL has_home_object; /* TRUE if the home object is available */
-    BOOL has_prototype; /* true if a prototype field is necessary */
-    BOOL has_simple_parameter_list;
-    BOOL has_parameter_expressions; /* if true, an argument scope is created */
-    BOOL has_use_strict; /* to reject directive in special cases */
-    BOOL has_eval_call; /* true if the function contains a call to eval() */
-    BOOL has_arguments_binding; /* true if the 'arguments' binding is
-                                   available in the function */
-    BOOL has_this_binding; /* true if the 'this' and new.target binding are
-                              available in the function */
-    BOOL new_target_allowed; /* true if the 'new.target' does not
-                                throw a syntax error */
-    BOOL super_call_allowed; /* true if super() is allowed */
-    BOOL super_allowed; /* true if super. or super[] is allowed */
-    BOOL arguments_allowed; /* true if the 'arguments' identifier is allowed */
-    BOOL is_derived_class_constructor;
-    BOOL in_function_body;
+    /* Boolean flags packed into one contiguous 1-bit run (were ~19 separate
+       BOOL/int fields, 4 bytes each). JSFunctionDef is parser-internal and
+       never serialized, so packing/reordering is safe; shrinks the struct by
+       ~88 bytes for better cache behavior during deep-closure parses. */
+    uint8_t is_eval : 1; /* TRUE if eval code */
+    uint8_t is_global_var : 1; /* TRUE if variables are not defined locally:
+                                  eval global, eval module or non strict eval */
+    uint8_t is_func_expr : 1; /* TRUE if function expression */
+    uint8_t has_home_object : 1; /* TRUE if the home object is available */
+    uint8_t has_prototype : 1; /* true if a prototype field is necessary */
+    uint8_t has_simple_parameter_list : 1;
+    uint8_t has_parameter_expressions : 1; /* if true, an argument scope is created */
+    uint8_t has_use_strict : 1; /* to reject directive in special cases */
+    uint8_t has_eval_call : 1; /* true if the function contains a call to eval() */
+    uint8_t has_arguments_binding : 1; /* true if the 'arguments' binding is
+                                          available in the function */
+    uint8_t has_this_binding : 1; /* true if the 'this' and new.target binding are
+                                     available in the function */
+    uint8_t new_target_allowed : 1; /* true if the 'new.target' does not
+                                        throw a syntax error */
+    uint8_t super_call_allowed : 1; /* true if super() is allowed */
+    uint8_t super_allowed : 1; /* true if super. or super[] is allowed */
+    uint8_t arguments_allowed : 1; /* true if the 'arguments' identifier is allowed */
+    uint8_t is_derived_class_constructor : 1;
+    uint8_t in_function_body : 1;
+    uint8_t need_home_object : 1;
+    uint8_t has_await : 1; /* TRUE if await is used (used in module eval) */
+    uint8_t strip_debug : 1; /* strip all debug info (implies strip_source = TRUE) */
+    uint8_t strip_source : 1; /* strip only source code */
     JSFunctionKindEnum func_kind : 8;
     JSParseFunctionEnum func_type : 8;
     uint8_t js_mode; /* bitmap of JS_MODE_x */
+    int eval_type; /* only valid if is_eval = TRUE */
     JSAtom func_name; /* JS_ATOM_NULL if no name */
 
     JSVarDef *vars;
@@ -267,7 +275,6 @@ typedef struct JSFunctionDef {
     int new_target_var_idx; /* variable containg the 'new.target' value, -1 if none */
     int this_active_func_var_idx; /* variable containg the 'this.active_func' value, -1 if none */
     int home_object_var_idx;
-    BOOL need_home_object;
 
     int scope_level;    /* index into fd->scopes if the current lexical scope */
     int scope_first;    /* index into vd->vars of first lexically scoped variable */
@@ -312,8 +319,6 @@ typedef struct JSFunctionDef {
     int line_number_last_pc;
 
     /* pc2line table */
-    BOOL strip_debug : 1; /* strip all debug info (implies strip_source = TRUE) */
-    BOOL strip_source : 1; /* strip only source code */
     JSAtom filename;
     uint32_t source_pos; /* pointer in the eval() source */
     GetLineColCache *get_line_col_cache; /* XXX: could remove to save memory */
@@ -323,7 +328,6 @@ typedef struct JSFunctionDef {
     int source_len;
 
     JSModuleDef *module; /* != NULL when parsing a module */
-    BOOL has_await; /* TRUE if await is used (used in module eval) */
 } JSFunctionDef;
 
 typedef struct JSToken {
@@ -7907,12 +7911,17 @@ static void js_mark_module_def(JSRuntime *rt, JSModuleDef *m,
 {
     int i;
 
-    for(i = 0; i < m->req_module_entries_count; i++) {
+    /* A module is GC-registered (loaded_modules) by js_new_module_def before
+       JS_ReadModule populates it, and each *_count is set from untrusted
+       bytecode before its array is allocated. An allocation that triggers GC
+       mid-read would then mark/free a module whose count>0 but array==NULL.
+       Guard on the array pointer so mark/free tolerate that transient state. */
+    for(i = 0; m->req_module_entries && i < m->req_module_entries_count; i++) {
         JSReqModuleEntry *rme = &m->req_module_entries[i];
         JS_MarkValue(rt, rme->attributes, mark_func);
     }
-    
-    for(i = 0; i < m->export_entries_count; i++) {
+
+    for(i = 0; m->export_entries && i < m->export_entries_count; i++) {
         JSExportEntry *me = &m->export_entries[i];
         if (me->export_type == JS_EXPORT_TYPE_LOCAL &&
             me->u.local.var_ref) {
@@ -7936,14 +7945,16 @@ static void js_free_module_def(JSRuntime *rt, JSModuleDef *m)
 
     JS_FreeAtomRT(rt, m->module_name);
 
-    for(i = 0; i < m->req_module_entries_count; i++) {
+    /* array pointer guards: tolerate a partially-constructed module (count>0,
+       array==NULL) from a GC/OOM mid-read in JS_ReadModule. */
+    for(i = 0; m->req_module_entries && i < m->req_module_entries_count; i++) {
         JSReqModuleEntry *rme = &m->req_module_entries[i];
         JS_FreeAtomRT(rt, rme->module_name);
         JS_FreeValueRT(rt, rme->attributes);
     }
     js_free_rt(rt, m->req_module_entries);
 
-    for(i = 0; i < m->export_entries_count; i++) {
+    for(i = 0; m->export_entries && i < m->export_entries_count; i++) {
         JSExportEntry *me = &m->export_entries[i];
         if (me->export_type == JS_EXPORT_TYPE_LOCAL)
             free_var_ref(rt, me->u.local.var_ref);
@@ -7954,7 +7965,7 @@ static void js_free_module_def(JSRuntime *rt, JSModuleDef *m)
 
     js_free_rt(rt, m->star_export_entries);
 
-    for(i = 0; i < m->import_entries_count; i++) {
+    for(i = 0; m->import_entries && i < m->import_entries_count; i++) {
         JSImportEntry *mi = &m->import_entries[i];
         JS_FreeAtomRT(rt, mi->import_name);
     }
@@ -10353,6 +10364,11 @@ static void free_bytecode_atoms(JSRuntime *rt,
     pos = 0;
     while (pos < bc_len) {
         op = bc_buf[pos];
+        /* A malformed/partially-read bytecode buffer (deserializer error path)
+           can hold an invalid op byte; short_opcode_info() would then index
+           opcode_info[] out of bounds. Valid bytecode always has op < OP_COUNT. */
+        if (op >= OP_COUNT)
+            break;
         if (use_short_opcodes)
             oi = &short_opcode_info(op);
         else
