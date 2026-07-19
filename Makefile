@@ -217,8 +217,17 @@ CFLAGS+=-DCONFIG_SCL_MODULES
 # -I every secure-c-libs header directory
 CFLAGS+=$(addprefix -I,$(sort $(dir $(wildcard $(SCL_DIR)/libs/*/*.h $(SCL_DIR)/libs/*/*/*.h))))
 EXTRA_LIBS+=$(SCL_DIR)/libscl.a
-# per-family flags are enabled here as each module's .c file lands:
-#   CONFIG_SCL_MODULE_HTTP / _ML / _DOCPARSE
+# each family compiles + defines its flag when requested, e.g.
+#   make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_HTTP=y
+ifdef CONFIG_SCL_MODULE_HTTP
+CFLAGS+=-DCONFIG_SCL_MODULE_HTTP
+endif
+ifdef CONFIG_SCL_MODULE_ML
+CFLAGS+=-DCONFIG_SCL_MODULE_ML
+endif
+ifdef CONFIG_SCL_MODULE_DOCPARSE
+CFLAGS+=-DCONFIG_SCL_MODULE_DOCPARSE
+endif
 endif
 ifdef CONFIG_WIN32
 LDEXPORT=
