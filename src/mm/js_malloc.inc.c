@@ -526,9 +526,17 @@ static inline int js_resize_array(JSContext *ctx, void **parray, int elem_size,
         return 0;
 }
 
+/* Correctly-typed DynBufReallocFunc adapter: calling js_realloc_rt (first arg
+   JSRuntime*) through the DynBufReallocFunc type (first arg void*) is C UB and
+   traps under -fsanitize=function / CFI / LTO. */
+static void *js_realloc_dbuf_rt(void *opaque, void *ptr, size_t size)
+{
+    return js_realloc_rt((JSRuntime *)opaque, ptr, size);
+}
+
 static inline void js_dbuf_init(JSContext *ctx, DynBuf *s)
 {
-    dbuf_init2(s, ctx->rt, (DynBufReallocFunc *)js_realloc_rt);
+    dbuf_init2(s, ctx->rt, js_realloc_dbuf_rt);
 }
 
 static void *js_realloc_bytecode_rt(void *opaque, void *ptr, size_t size)

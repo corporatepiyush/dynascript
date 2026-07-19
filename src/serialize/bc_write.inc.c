@@ -364,7 +364,27 @@ static int JS_ReadFunctionBytecode(BCReaderState *s, JSFunctionBytecode *b,
     pos = 0;
     while (pos < bc_len) {
         op = bc_buf[pos];
+        /* Untrusted op byte (0..255): short_opcode_info() indexes
+           opcode_info[OP_COUNT + (OP_TEMP_END - OP_TEMP_START)], remapping
+           op >= OP_TEMP_START to op + (OP_TEMP_END - OP_TEMP_START). That index
+           is < table size iff op < OP_COUNT; a larger op is an OOB read of the
+           opcode metadata table. Valid bytecode never emits op >= OP_COUNT. */
+        if (op >= OP_COUNT) {
+            /* truncate so the free path (free_bytecode_atoms) walks only the
+               valid, already-atom-fixed-up prefix — matches the bc_idx_to_atom
+               failure handling below. */
+            b->byte_code_len = pos;
+            return bc_read_error_end(s);
+        }
         len = short_opcode_info(op).size;
+        /* The opcode's whole encoding (incl. its atom/label operand read+written
+           below via get_u32/put_u32 at pos+1..pos+4) must lie within bc_len.
+           Without this, a truncated/forged blob triggers a heap OOB read+write
+           past the JSFunctionBytecode allocation. Overflow-safe: pos < bc_len. */
+        if ((uint32_t)len > bc_len - (uint32_t)pos) {
+            b->byte_code_len = pos;
+            return bc_read_error_end(s);
+        }
         switch(short_opcode_info(op).fmt) {
         case OP_FMT_atom:
         case OP_FMT_atom_u8:
@@ -414,6 +434,10 @@ static JSValue JS_ReadBigInt(BCReaderState *s)
     p = js_bigint_new(s->ctx, (len - 1) / (JS_LIMB_BITS / 8) + 1);
     if (!p)
         goto fail;
+    /* own p immediately so any later goto fail frees it (was leaked on
+       malformed/truncated input, an untrusted-reachable path). JS_CompactBigInt
+       on the success path consumes this same single reference. */
+    obj = JS_MKPTR(JS_TAG_BIG_INT, p);
     for(i = 0; i < len / (JS_LIMB_BITS / 8); i++) {
 #if JS_LIMB_BITS == 32
         if (bc_get_u32(s, &v))
@@ -456,6 +480,13 @@ static int BC_add_object_ref1(BCReaderState *s, JSObject *p)
                             sizeof(s->objects[0]),
                             &s->objects_size, s->objects_count + 1))
             return -1;
+        /* The table OWNS a reference to each object so a back-reference
+           (BC_TAG_OBJECT_REFERENCE) can never observe a freed object: a
+           malformed blob can otherwise drop an entry's last reference mid-read
+           (e.g. a failing JS_DefinePropertyValue) -> use-after-free. Released
+           in bc_reader_free. Refcount-neutral for well-formed input. */
+        if (p)
+            JS_DupValue(s->ctx, JS_MKPTR(JS_TAG_OBJECT, p));
         s->objects[s->objects_count++] = p;
     }
     return 0;
@@ -543,12 +574,14 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
         function_size += bc.byte_code_len;
     }
 
-    if (function_size > INT32_MAX)
-        return JS_ThrowOutOfMemory(ctx);
+    if (function_size > INT32_MAX) {
+        JS_ThrowOutOfMemory(ctx);
+        goto fail;
+    }
 
     b = js_mallocz(ctx, function_size);
     if (!b)
-        return JS_EXCEPTION;
+        goto fail;
 
     memcpy(b, &bc, offsetof(JSFunctionBytecode, debug));
     if (local_count != 0) {
@@ -672,6 +705,11 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
     b->realm = JS_DupContext(ctx);
     return obj;
  fail:
+    /* Until obj exists, b (and thus JS_FreeValue(obj)) does not yet own the
+       acquired func_name atom; free it here in that window to avoid a leak on
+       malformed/truncated input. bc.func_name is JS_ATOM_NULL before acquire. */
+    if (JS_IsUndefined(obj))
+        JS_FreeAtom(ctx, bc.func_name);
     JS_FreeValue(ctx, obj);
     return JS_EXCEPTION;
 }
@@ -908,7 +946,8 @@ static JSValue JS_ReadTypedArray(BCReaderState *s)
     if (JS_IsException(obj))
         goto fail;
     if (s->allow_reference) {
-        s->objects[idx] = JS_VALUE_GET_OBJ(obj);
+        /* fill the reserved slot; table owns a ref (see BC_add_object_ref1). */
+        s->objects[idx] = JS_VALUE_GET_OBJ(JS_DupValue(ctx, obj));
     }
     JS_FreeValue(ctx, array_buffer);
     return obj;
@@ -1139,7 +1178,9 @@ static JSValue JS_ReadObjectRec(BCReaderState *s)
             if (bc_get_leb128(s, &val))
                 return JS_EXCEPTION;
             bc_read_trace(s, "%u\n", val);
-            if (val >= s->objects_count) {
+            if (val >= s->objects_count || !s->objects[val]) {
+                /* NULL guards a reserved-but-unfilled slot (typed-array ctor)
+                   from a self-referential blob. */
                 return JS_ThrowSyntaxError(ctx, "invalid object reference (%u >= %u)",
                                            val, s->objects_count);
             }
@@ -1204,6 +1245,14 @@ static void bc_reader_free(BCReaderState *s)
         }
         js_free(s->ctx, s->idx_to_atom);
     }
-    js_free(s->ctx, s->objects);
+    if (s->objects) {
+        /* release the references the reference table owns (see
+           BC_add_object_ref1); NULL entries are reserved-but-unfilled slots. */
+        for(i = 0; i < s->objects_count; i++) {
+            if (s->objects[i])
+                JS_FreeValue(s->ctx, JS_MKPTR(JS_TAG_OBJECT, s->objects[i]));
+        }
+        js_free(s->ctx, s->objects);
+    }
 }
 

@@ -2871,7 +2871,7 @@ static int js_string_normalize1(JSContext *ctx, uint32_t **pout_buf,
     if (buf_len < 0)
         return -1;
     out_len = unicode_normalize(&out_buf, buf, buf_len, n_type,
-                                ctx->rt, (DynBufReallocFunc *)js_realloc_rt);
+                                ctx->rt, js_realloc_dbuf_rt);
     js_free(ctx, buf);
     if (out_len < 0)
         return -1;
