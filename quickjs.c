@@ -41812,6 +41812,450 @@ static JSValue js_array_from(JSContext *ctx, JSValueConst this_val,
     return r;
 }
 
+/* Array.fromAsync: the spec async closure is implemented as a chain of
+   promise reactions, using the same throwaway-capability idiom as the
+   'await' implementation of async functions. */
+
+/* phases in the low bits of the reaction magic */
+enum {
+    FROMASYNC_PHASE_NEXT = 0,       /* argv[0] = awaited result of next() */
+    FROMASYNC_PHASE_MAPPED,         /* argv[0] = awaited mapfn result (iterator) */
+    FROMASYNC_PHASE_ELEMENT,        /* argv[0] = awaited element (array-like) */
+    FROMASYNC_PHASE_MAPPED_ELEMENT, /* argv[0] = awaited mapfn result (array-like) */
+    FROMASYNC_PHASE_CLOSE,          /* return() settled: reject stored error */
+};
+#define FROMASYNC_REJECTED 8
+
+/* func_data slots of the driver reactions (FROMASYNC_PHASE_CLOSE uses only
+   [0] = reject and [1] = error) */
+enum {
+    FROMASYNC_DATA_RESOLVE = 0,
+    FROMASYNC_DATA_REJECT,
+    FROMASYNC_DATA_ARRAY,
+    FROMASYNC_DATA_ITER,    /* iterator, or the array-like object */
+    FROMASYNC_DATA_NEXT,    /* next method, or the array-like length */
+    FROMASYNC_DATA_K,
+    FROMASYNC_DATA_MAPFN,   /* undefined if no mapping */
+    FROMASYNC_DATA_THIS_ARG,
+    FROMASYNC_DATA_COUNT,
+};
+
+static JSValue js_array_fromAsync_resume(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv,
+                                         int magic, JSValue *func_data);
+
+/* Await(value): resolve it and schedule the 'phase' continuation.
+   Consumes 'value'. Return -1 if an exception is pending. */
+static int js_array_fromAsync_await(JSContext *ctx, JSValue value, int phase,
+                                    JSValueConst *func_data, int data_len)
+{
+    JSValue promise, on_settled[2];
+    JSValueConst throwaway[2] = { JS_UNDEFINED, JS_UNDEFINED };
+    int i, res;
+
+    promise = js_promise_resolve(ctx, ctx->promise_ctor, 1,
+                                 (JSValueConst *)&value, 0);
+    JS_FreeValue(ctx, value);
+    if (JS_IsException(promise))
+        return -1;
+    for(i = 0; i < 2; i++) {
+        on_settled[i] = JS_NewCFunctionData(ctx, js_array_fromAsync_resume, 1,
+                                            phase | (i ? FROMASYNC_REJECTED : 0),
+                                            data_len, func_data);
+        if (JS_IsException(on_settled[i])) {
+            if (i)
+                JS_FreeValue(ctx, on_settled[0]);
+            JS_FreeValue(ctx, promise);
+            return -1;
+        }
+    }
+    res = perform_promise_then(ctx, promise, (JSValueConst *)on_settled,
+                               throwaway);
+    JS_FreeValue(ctx, on_settled[0]);
+    JS_FreeValue(ctx, on_settled[1]);
+    JS_FreeValue(ctx, promise);
+    return res;
+}
+
+/* call 'reject' with the pending exception */
+static void js_array_fromAsync_reject(JSContext *ctx, JSValueConst reject)
+{
+    JSValue error, res;
+
+    error = JS_GetException(ctx);
+    res = JS_Call(ctx, reject, JS_UNDEFINED, 1, (JSValueConst *)&error);
+    if (JS_IsException(res))
+        JS_FreeValue(ctx, JS_GetException(ctx));
+    JS_FreeValue(ctx, res);
+    JS_FreeValue(ctx, error);
+}
+
+/* AsyncIteratorClose for an abrupt completion: call iter.return(), await
+   its result if any, then reject with the pending exception (the original
+   error always wins over errors from return()). */
+static void js_array_fromAsync_close_reject(JSContext *ctx, JSValueConst iter,
+                                            JSValueConst reject)
+{
+    JSValue error, method, res;
+    JSValueConst data[2];
+
+    error = JS_GetException(ctx);
+    method = JS_GetProperty(ctx, iter, JS_ATOM_return);
+    if (JS_IsException(method)) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        goto reject_now;
+    }
+    if (JS_IsUndefined(method) || JS_IsNull(method)) {
+        JS_FreeValue(ctx, method);
+        goto reject_now;
+    }
+    res = JS_Call(ctx, method, iter, 0, NULL);
+    JS_FreeValue(ctx, method);
+    if (JS_IsException(res)) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        goto reject_now;
+    }
+    data[0] = reject;
+    data[1] = (JSValueConst)error;
+    if (js_array_fromAsync_await(ctx, res, FROMASYNC_PHASE_CLOSE, data, 2)) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        goto reject_now;
+    }
+    JS_FreeValue(ctx, error);
+    return;
+ reject_now:
+    res = JS_Call(ctx, reject, JS_UNDEFINED, 1, (JSValueConst *)&error);
+    if (JS_IsException(res))
+        JS_FreeValue(ctx, JS_GetException(ctx));
+    JS_FreeValue(ctx, res);
+    JS_FreeValue(ctx, error);
+}
+
+/* one iterator-path step: guard k, call next() and schedule the
+   continuation; all failures settle the capability */
+static void js_array_fromAsync_step(JSContext *ctx, JSValueConst *func_data)
+{
+    JSValue next_result;
+    int64_t k;
+
+    JS_ToInt64(ctx, &k, func_data[FROMASYNC_DATA_K]);
+    if (k >= MAX_SAFE_INTEGER) {
+        JS_ThrowTypeError(ctx, "too many elements");
+        js_array_fromAsync_close_reject(ctx, func_data[FROMASYNC_DATA_ITER],
+                                        func_data[FROMASYNC_DATA_REJECT]);
+        return;
+    }
+    next_result = JS_Call(ctx, func_data[FROMASYNC_DATA_NEXT],
+                          func_data[FROMASYNC_DATA_ITER], 0, NULL);
+    if (JS_IsException(next_result))
+        goto reject;
+    if (js_array_fromAsync_await(ctx, next_result, FROMASYNC_PHASE_NEXT,
+                                 func_data, FROMASYNC_DATA_COUNT))
+        goto reject;
+    return;
+ reject:
+    js_array_fromAsync_reject(ctx, func_data[FROMASYNC_DATA_REJECT]);
+}
+
+/* one array-like-path step: fetch element k, or finish when k == len */
+static void js_array_fromAsync_step_arraylike(JSContext *ctx,
+                                              JSValueConst *func_data)
+{
+    JSValue v, res;
+    int64_t k, len;
+
+    JS_ToInt64(ctx, &k, func_data[FROMASYNC_DATA_K]);
+    JS_ToInt64(ctx, &len, func_data[FROMASYNC_DATA_NEXT]);
+    if (k >= len) {
+        if (JS_SetProperty(ctx, func_data[FROMASYNC_DATA_ARRAY],
+                           JS_ATOM_length, JS_NewInt64(ctx, len)) < 0)
+            goto reject;
+        res = JS_Call(ctx, func_data[FROMASYNC_DATA_RESOLVE], JS_UNDEFINED,
+                      1, &func_data[FROMASYNC_DATA_ARRAY]);
+        if (JS_IsException(res))
+            JS_FreeValue(ctx, JS_GetException(ctx));
+        JS_FreeValue(ctx, res);
+        return;
+    }
+    v = JS_GetPropertyInt64(ctx, func_data[FROMASYNC_DATA_ITER], k);
+    if (JS_IsException(v))
+        goto reject;
+    if (js_array_fromAsync_await(ctx, v, FROMASYNC_PHASE_ELEMENT,
+                                 func_data, FROMASYNC_DATA_COUNT))
+        goto reject;
+    return;
+ reject:
+    js_array_fromAsync_reject(ctx, func_data[FROMASYNC_DATA_REJECT]);
+}
+
+/* define A[k] = value (consumed), advance k and run the next step */
+static void js_array_fromAsync_define(JSContext *ctx, JSValue value,
+                                      JSValueConst *func_data, BOOL arraylike)
+{
+    JSValueConst data[FROMASYNC_DATA_COUNT];
+    int64_t k;
+    int i;
+
+    JS_ToInt64(ctx, &k, func_data[FROMASYNC_DATA_K]);
+    if (JS_DefinePropertyValueInt64(ctx, func_data[FROMASYNC_DATA_ARRAY], k,
+                                    value, JS_PROP_C_W_E | JS_PROP_THROW) < 0) {
+        if (arraylike)
+            js_array_fromAsync_reject(ctx, func_data[FROMASYNC_DATA_REJECT]);
+        else
+            js_array_fromAsync_close_reject(ctx,
+                                            func_data[FROMASYNC_DATA_ITER],
+                                            func_data[FROMASYNC_DATA_REJECT]);
+        return;
+    }
+    for(i = 0; i < FROMASYNC_DATA_COUNT; i++)
+        data[i] = func_data[i];
+    data[FROMASYNC_DATA_K] = (JSValueConst)JS_NewInt64(ctx, k + 1);
+    if (arraylike)
+        js_array_fromAsync_step_arraylike(ctx, data);
+    else
+        js_array_fromAsync_step(ctx, data);
+}
+
+static JSValue js_array_fromAsync_resume(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv,
+                                         int magic, JSValue *func_data)
+{
+    JSValueConst v = argv[0];
+    JSValue value, mapped, res, done_val;
+    int phase = magic & 7;
+    int done;
+
+    if (phase == FROMASYNC_PHASE_CLOSE) {
+        /* func_data: [0] = reject, [1] = original error */
+        res = JS_Call(ctx, func_data[0], JS_UNDEFINED, 1,
+                      (JSValueConst *)&func_data[1]);
+        if (JS_IsException(res))
+            JS_FreeValue(ctx, JS_GetException(ctx));
+        JS_FreeValue(ctx, res);
+        return JS_UNDEFINED;
+    }
+
+    if (magic & FROMASYNC_REJECTED) {
+        if (phase == FROMASYNC_PHASE_MAPPED) {
+            /* IfAbruptCloseAsyncIterator on Await(mappedValue) */
+            JS_Throw(ctx, JS_DupValue(ctx, v));
+            js_array_fromAsync_close_reject(ctx,
+                                            func_data[FROMASYNC_DATA_ITER],
+                                            func_data[FROMASYNC_DATA_REJECT]);
+        } else {
+            res = JS_Call(ctx, func_data[FROMASYNC_DATA_REJECT], JS_UNDEFINED,
+                          1, &v);
+            if (JS_IsException(res))
+                JS_FreeValue(ctx, JS_GetException(ctx));
+            JS_FreeValue(ctx, res);
+        }
+        return JS_UNDEFINED;
+    }
+
+    switch(phase) {
+    case FROMASYNC_PHASE_NEXT:
+        if (!JS_IsObject(v)) {
+            JS_ThrowTypeError(ctx, "iterator must return an object");
+            goto reject;
+        }
+        done_val = JS_GetProperty(ctx, v, JS_ATOM_done);
+        if (JS_IsException(done_val))
+            goto reject;
+        done = JS_ToBoolFree(ctx, done_val);
+        if (done) {
+            int64_t k;
+            JS_ToInt64(ctx, &k, func_data[FROMASYNC_DATA_K]);
+            if (JS_SetProperty(ctx, func_data[FROMASYNC_DATA_ARRAY],
+                               JS_ATOM_length, JS_NewInt64(ctx, k)) < 0)
+                goto reject;
+            res = JS_Call(ctx, func_data[FROMASYNC_DATA_RESOLVE], JS_UNDEFINED,
+                          1, (JSValueConst *)&func_data[FROMASYNC_DATA_ARRAY]);
+            if (JS_IsException(res))
+                JS_FreeValue(ctx, JS_GetException(ctx));
+            JS_FreeValue(ctx, res);
+            break;
+        }
+        value = JS_GetProperty(ctx, v, JS_ATOM_value);
+        if (JS_IsException(value))
+            goto reject;
+        if (!JS_IsUndefined(func_data[FROMASYNC_DATA_MAPFN])) {
+            JSValueConst args[2];
+            args[0] = (JSValueConst)value;
+            args[1] = func_data[FROMASYNC_DATA_K];
+            mapped = JS_Call(ctx, func_data[FROMASYNC_DATA_MAPFN],
+                             func_data[FROMASYNC_DATA_THIS_ARG], 2, args);
+            JS_FreeValue(ctx, value);
+            if (JS_IsException(mapped))
+                goto reject_close;
+            if (js_array_fromAsync_await(ctx, mapped, FROMASYNC_PHASE_MAPPED,
+                                         (JSValueConst *)func_data,
+                                         FROMASYNC_DATA_COUNT))
+                goto reject_close;
+        } else {
+            js_array_fromAsync_define(ctx, value, (JSValueConst *)func_data,
+                                      FALSE);
+        }
+        break;
+    case FROMASYNC_PHASE_MAPPED:
+        js_array_fromAsync_define(ctx, JS_DupValue(ctx, v),
+                                  (JSValueConst *)func_data, FALSE);
+        break;
+    case FROMASYNC_PHASE_ELEMENT:
+        if (!JS_IsUndefined(func_data[FROMASYNC_DATA_MAPFN])) {
+            JSValueConst args[2];
+            args[0] = v;
+            args[1] = func_data[FROMASYNC_DATA_K];
+            mapped = JS_Call(ctx, func_data[FROMASYNC_DATA_MAPFN],
+                             func_data[FROMASYNC_DATA_THIS_ARG], 2, args);
+            if (JS_IsException(mapped))
+                goto reject;
+            if (js_array_fromAsync_await(ctx, mapped,
+                                         FROMASYNC_PHASE_MAPPED_ELEMENT,
+                                         (JSValueConst *)func_data,
+                                         FROMASYNC_DATA_COUNT))
+                goto reject;
+        } else {
+            js_array_fromAsync_define(ctx, JS_DupValue(ctx, v),
+                                      (JSValueConst *)func_data, TRUE);
+        }
+        break;
+    case FROMASYNC_PHASE_MAPPED_ELEMENT:
+        js_array_fromAsync_define(ctx, JS_DupValue(ctx, v),
+                                  (JSValueConst *)func_data, TRUE);
+        break;
+    }
+    return JS_UNDEFINED;
+ reject_close:
+    js_array_fromAsync_close_reject(ctx, func_data[FROMASYNC_DATA_ITER],
+                                    func_data[FROMASYNC_DATA_REJECT]);
+    return JS_UNDEFINED;
+ reject:
+    js_array_fromAsync_reject(ctx, func_data[FROMASYNC_DATA_REJECT]);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_array_fromAsync(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv)
+{
+    // fromAsync(asyncItems, mapfn = void 0, thisArg = void 0)
+    JSValueConst items = argv[0], mapfn, this_arg;
+    JSValueConst data[FROMASYNC_DATA_COUNT];
+    JSValue promise, resolving_funcs[2], method, iter, next_method, r, v;
+
+    mapfn = JS_UNDEFINED;
+    this_arg = JS_UNDEFINED;
+    if (argc > 1) {
+        mapfn = argv[1];
+        if (argc > 2)
+            this_arg = argv[2];
+    }
+    method = JS_UNDEFINED;
+    iter = JS_UNDEFINED;
+    next_method = JS_UNDEFINED;
+    r = JS_UNDEFINED;
+
+    promise = JS_NewPromiseCapability(ctx, resolving_funcs);
+    if (JS_IsException(promise))
+        return promise;
+    /* from here on, errors reject the promise instead of throwing */
+    if (!JS_IsUndefined(mapfn) && !JS_IsFunction(ctx, mapfn)) {
+        JS_ThrowTypeError(ctx, "not a function");
+        goto reject;
+    }
+    method = JS_GetProperty(ctx, items, JS_ATOM_Symbol_asyncIterator);
+    if (JS_IsException(method))
+        goto reject;
+    if (JS_IsUndefined(method) || JS_IsNull(method)) {
+        JS_FreeValue(ctx, method);
+        method = JS_GetProperty(ctx, items, JS_ATOM_Symbol_iterator);
+        if (JS_IsException(method))
+            goto reject;
+        if (JS_IsUndefined(method) || JS_IsNull(method)) {
+            /* array-like path */
+            int64_t len;
+
+            JS_FreeValue(ctx, method);
+            method = JS_UNDEFINED;
+            iter = JS_ToObject(ctx, items);
+            if (JS_IsException(iter))
+                goto reject;
+            if (js_get_length64(ctx, &len, iter))
+                goto reject;
+            v = JS_NewInt64(ctx, len);
+            if (JS_IsConstructor(ctx, this_val))
+                r = JS_CallConstructor(ctx, this_val, 1, (JSValueConst *)&v);
+            else
+                r = js_array_constructor(ctx, JS_UNDEFINED, 1,
+                                         (JSValueConst *)&v);
+            JS_FreeValue(ctx, v);
+            if (JS_IsException(r))
+                goto reject;
+            data[FROMASYNC_DATA_RESOLVE] = (JSValueConst)resolving_funcs[0];
+            data[FROMASYNC_DATA_REJECT] = (JSValueConst)resolving_funcs[1];
+            data[FROMASYNC_DATA_ARRAY] = (JSValueConst)r;
+            data[FROMASYNC_DATA_ITER] = (JSValueConst)iter;
+            data[FROMASYNC_DATA_NEXT] = (JSValueConst)JS_NewInt64(ctx, len);
+            data[FROMASYNC_DATA_K] = (JSValueConst)JS_NewInt32(ctx, 0);
+            data[FROMASYNC_DATA_MAPFN] = mapfn;
+            data[FROMASYNC_DATA_THIS_ARG] = this_arg;
+            js_array_fromAsync_step_arraylike(ctx, data);
+            goto done;
+        }
+        if (!JS_IsFunction(ctx, method)) {
+            JS_ThrowTypeError(ctx, "value is not iterable");
+            goto reject;
+        }
+        v = JS_GetIterator2(ctx, items, method);
+        if (JS_IsException(v))
+            goto reject;
+        iter = JS_CreateAsyncFromSyncIterator(ctx, v);
+        JS_FreeValue(ctx, v);
+        if (JS_IsException(iter))
+            goto reject;
+    } else {
+        if (!JS_IsFunction(ctx, method)) {
+            JS_ThrowTypeError(ctx, "value is not async iterable");
+            goto reject;
+        }
+        iter = JS_GetIterator2(ctx, items, method);
+        if (JS_IsException(iter))
+            goto reject;
+    }
+    JS_FreeValue(ctx, method);
+    method = JS_UNDEFINED;
+    next_method = JS_GetProperty(ctx, iter, JS_ATOM_next);
+    if (JS_IsException(next_method))
+        goto reject;
+    if (JS_IsConstructor(ctx, this_val))
+        r = JS_CallConstructor(ctx, this_val, 0, NULL);
+    else
+        r = JS_NewArray(ctx);
+    /* per spec 'Let A be ? Construct(C)' is a plain ReturnIfAbrupt, not
+       IfAbruptCloseAsyncIterator: reject without closing the iterator */
+    if (JS_IsException(r))
+        goto reject;
+    data[FROMASYNC_DATA_RESOLVE] = (JSValueConst)resolving_funcs[0];
+    data[FROMASYNC_DATA_REJECT] = (JSValueConst)resolving_funcs[1];
+    data[FROMASYNC_DATA_ARRAY] = (JSValueConst)r;
+    data[FROMASYNC_DATA_ITER] = (JSValueConst)iter;
+    data[FROMASYNC_DATA_NEXT] = (JSValueConst)next_method;
+    data[FROMASYNC_DATA_K] = (JSValueConst)JS_NewInt32(ctx, 0);
+    data[FROMASYNC_DATA_MAPFN] = mapfn;
+    data[FROMASYNC_DATA_THIS_ARG] = this_arg;
+    js_array_fromAsync_step(ctx, data);
+    goto done;
+ reject:
+    js_array_fromAsync_reject(ctx, resolving_funcs[1]);
+ done:
+    JS_FreeValue(ctx, method);
+    JS_FreeValue(ctx, iter);
+    JS_FreeValue(ctx, next_method);
+    JS_FreeValue(ctx, r);
+    JS_FreeValue(ctx, resolving_funcs[0]);
+    JS_FreeValue(ctx, resolving_funcs[1]);
+    return promise;
+}
+
 static JSValue js_array_of(JSContext *ctx, JSValueConst this_val,
                            int argc, JSValueConst *argv)
 {
@@ -41932,6 +42376,7 @@ static JSValue JS_ArraySpeciesCreate(JSContext *ctx, JSValueConst obj, int64_t l
 static const JSCFunctionListEntry js_array_funcs[] = {
     JS_CFUNC_DEF("isArray", 1, js_array_isArray ),
     JS_CFUNC_DEF("from", 1, js_array_from ),
+    JS_CFUNC_DEF("fromAsync", 1, js_array_fromAsync ),
     JS_CFUNC_DEF("of", 0, js_array_of ),
     JS_CGETSET_DEF("[Symbol.species]", js_get_this, NULL ),
 };
@@ -44491,6 +44936,12 @@ static JSValue js_iterator_helper_next(JSContext *ctx, JSValueConst this_val,
                 method = JS_GetProperty(ctx, it->obj, JS_ATOM_return);
                 if (JS_IsException(method))
                     goto fail;
+                if (JS_IsUndefined(method) || JS_IsNull(method)) {
+                    /* IteratorClose: underlying iterator has no 'return' */
+                    *pdone = TRUE;
+                    ret = JS_UNDEFINED;
+                    goto done;
+                }
             }
             while (it->count > 0) {
                 it->count--;
@@ -44527,6 +44978,12 @@ static JSValue js_iterator_helper_next(JSContext *ctx, JSValueConst this_val,
                 method = JS_GetProperty(ctx, it->obj, JS_ATOM_return);
                 if (JS_IsException(method))
                     goto fail;
+                if (JS_IsUndefined(method) || JS_IsNull(method)) {
+                    /* IteratorClose: underlying iterator has no 'return' */
+                    *pdone = TRUE;
+                    ret = JS_UNDEFINED;
+                    goto done;
+                }
             }
         filter_again:
             item = JS_IteratorNext(ctx, it->obj, method, 0, NULL, pdone);
@@ -44570,6 +45027,12 @@ static JSValue js_iterator_helper_next(JSContext *ctx, JSValueConst this_val,
                     method = JS_GetProperty(ctx, it->obj, JS_ATOM_return);
                     if (JS_IsException(method))
                         goto fail;
+                    if (JS_IsUndefined(method) || JS_IsNull(method)) {
+                        /* IteratorClose: underlying iterator has no 'return' */
+                        *pdone = TRUE;
+                        ret = JS_UNDEFINED;
+                        goto done;
+                    }
                 }
                 item = JS_IteratorNext(ctx, it->obj, method, 0, NULL, pdone);
                 JS_FreeValue(ctx, method);
@@ -44652,6 +45115,12 @@ static JSValue js_iterator_helper_next(JSContext *ctx, JSValueConst this_val,
                 method = JS_GetProperty(ctx, it->obj, JS_ATOM_return);
                 if (JS_IsException(method))
                     goto fail;
+                if (JS_IsUndefined(method) || JS_IsNull(method)) {
+                    /* IteratorClose: underlying iterator has no 'return' */
+                    *pdone = TRUE;
+                    ret = JS_UNDEFINED;
+                    goto done;
+                }
             }
             item = JS_IteratorNext(ctx, it->obj, method, 0, NULL, pdone);
             JS_FreeValue(ctx, method);
@@ -44682,6 +45151,12 @@ static JSValue js_iterator_helper_next(JSContext *ctx, JSValueConst this_val,
                     method = JS_GetProperty(ctx, it->obj, JS_ATOM_return);
                     if (JS_IsException(method))
                         goto fail;
+                    if (JS_IsUndefined(method) || JS_IsNull(method)) {
+                        /* IteratorClose: underlying iterator has no 'return' */
+                        *pdone = TRUE;
+                        ret = JS_UNDEFINED;
+                        goto done;
+                    }
                 }
                 it->count--;
                 item = JS_IteratorNext(ctx, it->obj, method, 0, NULL, pdone);

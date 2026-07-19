@@ -101,6 +101,8 @@ typedef struct {
 typedef struct {
     struct list_head link;
     int timer_id;
+    int repeat; /* TRUE for setInterval timers */
+    int64_t delay;
     int64_t timeout;
     JSValue func;
 } JSOSTimer;
@@ -2173,7 +2175,7 @@ static void free_timer(JSRuntime *rt, JSOSTimer *th)
 }
 
 static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
-                                int argc, JSValueConst *argv)
+                                int argc, JSValueConst *argv, int magic)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSThreadState *ts = JS_GetRuntimeOpaque(rt);
@@ -2181,11 +2183,17 @@ static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
     JSValueConst func;
     JSOSTimer *th;
 
+    /* setTimeout/setInterval are also exposed as globals, so guard against
+       an embedder that installed helpers without js_std_init_handlers() */
+    if (!ts)
+        return JS_ThrowTypeError(ctx, "timers are not available in this context");
     func = argv[0];
     if (!JS_IsFunction(ctx, func))
         return JS_ThrowTypeError(ctx, "not a function");
     if (JS_ToInt64(ctx, &delay, argv[1]))
         return JS_EXCEPTION;
+    if (delay < 0)
+        delay = 0;
     th = js_mallocz(ctx, sizeof(*th));
     if (!th)
         return JS_EXCEPTION;
@@ -2194,6 +2202,8 @@ static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
         ts->next_timer_id = 1;
     else
         ts->next_timer_id++;
+    th->repeat = magic;
+    th->delay = delay;
     th->timeout = get_time_ms() + delay;
     th->func = JS_DupValue(ctx, func);
     list_add_tail(&th->link, &ts->os_timers);
@@ -2445,6 +2455,13 @@ static int js_os_poll(JSContext *ctx)
             if (delay <= 0) {
                 JSValue func;
                 /* the timer expired */
+                if (th->repeat) {
+                    /* re-arm before the call: the handler may clear
+                       this timer, so 'th' cannot be used afterwards */
+                    th->timeout = cur_time + th->delay;
+                    call_handler(ctx, th->func);
+                    return 0;
+                }
                 func = th->func;
                 th->func = JS_UNDEFINED;
                 free_timer(rt, th);
@@ -2583,6 +2600,13 @@ static int js_os_poll(JSContext *ctx)
             if (delay <= 0) {
                 JSValue func;
                 /* the timer expired */
+                if (th->repeat) {
+                    /* re-arm before the call: the handler may clear
+                       this timer, so 'th' cannot be used afterwards */
+                    th->timeout = cur_time + th->delay;
+                    call_handler(ctx, th->func);
+                    return 0;
+                }
                 func = th->func;
                 th->func = JS_UNDEFINED;
                 free_timer(rt, th);
@@ -3969,8 +3993,10 @@ static const JSCFunctionListEntry js_os_funcs[] = {
     OS_FLAG(SIGTTOU),
 #endif
     JS_CFUNC_DEF("now", 0, js_os_now ),
-    JS_CFUNC_DEF("setTimeout", 2, js_os_setTimeout ),
+    JS_CFUNC_MAGIC_DEF("setTimeout", 2, js_os_setTimeout, 0 ),
+    JS_CFUNC_MAGIC_DEF("setInterval", 2, js_os_setTimeout, 1 ),
     JS_CFUNC_DEF("clearTimeout", 1, js_os_clearTimeout ),
+    JS_CFUNC_DEF("clearInterval", 1, js_os_clearTimeout ),
     JS_CFUNC_DEF("sleepAsync", 1, js_os_sleepAsync ),
     JS_PROP_STRING_DEF("platform", OS_PLATFORM, 0 ),
     JS_CFUNC_DEF("getcwd", 0, js_os_getcwd ),
@@ -4060,15 +4086,15 @@ JSModuleDef *js_init_module_os(JSContext *ctx, const char *module_name)
 
 /**********************************************************/
 
-static JSValue js_print(JSContext *ctx, JSValueConst this_val,
-                        int argc, JSValueConst *argv)
+static JSValue js_print_internal(JSContext *ctx, int argc, JSValueConst *argv,
+                                 FILE *fp)
 {
     int i;
     JSValueConst v;
-    
+
     for(i = 0; i < argc; i++) {
         if (i != 0)
-            putchar(' ');
+            fputc(' ', fp);
         v = argv[i];
         if (JS_IsString(v)) {
             const char *str;
@@ -4076,23 +4102,69 @@ static JSValue js_print(JSContext *ctx, JSValueConst this_val,
             str = JS_ToCStringLen(ctx, &len, v);
             if (!str)
                 return JS_EXCEPTION;
-            fwrite(str, 1, len, stdout);
+            fwrite(str, 1, len, fp);
             JS_FreeCString(ctx, str);
         } else {
-            JS_PrintValue(ctx, js_print_value_write, stdout, v, NULL);
+            JS_PrintValue(ctx, js_print_value_write, fp, v, NULL);
         }
     }
-    putchar('\n');
+    fputc('\n', fp);
     return JS_UNDEFINED;
 }
 
-static JSValue js_console_log(JSContext *ctx, JSValueConst this_val,
-                              int argc, JSValueConst *argv)
+static JSValue js_print(JSContext *ctx, JSValueConst this_val,
+                        int argc, JSValueConst *argv)
 {
+    return js_print_internal(ctx, argc, argv, stdout);
+}
+
+/* magic bit 0: write to stderr instead of stdout */
+static JSValue js_console_write(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv, int magic)
+{
+    FILE *fp = (magic & 1) ? stderr : stdout;
     JSValue ret;
-    ret = js_print(ctx, this_val, argc, argv);
-    fflush(stdout);
+    ret = js_print_internal(ctx, argc, argv, fp);
+    fflush(fp);
     return ret;
+}
+
+static JSValue js_console_assert(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    if (argc > 0 && JS_ToBool(ctx, argv[0]))
+        return JS_UNDEFINED;
+    fputs("Assertion failed:", stderr);
+    if (argc > 1)
+        fputc(' ', stderr);
+    return js_console_write(ctx, this_val, argc > 1 ? argc - 1 : 0,
+                            argv + 1, 1);
+}
+
+/* console methods writing to stdout (magic 0) or stderr (magic 1);
+   installed with enumerable properties as the WHATWG console spec */
+static const struct {
+    const char *name;
+    int magic;
+} js_console_methods[] = {
+    { "log", 0 }, { "info", 0 }, { "debug", 0 },
+    { "trace", 1 }, { "warn", 1 }, { "error", 1 },
+};
+
+static JSValue js_std_queueMicrotask_job(JSContext *ctx,
+                                         int argc, JSValueConst *argv)
+{
+    return JS_Call(ctx, argv[0], JS_UNDEFINED, 0, NULL);
+}
+
+static JSValue js_std_queueMicrotask(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    if (!JS_IsFunction(ctx, argv[0]))
+        return JS_ThrowTypeError(ctx, "not a function");
+    if (JS_EnqueueJob(ctx, js_std_queueMicrotask_job, 1, &argv[0]))
+        return JS_EXCEPTION;
+    return JS_UNDEFINED;
 }
 
 void js_std_add_helpers(JSContext *ctx, int argc, char **argv)
@@ -4104,9 +4176,34 @@ void js_std_add_helpers(JSContext *ctx, int argc, char **argv)
     global_obj = JS_GetGlobalObject(ctx);
 
     console = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, console, "log",
-                      JS_NewCFunction(ctx, js_console_log, "log", 1));
+    for(i = 0; i < (int)countof(js_console_methods); i++) {
+        JS_SetPropertyStr(ctx, console, js_console_methods[i].name,
+                          JS_NewCFunctionMagic(ctx, js_console_write,
+                                               js_console_methods[i].name, 1,
+                                               JS_CFUNC_generic_magic,
+                                               js_console_methods[i].magic));
+    }
+    JS_SetPropertyStr(ctx, console, "assert",
+                      JS_NewCFunction(ctx, js_console_assert, "assert", 2));
     JS_SetPropertyStr(ctx, global_obj, "console", console);
+
+    /* standard global timer and microtask functions; the timers need
+       js_std_init_handlers() to have been called on the runtime. The
+       event loop poll hook is normally armed by the 'os' module init;
+       arm it here too so global timers fire without importing 'os'. */
+    os_poll_func = js_os_poll;
+    JS_SetPropertyStr(ctx, global_obj, "setTimeout",
+                      JS_NewCFunctionMagic(ctx, js_os_setTimeout, "setTimeout",
+                                           2, JS_CFUNC_generic_magic, 0));
+    JS_SetPropertyStr(ctx, global_obj, "setInterval",
+                      JS_NewCFunctionMagic(ctx, js_os_setTimeout, "setInterval",
+                                           2, JS_CFUNC_generic_magic, 1));
+    JS_SetPropertyStr(ctx, global_obj, "clearTimeout",
+                      JS_NewCFunction(ctx, js_os_clearTimeout, "clearTimeout", 1));
+    JS_SetPropertyStr(ctx, global_obj, "clearInterval",
+                      JS_NewCFunction(ctx, js_os_clearTimeout, "clearInterval", 1));
+    JS_SetPropertyStr(ctx, global_obj, "queueMicrotask",
+                      JS_NewCFunction(ctx, js_std_queueMicrotask, "queueMicrotask", 1));
 
     performance = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, performance, "now",
