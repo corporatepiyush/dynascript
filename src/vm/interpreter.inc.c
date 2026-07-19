@@ -3068,6 +3068,7 @@ static JSValue JS_CallConstructorInternal(JSContext *ctx,
 {
     JSObject *p;
     JSFunctionBytecode *b;
+    BOOL do_seal;
 
     if (js_poll_interrupts(ctx))
         return JS_EXCEPTION;
@@ -3089,8 +3090,18 @@ static JSValue JS_CallConstructorInternal(JSContext *ctx,
     }
 
     b = p->u.func.function_bytecode;
+    /* meta@sealed: make the instance non-extensible, but only at the OUTERMOST
+       constructor of the `new` (func_obj === new_target). A sealed base reached
+       through super() (func_obj != new_target) must NOT seal early, or the
+       derived constructor's own field writes would fail. */
+    do_seal = unlikely(b->is_sealed_class) &&
+              JS_VALUE_GET_TAG(new_target) == JS_TAG_OBJECT &&
+              JS_VALUE_GET_OBJ(new_target) == p;
     if (b->is_derived_class_constructor) {
-        return JS_CallInternal(ctx, func_obj, JS_UNDEFINED, new_target, argc, argv, flags);
+        JSValue ret = JS_CallInternal(ctx, func_obj, JS_UNDEFINED, new_target, argc, argv, flags);
+        if (do_seal && JS_VALUE_GET_TAG(ret) == JS_TAG_OBJECT)
+            JS_PreventExtensions(ctx, ret);
+        return ret;
     } else {
         JSValue obj, ret;
         /* legacy constructor behavior */
@@ -3101,9 +3112,13 @@ static JSValue JS_CallConstructorInternal(JSContext *ctx,
         if (JS_VALUE_GET_TAG(ret) == JS_TAG_OBJECT ||
             JS_IsException(ret)) {
             JS_FreeValue(ctx, obj);
+            if (do_seal && JS_VALUE_GET_TAG(ret) == JS_TAG_OBJECT)
+                JS_PreventExtensions(ctx, ret);
             return ret;
         } else {
             JS_FreeValue(ctx, ret);
+            if (do_seal)
+                JS_PreventExtensions(ctx, obj);
             return obj;
         }
     }

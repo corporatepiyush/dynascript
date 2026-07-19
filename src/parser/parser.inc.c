@@ -249,6 +249,7 @@ typedef struct JSFunctionDef {
     uint8_t has_await : 1; /* TRUE if await is used (used in module eval) */
     uint8_t strip_debug : 1; /* strip all debug info (implies strip_source = TRUE) */
     uint8_t strip_source : 1; /* strip only source code */
+    uint8_t is_sealed_class : 1; /* meta@sealed on this class constructor */
     JSFunctionKindEnum func_kind : 8;
     JSParseFunctionEnum func_type : 8;
     uint8_t js_mode; /* bitmap of JS_MODE_x */
@@ -376,6 +377,7 @@ typedef struct JSParseState {
     BOOL meta_unsafe_enabled;    /* set by meta@enable(unsafe) */
     BOOL meta_strict;            /* set by meta@strict: diagnostics become errors */
     BOOL meta_dump;              /* set by meta@dump: print captured directives */
+    BOOL meta_pending_sealed_class; /* meta@sealed captured for the next class decl */
     GetLineColCache get_line_col_cache;
 } JSParseState;
 
@@ -3901,6 +3903,12 @@ static __exception int js_parse_class(JSParseState *s, BOOL is_class_expr,
     if (!ctor_fd) {
         if (js_parse_class_default_ctor(s, class_flags & JS_DEFINE_CLASS_HAS_HERITAGE, &ctor_fd))
             goto fail;
+    }
+    if (s->meta_pending_sealed_class) {
+        /* meta@sealed: instances of this class are made non-extensible when the
+           constructor completes, so the shape the constructor builds is final. */
+        ctor_fd->is_sealed_class = TRUE;
+        s->meta_pending_sealed_class = FALSE;
     }
     /* patch the constant pool index for the constructor */
     put_u32(fd->byte_code.buf + ctor_cpool_offset, ctor_fd->parent_cpool_idx);
@@ -14521,6 +14529,7 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     b->has_simple_parameter_list = fd->has_simple_parameter_list;
     b->js_mode = fd->js_mode;
     b->is_derived_class_constructor = fd->is_derived_class_constructor;
+    b->is_sealed_class = fd->is_sealed_class;
     b->func_kind = fd->func_kind;
     b->need_home_object = (fd->home_object_var_idx >= 0 ||
                            fd->need_home_object);
@@ -14601,11 +14610,19 @@ static __exception int js_parse_directives(JSParseState *s)
     char str[20];
     JSParsePos pos;
     BOOL has_semi;
+    JSMetaHintSet *saved_meta;
 
     if (s->token.val != TOK_STRING)
         return 0;
 
     js_parse_get_pos(s, &pos);
+    /* The detection loop below lexes ahead and captures any meta@ directives
+       sitting between prologue strings into pending_meta; this pass is rewound
+       (js_parse_seek_token) and the statements are re-parsed, so those captures
+       are spurious duplicates. Discard them and restore whatever was pending on
+       entry — the real parse re-captures each directive against its target. */
+    saved_meta = s->pending_meta;
+    s->pending_meta = NULL;
 
     while(s->token.val == TOK_STRING) {
         /* Copy actual source string representation */
@@ -14679,6 +14696,8 @@ static __exception int js_parse_directives(JSParseState *s)
             s->cur_func->js_mode |= JS_MODE_STRICT;
         }
     }
+    meta_set_free(s->ctx, s->pending_meta);
+    s->pending_meta = saved_meta;
     return js_parse_seek_token(s, &pos);
 }
 
@@ -15775,7 +15794,7 @@ typedef enum BCTagEnum {
     BC_TAG_OBJECT_REFERENCE,
 } BCTagEnum;
 
-#define BC_VERSION 5
+#define BC_VERSION 6
 
 typedef struct BCWriterState {
     JSContext *ctx;
@@ -16115,6 +16134,7 @@ static int JS_WriteFunctionTag(BCWriterState *s, JSValueConst obj)
     bc_set_flags(&flags, &idx, b->arguments_allowed, 1);
     bc_set_flags(&flags, &idx, b->has_debug, 1);
     bc_set_flags(&flags, &idx, b->is_direct_or_indirect_eval, 1);
+    bc_set_flags(&flags, &idx, b->is_sealed_class, 1);
     assert(idx <= 16);
     bc_put_u16(s, flags);
     bc_put_u8(s, b->js_mode);

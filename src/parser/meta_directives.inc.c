@@ -508,8 +508,12 @@ static int meta_apply_directive(JSParseState *s, const JSMetaDirective *d,
             return -1;
     }
 
+    /* Retain codegen-relevant hints for the construct parser to consume.
+       (Legality already checked above, so the target construct matches.) */
+    if (!strcmp(info->name, "sealed") || !strcmp(info->name, "fixed_layout"))
+        s->meta_pending_sealed_class = TRUE;
+
     meta_dump(s, d, info);
-    /* (future) fd->meta_flags |= ...; loop/branch hint into codegen here. */
     return 0;
 }
 
