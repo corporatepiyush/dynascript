@@ -807,9 +807,93 @@ static const JSMallocFunctions def_malloc_funcs = {
     js_def_malloc_usable_size,
 };
 
+#ifdef CONFIG_SCL_ALLOC
+/* Route the runtime's backing allocations through a secure-c-libs allocator
+   (per-runtime state in JSMallocState.opaque; no global allocator state).
+   ABI-compatible local view of scl_allocator_t (see
+   secure-c-libs/libs/core/scl_common.h) so the engine TU need not include the
+   scl headers. The default scl allocator forwards to libc, so pointers remain
+   libc pointers and js_def_malloc_usable_size stays valid for accounting and
+   for passing an accurate old_size to scl realloc. */
+typedef struct js_scl_allocator {
+    void *(*malloc_fn)(void *state, size_t size, size_t alignment);
+    void *(*calloc_fn)(void *state, size_t count, size_t size, size_t alignment);
+    void *(*realloc_fn)(void *state, void *ptr, size_t old_size,
+                        size_t new_size, size_t alignment);
+    void (*free_fn)(void *state, void *ptr);
+    void *state;
+} js_scl_allocator;
+
+extern js_scl_allocator *scl_allocator_default(void); /* from libscl.a */
+
+static void *js_scl_malloc(JSMallocState *s, size_t size)
+{
+    js_scl_allocator *a = s->opaque;
+    void *ptr;
+
+    assert(size != 0);
+    if (unlikely(s->malloc_size + size > s->malloc_limit))
+        return NULL;
+    ptr = a->malloc_fn(a->state, size, 0);
+    if (!ptr)
+        return NULL;
+    s->malloc_count++;
+    s->malloc_size += js_def_malloc_usable_size(ptr) + MALLOC_OVERHEAD;
+    return ptr;
+}
+
+static void js_scl_free(JSMallocState *s, void *ptr)
+{
+    js_scl_allocator *a = s->opaque;
+
+    if (!ptr)
+        return;
+    s->malloc_count--;
+    s->malloc_size -= js_def_malloc_usable_size(ptr) + MALLOC_OVERHEAD;
+    a->free_fn(a->state, ptr);
+}
+
+static void *js_scl_realloc(JSMallocState *s, void *ptr, size_t size)
+{
+    js_scl_allocator *a = s->opaque;
+    size_t old_size;
+
+    if (!ptr) {
+        if (size == 0)
+            return NULL;
+        return js_scl_malloc(s, size);
+    }
+    old_size = js_def_malloc_usable_size(ptr);
+    if (size == 0) {
+        s->malloc_count--;
+        s->malloc_size -= old_size + MALLOC_OVERHEAD;
+        a->free_fn(a->state, ptr);
+        return NULL;
+    }
+    if (s->malloc_size + size - old_size > s->malloc_limit)
+        return NULL;
+    ptr = a->realloc_fn(a->state, ptr, old_size, size, 0);
+    if (!ptr)
+        return NULL;
+    s->malloc_size += js_def_malloc_usable_size(ptr) - old_size;
+    return ptr;
+}
+
+static const JSMallocFunctions scl_malloc_funcs = {
+    js_scl_malloc,
+    js_scl_free,
+    js_scl_realloc,
+    js_def_malloc_usable_size,
+};
+#endif /* CONFIG_SCL_ALLOC */
+
 JSRuntime *JS_NewRuntime(void)
 {
+#ifdef CONFIG_SCL_ALLOC
+    return JS_NewRuntime2(&scl_malloc_funcs, scl_allocator_default());
+#else
     return JS_NewRuntime2(&def_malloc_funcs, NULL);
+#endif
 }
 
 void JS_SetMemoryLimit(JSRuntime *rt, size_t limit)

@@ -204,6 +204,13 @@ ifdef CONFIG_TSAN
 CFLAGS+=-fsanitize=thread -fno-omit-frame-pointer
 LDFLAGS+=-fsanitize=thread -fno-omit-frame-pointer
 endif
+# route the runtime's backing allocator through secure-c-libs (opt-in).
+# SCL_DIR points at the secure-c-libs checkout providing libscl.a.
+SCL_DIR?=../secure-c-libs
+ifdef CONFIG_SCL_ALLOC
+CFLAGS+=-DCONFIG_SCL_ALLOC
+EXTRA_LIBS+=$(SCL_DIR)/libscl.a
+endif
 ifdef CONFIG_WIN32
 LDEXPORT=
 else
