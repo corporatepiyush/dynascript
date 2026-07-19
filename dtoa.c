@@ -1369,6 +1369,17 @@ static void mpb_mul1_base(mpb_t *r, limb_t radix_base, limb_t a)
     }
 }
 
+#ifndef JS_ATOD_NO_FASTPATH
+/* 10^0 .. 10^22 are all exactly representable as IEEE-754 double
+   (10^k = 2^k * 5^k and 5^22 < 2^52), so they can be used as exact
+   multipliers/divisors in the js_atod fast path below. */
+static const double js_atod_pow10[23] = {
+    1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,
+    1e8,  1e9,  1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+    1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+};
+#endif
+
 /* XXX: add fast path for small integers */
 double js_atod(const char *str, const char **pnext, int radix, int flags,
                JSATODTempMem *tmp_mem)
@@ -1382,6 +1393,11 @@ double js_atod(const char *str, const char **pnext, int radix, int flags,
     double dval;
     BOOL is_bin_exp, is_zero, expn_overflow;
     uint64_t m, a;
+#ifndef JS_ATOD_NO_FASTPATH
+    uint64_t fast_m;   /* significant digits accumulated as an integer */
+    int fast_ndig;     /* number of significant digits in fast_m */
+    BOOL fast_ok;      /* exact fast path still viable for this input */
+#endif
 
     tmp0 = dtoa_malloc(&mptr, sizeof(mpb_t) + sizeof(limb_t) * DBIGNUM_LEN_MAX);
     assert((mptr - tmp_mem->mem) <= sizeof(JSATODTempMem) / sizeof(mptr[0]));
@@ -1437,6 +1453,13 @@ double js_atod(const char *str, const char **pnext, int radix, int flags,
     }
     if (radix == 0)
         radix = 10;
+
+#ifndef JS_ATOD_NO_FASTPATH
+    /* exact fast-path accumulator; only armed for base 10 */
+    fast_m = 0;
+    fast_ndig = 0;
+    fast_ok = (radix == 10);
+#endif
 
     cur_limb = 0;
     expn_offset = 0;
@@ -1496,6 +1519,20 @@ double js_atod(const char *str, const char **pnext, int radix, int flags,
             break;
         p++;
         pos++;
+#ifndef JS_ATOD_NO_FASTPATH
+        /* Accumulate the significant digits into a u64 for the exact fast
+           path. Cap at 16 digits: beyond that the value cannot stay below
+           2^53, and we avoid any u64 overflow. Runs for every significant
+           digit so fast_m holds them all (no truncation) when fast_ok. */
+        if (fast_ok) {
+            if (fast_ndig < 16) {
+                fast_m = fast_m * 10 + (uint64_t)c;
+                fast_ndig++;
+            } else {
+                fast_ok = FALSE;
+            }
+        }
+#endif
         if (digit_count < max_digits) {
             /* XXX: could be faster when radix_bits != 0 */
             cur_limb = cur_limb * radix + c;
@@ -1600,6 +1637,31 @@ double js_atod(const char *str, const char **pnext, int radix, int flags,
             m = round_to_d(&e, tmp0, -expn, JS_RNDN);
         } else {
             expn -= expn_offset;
+#ifndef JS_ATOD_NO_FASTPATH
+            /* Exact fast path (base 10 only, gated by fast_ok). When every
+               significant digit fits an integer mantissa < 2^53 and the
+               effective decimal exponent is small (|expn| <= 22), both the
+               mantissa and 10^|expn| are exactly representable as doubles, so
+               a single IEEE-754 multiply or divide (round-to-nearest, the
+               engine forces correct FP rounding) yields the correctly-rounded
+               result -- byte-identical to the bignum path (Clinger 1990). The
+               product/quotient stays well within normal range (< ~1e38, >
+               ~1e-22), so no overflow/subnormal handling is needed. Any input
+               outside this domain falls through to the unchanged slow path. */
+            if (fast_ok && fast_m < ((uint64_t)1 << 53) &&
+                expn >= -22 && expn <= 22) {
+                if (expn >= 0)
+                    dval = (double)fast_m * js_atod_pow10[expn];
+                else
+                    dval = (double)fast_m / js_atod_pow10[-expn];
+                if (is_neg)
+                    dval = -dval;
+                if (pnext)
+                    *pnext = p;
+                dtoa_free(tmp0);
+                return dval;
+            }
+#endif
             expn1 = expn + digit_count;
             if (expn1 >= max_exponent[radix - 2] + 1)
                 goto overflow;
