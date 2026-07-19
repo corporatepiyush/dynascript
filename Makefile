@@ -228,6 +228,21 @@ endif
 ifneq ($(or $(wildcard qjs-scl-docparse.c),$(CONFIG_SCL_MODULE_DOCPARSE)),)
 CFLAGS+=-DCONFIG_SCL_MODULE_DOCPARSE
 endif
+ifneq ($(or $(wildcard qjs-scl-compress.c),$(CONFIG_SCL_MODULE_COMPRESS)),)
+CFLAGS+=-DCONFIG_SCL_MODULE_COMPRESS
+endif
+ifneq ($(or $(wildcard qjs-scl-random.c),$(CONFIG_SCL_MODULE_RANDOM)),)
+CFLAGS+=-DCONFIG_SCL_MODULE_RANDOM
+endif
+ifneq ($(or $(wildcard qjs-scl-sort.c),$(CONFIG_SCL_MODULE_SORT)),)
+CFLAGS+=-DCONFIG_SCL_MODULE_SORT
+endif
+ifneq ($(or $(wildcard qjs-scl-search.c),$(CONFIG_SCL_MODULE_SEARCH)),)
+CFLAGS+=-DCONFIG_SCL_MODULE_SEARCH
+endif
+ifneq ($(wildcard qjs-scl-structures3.c),)
+CFLAGS+=-DCONFIG_SCL_MODULE_STRUCTURES3
+endif
 endif
 ifdef CONFIG_WIN32
 LDEXPORT=
@@ -297,6 +312,21 @@ SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-ml.o
 endif
 ifneq ($(or $(wildcard qjs-scl-docparse.c),$(CONFIG_SCL_MODULE_DOCPARSE)),)
 SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-docparse.o
+endif
+ifneq ($(or $(wildcard qjs-scl-compress.c),$(CONFIG_SCL_MODULE_COMPRESS)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-compress.o
+endif
+ifneq ($(or $(wildcard qjs-scl-random.c),$(CONFIG_SCL_MODULE_RANDOM)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-random.o
+endif
+ifneq ($(or $(wildcard qjs-scl-sort.c),$(CONFIG_SCL_MODULE_SORT)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-sort.o
+endif
+ifneq ($(or $(wildcard qjs-scl-search.c),$(CONFIG_SCL_MODULE_SEARCH)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-search.o
+endif
+ifneq ($(wildcard qjs-scl-structures3.c),)
+SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-structures3.o
 endif
 QJS_OBJS+=$(SCL_MODULE_OBJS)
 endif

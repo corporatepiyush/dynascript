@@ -170,6 +170,26 @@ int js_scl_init_all(JSContext *ctx)
     if (js_scl_init_docparse(ctx))
         return -1;
 #endif
+#ifdef CONFIG_SCL_MODULE_COMPRESS
+    if (js_scl_init_compress(ctx))
+        return -1;
+#endif
+#ifdef CONFIG_SCL_MODULE_RANDOM
+    if (js_scl_init_random(ctx))
+        return -1;
+#endif
+#ifdef CONFIG_SCL_MODULE_SORT
+    if (js_scl_init_sort(ctx))
+        return -1;
+#endif
+#ifdef CONFIG_SCL_MODULE_SEARCH
+    if (js_scl_init_search(ctx))
+        return -1;
+#endif
+#ifdef CONFIG_SCL_MODULE_STRUCTURES3
+    if (js_scl_init_structures3(ctx))
+        return -1;
+#endif
     return 0;
 }
 

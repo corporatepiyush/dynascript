@@ -71,6 +71,21 @@ int js_scl_init_ml(JSContext *ctx);
 #ifdef CONFIG_SCL_MODULE_DOCPARSE
 int js_scl_init_docparse(JSContext *ctx);
 #endif
+#ifdef CONFIG_SCL_MODULE_COMPRESS
+int js_scl_init_compress(JSContext *ctx);
+#endif
+#ifdef CONFIG_SCL_MODULE_RANDOM
+int js_scl_init_random(JSContext *ctx);
+#endif
+#ifdef CONFIG_SCL_MODULE_SORT
+int js_scl_init_sort(JSContext *ctx);
+#endif
+#ifdef CONFIG_SCL_MODULE_SEARCH
+int js_scl_init_search(JSContext *ctx);
+#endif
+#ifdef CONFIG_SCL_MODULE_STRUCTURES3
+int js_scl_init_structures3(JSContext *ctx);
+#endif
 
 /* Register every available scl:* module in `ctx`. Called from the CLI. */
 int js_scl_init_all(JSContext *ctx);
