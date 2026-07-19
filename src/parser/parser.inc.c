@@ -353,6 +353,8 @@ typedef struct JSToken {
     } u;
 } JSToken;
 
+typedef struct JSMetaHintSet JSMetaHintSet; /* meta@ directive accumulator, defined in meta_directives.inc.c */
+
 typedef struct JSParseState {
     JSContext *ctx;
     const char *filename;
@@ -368,6 +370,12 @@ typedef struct JSParseState {
     BOOL is_module; /* parsing a module */
     BOOL allow_html_comments;
     BOOL ext_json; /* JSON parsing: true if accepting JSON superset */
+    /* meta@ optimization directives (see meta_directives.inc.c). All default to
+       0/NULL via the js_parse_init memset; only touched on the comment path. */
+    JSMetaHintSet *pending_meta; /* directives captured before the next statement */
+    BOOL meta_unsafe_enabled;    /* set by meta@enable(unsafe) */
+    BOOL meta_strict;            /* set by meta@strict: diagnostics become errors */
+    BOOL meta_dump;              /* set by meta@dump: print captured directives */
     GetLineColCache get_line_col_cache;
 } JSParseState;
 
@@ -608,6 +616,13 @@ static int js_parse_expect_semi(JSParseState *s)
     }
     return next_token(s);
 }
+
+/* meta@ optimization directive front-end: lexer capture, registry, argument
+   parser, safety-tier gating, legality diagnostics and attachment. Depends on
+   get_line_col()/js_parse_error_v() (above) and js_resize_array()/js_mallocz()
+   (mm fragment); referenced from next_token() and js_parse_statement_or_decl()
+   further down. */
+#include "meta_directives.inc.c"
 
 static int js_parse_error_reserved_identifier(JSParseState *s)
 {
@@ -1104,6 +1119,9 @@ static __exception int next_token(JSParseState *s)
         if (p[1] == '*') {
             /* comment */
             p += 2;
+            if (unlikely(js_meta_prefix(p, s->buf_end) != NULL) &&
+                js_parse_meta_comment(s, p, TRUE)) /* capture meta@ directives */
+                goto fail;
             for(;;) {
                 if (*p == '\0' && p >= s->buf_end) {
                     js_parse_error(s, "unexpected end of comment");
@@ -1131,6 +1149,9 @@ static __exception int next_token(JSParseState *s)
         } else if (p[1] == '/') {
             /* line comment */
             p += 2;
+            if (unlikely(js_meta_prefix(p, s->buf_end) != NULL) &&
+                js_parse_meta_comment(s, p, FALSE)) /* capture meta@ directives */
+                goto fail;
         skip_line_comment:
             for(;;) {
                 if (*p == '\0' && p >= s->buf_end)
@@ -7171,6 +7192,11 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
         }
     }
 
+    /* Attach any meta@ directives captured immediately before this statement.
+       Runs after label handling so the token is the construct keyword. */
+    if (meta_begin_statement(s))
+        goto fail;
+
     switch(tok = s->token.val) {
     case '{':
         if (js_parse_block(s))
@@ -10268,20 +10294,32 @@ static __exception int js_parse_source_element(JSParseState *s)
     if (s->token.val == TOK_FUNCTION ||
         (token_is_pseudo_keyword(s, JS_ATOM_async) &&
          peek_token(s, TRUE) == TOK_FUNCTION)) {
+        /* top-level function declarations are parsed here, not through
+           js_parse_statement_or_decl, so attach any meta@ directives now
+           (covers plain and `async function`). */
+        if (meta_attach(s, JS_META_CTX_FUNC | JS_META_CTX_STMT))
+            return -1;
         if (js_parse_function_decl(s, JS_PARSE_FUNC_STATEMENT,
                                    JS_FUNC_NORMAL, JS_ATOM_NULL,
                                    s->token.ptr))
             return -1;
     } else if (s->token.val == TOK_EXPORT && fd->module) {
+        /* export may wrap a function or class declaration */
+        if (meta_attach(s, JS_META_CTX_FUNC | JS_META_CTX_CLASS | JS_META_CTX_STMT))
+            return -1;
         if (js_parse_export(s))
             return -1;
     } else if (s->token.val == TOK_IMPORT && fd->module &&
                ((tok = peek_token(s, FALSE)) != '(' && tok != '.'))  {
         /* the peek_token is needed to avoid confusion with ImportCall
            (dynamic import) or import.meta */
+        if (meta_attach(s, JS_META_CTX_STMT))
+            return -1;
         if (js_parse_import(s))
             return -1;
     } else {
+        /* js_parse_statement_or_decl runs its own meta_begin_statement (after
+           label handling), so pending_meta is drained there. */
         if (js_parse_statement_or_decl(s, DECL_MASK_ALL))
             return -1;
     }
@@ -15500,6 +15538,7 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
     fd->body_scope = fd->scope_level;
 
     err = js_parse_program(s);
+    meta_free_state(s); /* release any captured-but-unattached meta@ directives */
     if (err) {
     fail:
         free_token(s, &s->token);
