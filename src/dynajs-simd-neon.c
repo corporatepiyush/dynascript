@@ -1006,8 +1006,63 @@ static void simd_neon_clamp(float *restrict out,
   }
 }
 
+/* ── forward value search (NEON: compare a lane-block, then locate the
+ *    first hit scalar within the block; scalar tail). find_u8 stays memchr
+ *    (already SIMD in libc), set by the scalar override. ─────────────── */
+static size_t simd_neon_find_u16(const uint16_t *restrict p, uint16_t v,
+                                 size_t n) {
+  size_t i = 0;
+  uint16x8_t vv = vdupq_n_u16(v);
+  for (; i + 8 <= n; i += 8)
+    if (vmaxvq_u16(vceqq_u16(vld1q_u16(p + i), vv)))
+      for (size_t j = i; j < i + 8; j++)
+        if (p[j] == v) return j;
+  for (; i < n; i++)
+    if (p[i] == v) return i;
+  return SIZE_MAX;
+}
+static size_t simd_neon_find_u32(const uint32_t *restrict p, uint32_t v,
+                                 size_t n) {
+  size_t i = 0;
+  uint32x4_t vv = vdupq_n_u32(v);
+  for (; i + 4 <= n; i += 4)
+    if (vmaxvq_u32(vceqq_u32(vld1q_u32(p + i), vv)))
+      for (size_t j = i; j < i + 4; j++)
+        if (p[j] == v) return j;
+  for (; i < n; i++)
+    if (p[i] == v) return i;
+  return SIZE_MAX;
+}
+static size_t simd_neon_find_f32(const float *restrict p, float v, size_t n) {
+  size_t i = 0;
+  float32x4_t vv = vdupq_n_f32(v);
+  for (; i + 4 <= n; i += 4)
+    if (vmaxvq_u32(vceqq_f32(vld1q_f32(p + i), vv)))
+      for (size_t j = i; j < i + 4; j++)
+        if (p[j] == v) return j;
+  for (; i < n; i++)
+    if (p[i] == v) return i;
+  return SIZE_MAX;
+}
+static size_t simd_neon_find_f64(const double *restrict p, double v, size_t n) {
+  size_t i = 0;
+  float64x2_t vv = vdupq_n_f64(v);
+  for (; i + 2 <= n; i += 2)
+    if (vmaxvq_u32(vreinterpretq_u32_u64(vceqq_f64(vld1q_f64(p + i), vv)))) {
+      if (p[i] == v) return i;
+      if (p[i + 1] == v) return i + 1;
+    }
+  for (; i < n; i++)
+    if (p[i] == v) return i;
+  return SIZE_MAX;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_neon(simd_t *t) {
+  t->find_u16 = simd_neon_find_u16;
+  t->find_u32 = simd_neon_find_u32;
+  t->find_f32 = simd_neon_find_f32;
+  t->find_f64 = simd_neon_find_f64;
   t->dot = simd_neon_dot;
   t->dot_f = simd_neon_dot_f;
   t->norm_l2_sq = simd_neon_norm_l2_sq;

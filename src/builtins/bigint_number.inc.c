@@ -1751,37 +1751,21 @@ static JSValue js_typed_array_copyWithin(JSContext *ctx, JSValueConst this_val,
    inc is +1 (indexOf/includes) or -1 (lastIndexOf). Returns index or -1. */
 static int ta_scan_u16(const uint16_t *pv, int k, int stop, int inc, uint16_t v)
 {
-#ifdef TA_NEON
-    uint16x8_t vv = vdupq_n_u16(v);
-    if (inc > 0) {
-        for (; k + 8 <= stop; k += 8)
-            if (vmaxvq_u16(vceqq_u16(vld1q_u16(pv + k), vv)))
-                for (int j = k; j < k + 8; j++) if (pv[j] == v) return j;
-    } else {
-        for (; k - 8 >= stop; k -= 8)
-            if (vmaxvq_u16(vceqq_u16(vld1q_u16(pv + k - 7), vv)))
-                for (int j = k; j > k - 8; j--) if (pv[j] == v) return j;
+    if (inc > 0) { /* forward: shared SIMD dispatch table */
+        size_t r = simd.find_u16(pv + k, v, (size_t)(stop - k));
+        return r == SIZE_MAX ? -1 : k + (int)r;
     }
-#endif
-    for (; k != stop; k += inc) if (pv[k] == v) return k;
+    for (; k != stop; k += inc) if (pv[k] == v) return k; /* backward */
     return -1;
 }
 
 static int ta_scan_u32(const uint32_t *pv, int k, int stop, int inc, uint32_t v)
 {
-#ifdef TA_NEON
-    uint32x4_t vv = vdupq_n_u32(v);
-    if (inc > 0) {
-        for (; k + 4 <= stop; k += 4)
-            if (vmaxvq_u32(vceqq_u32(vld1q_u32(pv + k), vv)))
-                for (int j = k; j < k + 4; j++) if (pv[j] == v) return j;
-    } else {
-        for (; k - 4 >= stop; k -= 4)
-            if (vmaxvq_u32(vceqq_u32(vld1q_u32(pv + k - 3), vv)))
-                for (int j = k; j > k - 4; j--) if (pv[j] == v) return j;
+    if (inc > 0) { /* forward: shared SIMD dispatch table */
+        size_t r = simd.find_u32(pv + k, v, (size_t)(stop - k));
+        return r == SIZE_MAX ? -1 : k + (int)r;
     }
-#endif
-    for (; k != stop; k += inc) if (pv[k] == v) return k;
+    for (; k != stop; k += inc) if (pv[k] == v) return k; /* backward */
     return -1;
 }
 
@@ -1810,41 +1794,21 @@ static int ta_scan_u64(const uint64_t *pv, int k, int stop, int inc, uint64_t v)
 /* Float value scan (v is finite / non-NaN; FP compare gives IEEE -0 == +0). */
 static int ta_scan_f32(const float *pv, int k, int stop, int inc, float v)
 {
-#ifdef TA_NEON
-    float32x4_t vv = vdupq_n_f32(v);
-    if (inc > 0) {
-        for (; k + 4 <= stop; k += 4)
-            if (vmaxvq_u32(vceqq_f32(vld1q_f32(pv + k), vv)))
-                for (int j = k; j < k + 4; j++) if (pv[j] == v) return j;
-    } else {
-        for (; k - 4 >= stop; k -= 4)
-            if (vmaxvq_u32(vceqq_f32(vld1q_f32(pv + k - 3), vv)))
-                for (int j = k; j > k - 4; j--) if (pv[j] == v) return j;
+    if (inc > 0) { /* forward: shared SIMD dispatch table */
+        size_t r = simd.find_f32(pv + k, v, (size_t)(stop - k));
+        return r == SIZE_MAX ? -1 : k + (int)r;
     }
-#endif
-    for (; k != stop; k += inc) if (pv[k] == v) return k;
+    for (; k != stop; k += inc) if (pv[k] == v) return k; /* backward */
     return -1;
 }
 
 static int ta_scan_f64(const double *pv, int k, int stop, int inc, double v)
 {
-#ifdef TA_NEON
-    float64x2_t vv = vdupq_n_f64(v);
-    if (inc > 0) {
-        for (; k + 2 <= stop; k += 2)
-            if (vmaxvq_u32(vreinterpretq_u32_u64(vceqq_f64(vld1q_f64(pv + k), vv)))) {
-                if (pv[k] == v) return k;
-                if (pv[k + 1] == v) return k + 1;
-            }
-    } else {
-        for (; k - 2 >= stop; k -= 2)
-            if (vmaxvq_u32(vreinterpretq_u32_u64(vceqq_f64(vld1q_f64(pv + k - 1), vv)))) {
-                if (pv[k] == v) return k;
-                if (pv[k - 1] == v) return k - 1;
-            }
+    if (inc > 0) { /* forward: shared SIMD dispatch table */
+        size_t r = simd.find_f64(pv + k, v, (size_t)(stop - k));
+        return r == SIZE_MAX ? -1 : k + (int)r;
     }
-#endif
-    for (; k != stop; k += inc) if (pv[k] == v) return k;
+    for (; k != stop; k += inc) if (pv[k] == v) return k; /* backward */
     return -1;
 }
 

@@ -563,7 +563,39 @@ void simd_scalar_clamp(float *restrict out,
 
 /* ── Override table ──────────────────────────────────────────────── */
 
+/* ── forward value search (scalar fallback) ─────────────────────── */
+static size_t simd_scalar_find_u8(const uint8_t *restrict p, uint8_t v,
+                                  size_t n) {
+  const void *r = memchr(p, v, n); /* libc memchr is already SIMD */
+  return r ? (size_t)((const uint8_t *)r - p) : SIZE_MAX;
+}
+static size_t simd_scalar_find_u16(const uint16_t *restrict p, uint16_t v,
+                                   size_t n) {
+  for (size_t i = 0; i < n; i++) if (p[i] == v) return i;
+  return SIZE_MAX;
+}
+static size_t simd_scalar_find_u32(const uint32_t *restrict p, uint32_t v,
+                                   size_t n) {
+  for (size_t i = 0; i < n; i++) if (p[i] == v) return i;
+  return SIZE_MAX;
+}
+static size_t simd_scalar_find_f32(const float *restrict p, float v,
+                                   size_t n) {
+  for (size_t i = 0; i < n; i++) if (p[i] == v) return i;
+  return SIZE_MAX;
+}
+static size_t simd_scalar_find_f64(const double *restrict p, double v,
+                                   size_t n) {
+  for (size_t i = 0; i < n; i++) if (p[i] == v) return i;
+  return SIZE_MAX;
+}
+
 void simd_override_scalar(simd_t *t) {
+  t->find_u8 = simd_scalar_find_u8;
+  t->find_u16 = simd_scalar_find_u16;
+  t->find_u32 = simd_scalar_find_u32;
+  t->find_f32 = simd_scalar_find_f32;
+  t->find_f64 = simd_scalar_find_f64;
   t->dot = simd_scalar_dot;
   t->dot_f = simd_scalar_dot_f;
   t->norm_l2_sq = simd_scalar_norm_l2_sq;

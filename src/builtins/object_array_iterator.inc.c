@@ -1833,43 +1833,23 @@ static int string_cmp(JSString *p1, JSString *p2, int x1, int x2, int len)
     return 0;
 }
 
-#if defined(__aarch64__) || defined(__ARM_NEON)
-#include <arm_neon.h>
-#endif
-
 static int string_indexof_char(JSString *p, int c, int from)
 {
-    /* assuming 0 <= from <= p->len */
-    int i, len = p->len;
+    /* assuming 0 <= from <= p->len. Uses the shared SIMD dispatch table's
+     * forward-search kernels (find_u8 = memchr; find_u16 = NEON/scalar). */
+    int len = p->len;
+    size_t r;
     if (p->is_wide_char) {
-        const uint16_t *s = p->u.str16;
-        i = from;
-#if defined(__aarch64__) || defined(__ARM_NEON)
-        /* NEON scan for a 16-bit code unit (8 lanes/iter); the scalar tail and
-         * the c > 0xffff case (never present in a uint16 string) fall through. */
-        if (c == (uint16_t)c) {
-            uint16x8_t vv = vdupq_n_u16((uint16_t)c);
-            for (; i + 8 <= len; i += 8) {
-                if (vmaxvq_u16(vceqq_u16(vld1q_u16(s + i), vv))) {
-                    for (int j = i; j < i + 8; j++)
-                        if (s[j] == c)
-                            return j;
-                }
-            }
+        if (c == (uint16_t)c) { /* c > 0xffff cannot be in a uint16 string */
+            r = simd.find_u16(p->u.str16 + from, (uint16_t)c,
+                              (size_t)(len - from));
+            if (r != SIZE_MAX)
+                return from + (int)r;
         }
-#endif
-        for (; i < len; i++) {
-            if (s[i] == c)
-                return i;
-        }
-    } else {
-        if ((c & ~0xff) == 0) {
-            /* 8-bit (Latin-1) string: libc memchr is SIMD-accelerated. */
-            const uint8_t *s = p->u.str8;
-            const void *r = memchr(s + from, (uint8_t)c, (size_t)(len - from));
-            if (r)
-                return (int)((const uint8_t *)r - s);
-        }
+    } else if ((c & ~0xff) == 0) {
+        r = simd.find_u8(p->u.str8 + from, (uint8_t)c, (size_t)(len - from));
+        if (r != SIZE_MAX)
+            return from + (int)r;
     }
     return -1;
 }

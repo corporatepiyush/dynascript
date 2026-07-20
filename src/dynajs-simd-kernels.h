@@ -202,6 +202,15 @@ typedef struct simd {
   void (*clamp)(float *restrict out, const float *restrict in, float lo,
                 float hi, size_t n);
 
+  /* ── Forward value search: first index of `v` in p[0..n), or SIZE_MAX.
+   *    Used by String.indexOf/includes (find_u8/u16) and TypedArray
+   *    indexOf/includes (find_u8/u16/u32/f32/f64). ─────────────────── */
+  size_t (*find_u8)(const uint8_t *restrict p, uint8_t v, size_t n);
+  size_t (*find_u16)(const uint16_t *restrict p, uint16_t v, size_t n);
+  size_t (*find_u32)(const uint32_t *restrict p, uint32_t v, size_t n);
+  size_t (*find_f32)(const float *restrict p, float v, size_t n);
+  size_t (*find_f64)(const double *restrict p, double v, size_t n);
+
 } simd_t;
 
 /* Global dispatch table — safe to read from any thread after init. */
