@@ -1151,6 +1151,17 @@ enum OPCodeEnum {
     OP_TEMP_END,
 };
 
+/* Bank-2 opcode ids (emitted as [OP_ext][op2]); see quickjs-opcode2.h. */
+enum OP2CodeEnum {
+#define DEF2(id, size, n_pop, n_push, f) OP2_ ## id,
+#include "quickjs-opcode2.h"
+#undef DEF2
+    OP2_COUNT,
+};
+/* category ranges — contiguous per category for handler locality + range checks */
+#define OP2_ARITH_FIRST OP2_mul_loc_loc
+#define OP2_ARITH_LAST  OP2_sub_loc_loc
+
 static int JS_InitAtoms(JSRuntime *rt);
 static JSAtom __JS_NewAtomInit(JSRuntime *rt, const char *str, int len,
                                int atom_type);

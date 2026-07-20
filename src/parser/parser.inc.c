@@ -405,6 +405,18 @@ static const JSOpCode opcode_info[OP_COUNT + (OP_TEMP_END - OP_TEMP_START)] = {
 #undef FMT
 };
 
+/* Bank-2 opcode descriptions, indexed by op2 (the byte after OP_ext).
+   size = total instruction length incl. the [OP_ext][op2] prefix. */
+static const JSOpCode opcode_info2[OP2_COUNT] = {
+#ifdef DUMP_BYTECODE
+#define DEF2(id, size, n_pop, n_push, f) { #id, size, n_pop, n_push, OP_FMT_ ## f },
+#else
+#define DEF2(id, size, n_pop, n_push, f) { size, n_pop, n_push, OP_FMT_ ## f },
+#endif
+#include "quickjs-opcode2.h"
+#undef DEF2
+};
+
 #if SHORT_OPCODES
 /* After the final compilation pass, short opcodes are used. Their
    opcodes overlap with the temporary opcodes which cannot appear in
@@ -15826,7 +15838,7 @@ typedef enum BCTagEnum {
     BC_TAG_OBJECT_REFERENCE,
 } BCTagEnum;
 
-#define BC_VERSION 7
+#define BC_VERSION 8
 
 typedef struct BCWriterState {
     JSContext *ctx;

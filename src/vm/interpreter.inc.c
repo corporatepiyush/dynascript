@@ -18,6 +18,8 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
 #define CASE(op)        case op
 #define DEFAULT         default
 #define BREAK           break
+#define SWITCH2(op2)    switch (op2)
+#define CASE2(op)       case op
 #else
     static const void * const dispatch_table[256] = {
 #define DEF(id, size, n_pop, n_push, f) && case_OP_ ## id,
@@ -29,13 +31,21 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
 #include "quickjs-opcode.h"
         [ OP_COUNT ... 255 ] = &&case_default
     };
+    static const void * const dispatch_table2[256] = {
+#define DEF2(id, size, n_pop, n_push, f) && case_OP2_ ## id,
+#include "quickjs-opcode2.h"
+#undef DEF2
+        [ OP2_COUNT ... 255 ] = &&case_default
+    };
 #define SWITCH(pc)      goto *dispatch_table[opcode = *pc++];
+#define SWITCH2(op2)    goto *dispatch_table2[op2];
 #ifdef OPCODE_ASM_LABEL
 #define CASE(op)        case_ ## op: asm volatile("label_" #op ":\n.globl label_" #op); dummy_case_ ## op
 #else
 #define CASE(op)        case_ ## op
 #endif
 #define DEFAULT         case_default
+#define CASE2(op)       case_ ## op
 #define BREAK           SWITCH(pc)
 #endif
 
@@ -2578,6 +2588,21 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             OP_CMP_IF_FALSE(OP_lte_if_false, OP_lte, <=);
             OP_CMP_IF_FALSE(OP_gt_if_false, OP_gt, >);
             OP_CMP_IF_FALSE(OP_gte_if_false, OP_gte, >=);
+
+        CASE(OP_ext):
+            /* Escape into bank 2: dispatch on the next byte. Handlers below are
+               placeholders — the resolve_labels fusion that emits these ops is
+               not wired yet, so with it off no OP_ext byte is ever produced and
+               these are unreachable. This lands the 512-opcode mechanism proven
+               output-neutral before the transform goes in. Real bodies (the
+               fused two-local arithmetic) replace the placeholders then. */
+            SWITCH2(*pc++) {
+            CASE2(OP2_mul_loc_loc):
+            CASE2(OP2_add_loc_loc):
+            CASE2(OP2_sub_loc_loc):
+                goto exception;
+            }
+            BREAK;
 
 #define OP_CMP_EQ(opcode, inv)                                          \
             CASE(opcode):                                               \

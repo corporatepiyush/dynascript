@@ -53,6 +53,7 @@ FMT(atom_u16)
 FMT(atom_label_u8)
 FMT(atom_label_u16)
 FMT(label_u16)
+FMT(loc2)  /* two u16 local indices (bank-2 fused arithmetic) */
 #undef FMT
 #endif /* FMT */
 
@@ -263,6 +264,10 @@ DEF(    lt_if_false, 5, 2, 0, label)
 DEF(   lte_if_false, 5, 2, 0, label)
 DEF(    gt_if_false, 5, 2, 0, label)
 DEF(   gte_if_false, 5, 2, 0, label)
+/* escape prefix into bank 2: the next byte selects a quickjs-opcode2.h op.
+   Its real length/n_pop/n_push come from opcode_info2[op2]; every bytecode
+   walker (interpreter, compute_stack_size, bc_read/bc_write) special-cases it. */
+DEF(            ext, 1, 0, 0, none)
 /* must be the last non short and non temporary opcode */
 DEF(            nop, 1, 0, 0, none)
 
