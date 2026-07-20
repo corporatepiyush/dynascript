@@ -301,7 +301,7 @@ endif
 
 all: $(OBJDIR) $(OBJDIR)/dynajs.check.o $(OBJDIR)/dynajs-cli.check.o $(PROGS)
 
-DYNAJS_LIB_OBJS=$(OBJDIR)/dynajs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/dynajs-libc.o
+DYNAJS_LIB_OBJS=$(OBJDIR)/dynajs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/dynajs-libc.o $(OBJDIR)/dynajs-simd-core.o $(OBJDIR)/dynajs-simd-scalar.o $(OBJDIR)/dynajs-simd-neon.o $(OBJDIR)/dynajs-simd-sse42.o $(OBJDIR)/dynajs-simd-avx2.o $(OBJDIR)/dynajs-simd-avx512.o $(OBJDIR)/dynajs-simd-sve.o
 
 DYNAJS_OBJS=$(OBJDIR)/dynajs-cli.o $(OBJDIR)/repl.o $(DYNAJS_LIB_OBJS)
 ifdef CONFIG_NATIVE_MODULES

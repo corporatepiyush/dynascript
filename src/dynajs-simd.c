@@ -27,79 +27,10 @@
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 #endif
 
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
-#include <arm_neon.h>
-#define DYN_SIMD_NEON 1
-#endif
-
-/* ---------- kernels ---------- */
-
-static float simd_dot_f32(const float *a, const float *b, size_t n)
-{
-    size_t i = 0;
-    float s = 0;
-#ifdef DYN_SIMD_NEON
-    float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f);
-    for (; i + 8 <= n; i += 8) {
-        acc0 = vfmaq_f32(acc0, vld1q_f32(a + i),     vld1q_f32(b + i));
-        acc1 = vfmaq_f32(acc1, vld1q_f32(a + i + 4), vld1q_f32(b + i + 4));
-    }
-    s = vaddvq_f32(vaddq_f32(acc0, acc1));
-#endif
-    for (; i < n; i++)
-        s += a[i] * b[i];
-    return s;
-}
-
-static float simd_sum_f32(const float *a, size_t n)
-{
-    size_t i = 0;
-    float s = 0;
-#ifdef DYN_SIMD_NEON
-    float32x4_t acc = vdupq_n_f32(0.0f);
-    for (; i + 4 <= n; i += 4)
-        acc = vaddq_f32(acc, vld1q_f32(a + i));
-    s = vaddvq_f32(acc);
-#endif
-    for (; i < n; i++)
-        s += a[i];
-    return s;
-}
-
-static void simd_scale_f32(float *a, float k, size_t n)
-{
-    size_t i = 0;
-#ifdef DYN_SIMD_NEON
-    float32x4_t vk = vdupq_n_f32(k);
-    for (; i + 4 <= n; i += 4)
-        vst1q_f32(a + i, vmulq_f32(vld1q_f32(a + i), vk));
-#endif
-    for (; i < n; i++)
-        a[i] *= k;
-}
-
-static void simd_axpy_f32(float *y, float alpha, const float *x, size_t n)
-{
-    size_t i = 0;
-#ifdef DYN_SIMD_NEON
-    float32x4_t va = vdupq_n_f32(alpha);
-    for (; i + 4 <= n; i += 4)
-        vst1q_f32(y + i, vfmaq_f32(vld1q_f32(y + i), va, vld1q_f32(x + i)));
-#endif
-    for (; i < n; i++)
-        y[i] += alpha * x[i];
-}
-
-static void simd_add_f32(float *out, const float *a, const float *b, size_t n)
-{
-    size_t i = 0;
-#ifdef DYN_SIMD_NEON
-    for (; i + 4 <= n; i += 4)
-        vst1q_f32(out + i, vaddq_f32(vld1q_f32(a + i), vld1q_f32(b + i)));
-#endif
-    for (; i < n; i++)
-        out[i] = a[i] + b[i];
-}
+/* Kernels come from the shared multi-ISA dispatch table (`simd`, installed once
+ * by simd_init() at runtime startup): NEON/AVX2/AVX-512/SVE where available,
+ * scalar otherwise. This is the same facility the engine core uses. */
+#include "dynajs-simd-kernels.h"
 
 /* ---------- JS <-> float32 backing buffer at the boundary ---------- */
 
@@ -144,7 +75,7 @@ static JSValue js_simd_dot(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     if (na != nb)
         return JS_ThrowRangeError(ctx, "dot: length mismatch");
-    return JS_NewFloat64(ctx, simd_dot_f32(a, b, na));
+    return JS_NewFloat64(ctx, simd.dot(a, b, na));
 }
 
 static JSValue js_simd_sum(JSContext *ctx, JSValueConst this_val,
@@ -155,7 +86,7 @@ static JSValue js_simd_sum(JSContext *ctx, JSValueConst this_val,
     (void)this_val; (void)argc;
     if (simd_get_f32(ctx, argv[0], &a, &n))
         return JS_EXCEPTION;
-    return JS_NewFloat64(ctx, simd_sum_f32(a, n));
+    return JS_NewFloat64(ctx, simd.sum(a, n));
 }
 
 static JSValue js_simd_scale(JSContext *ctx, JSValueConst this_val,
@@ -171,7 +102,7 @@ static JSValue js_simd_scale(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     if (simd_get_f32(ctx, argv[0], &a, &n))
         return JS_EXCEPTION;
-    simd_scale_f32(a, (float)k, n);
+    simd.mul_s(a, a, (float)k, n);
     return JS_DupValue(ctx, argv[0]);
 }
 
@@ -188,7 +119,7 @@ static JSValue js_simd_axpy(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     if (ny != nx)
         return JS_ThrowRangeError(ctx, "axpy: length mismatch");
-    simd_axpy_f32(y, (float)alpha, x, ny);
+    simd.axpy(y, (float)alpha, x, ny);
     return JS_DupValue(ctx, argv[0]);
 }
 
@@ -204,7 +135,7 @@ static JSValue js_simd_add(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     if (no != na || na != nb)
         return JS_ThrowRangeError(ctx, "add: length mismatch");
-    simd_add_f32(out, a, b, no);
+    simd.add(out, a, b, no);
     return JS_DupValue(ctx, argv[0]);
 }
 

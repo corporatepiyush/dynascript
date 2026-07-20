@@ -46,6 +46,7 @@
 #include "libregexp.h"
 #include "libunicode.h"
 #include "dtoa.h"
+#include "dynajs-simd-kernels.h"  /* shared multi-ISA SIMD dispatch table */
 
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1

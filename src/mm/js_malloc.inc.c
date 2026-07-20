@@ -680,6 +680,9 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
     ms.opaque = opaque;
     ms.malloc_limit = -1;
 
+    /* install the best-available SIMD kernels once (idempotent, pthread_once). */
+    simd_init();
+
     rt = mf->js_malloc(&ms, sizeof(JSRuntime));
     if (!rt)
         return NULL;
