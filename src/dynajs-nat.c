@@ -193,6 +193,10 @@ int js_nat_init_all(JSContext *ctx)
     if (js_nat_init_structures3(ctx))
         return -1;
 #endif
+#ifdef CONFIG_NATIVE_MODULE_SIMD
+    if (js_nat_init_simd(ctx))
+        return -1;
+#endif
     return 0;
 }
 

@@ -97,6 +97,9 @@ int js_nat_init_search(JSContext *ctx);
 #ifdef CONFIG_NATIVE_MODULE_STRUCTURES3
 int js_nat_init_structures3(JSContext *ctx);
 #endif
+#ifdef CONFIG_NATIVE_MODULE_SIMD
+int js_nat_init_simd(JSContext *ctx);
+#endif
 
 /* Register every compiled-in native module in `ctx`. Called from the CLI. */
 int js_nat_init_all(JSContext *ctx);

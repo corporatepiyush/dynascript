@@ -246,6 +246,9 @@ endif
 ifneq ($(wildcard src/dynajs-docparse.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_DOCPARSE
 endif
+ifneq ($(wildcard src/dynajs-simd.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_SIMD
+endif
 endif
 ifdef CONFIG_WIN32
 LDEXPORT=
@@ -330,6 +333,9 @@ NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-ml.o
 endif
 ifneq ($(wildcard src/dynajs-docparse.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-docparse.o
+endif
+ifneq ($(wildcard src/dynajs-simd.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-simd.o
 endif
 DYNAJS_OBJS+=$(NAT_MODULE_OBJS)
 endif
