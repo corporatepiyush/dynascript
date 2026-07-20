@@ -19,7 +19,6 @@ const b = new Float64Array(N).map((_, i) => (i * 3) % 7);
 const c = new Float64Array(N);
 
 let dot = 0;
-// meta@unroll(4)
 for (let i = 0; i < N; i++) dot += a[i] * b[i];
 
 // meta@autovec
@@ -46,10 +45,8 @@ let racc = 0;
 for (let i = 0; i < N; i++) racc += a[i];
 
 let tacc = 0;
-// meta@trip(64)
 for (let i = 0; i < N; i++) tacc += 1;
 
-// meta@fixed
 for (let i = 0; i < 4; i++) tacc += 0;
 
 let scpy = 0;
@@ -71,11 +68,9 @@ let pcount = 0;
 for (let i = 0; i < N; i++) pcount += 1;
 
 let hot = 0;
-// meta@hot
 for (let i = 0; i < N; i++) hot += a[i] * 2;
 
 let cold = 0;
-// meta@cold
 for (let i = 0; i < N; i++) cold += 1;
 
 console.log("loop level ok: dot=" + dot.toFixed(1) + " isum=" + isum +

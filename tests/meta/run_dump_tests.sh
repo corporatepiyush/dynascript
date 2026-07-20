@@ -58,8 +58,8 @@ expect_nocrash() {
 }
 
 echo "== capture + tier =="
-expect_dump  $'// meta@unroll(4)\nfor(let i=0;i<2;i++){}'                 'meta: unroll(4)'
-expect_dump  $'// meta@unroll(4)\nfor(let i=0;i<2;i++){}'                 '[SAFE]'
+expect_dump  $'// meta@prefetch(4)\nfor(let i=0;i<2;i++){}'                 'meta: prefetch(4)'
+expect_dump  $'// meta@prefetch(4)\nfor(let i=0;i<2;i++){}'                 '[SAFE]'
 expect_dump  $'// meta@enable(unsafe)\n// meta@int32\nfor(let i=0;i<2;i++){}' 'meta: int32'
 expect_dump  $'// meta@enable(unsafe)\n// meta@int32\nfor(let i=0;i<2;i++){}' '[UNSAFE]'
 expect_dump  $'// meta@sealed\nclass C{}'                                 'meta: sealed'
@@ -74,7 +74,7 @@ expect_dump  $'// meta@enable(unsafe)\n// meta@assume(x >= 0)\nlet x=1;'  'meta:
 echo "== warnings =="
 expect_warn  $'// meta@bogus_directive\n1;'                              "unknown meta directive 'meta@bogus_directive'"
 expect_warn  $'// meta@sealed\nfor(let i=0;i<1;i++){}'                    "'meta@sealed' applies to a class"
-expect_warn  $'// meta@unroll(4)\nclass C{}'                              "'meta@unroll' applies to a loop"
+expect_warn  $'// meta@prefetch(4)\nclass C{}'                              "'meta@prefetch' applies to a loop"
 expect_warn  $'// meta@int32\nfor(let i=0;i<1;i++){}'                     "requires a '// meta@enable(unsafe)'"
 expect_warn  $'// meta@enable(unsafe)\n// meta@range\nlet x=1;'           "expects a variable target"
 expect_warn  $'// meta@enable(unsafe)\n// meta@range(x)\nlet x=1;'        "expects 2..2 numeric argument"
@@ -91,18 +91,18 @@ expect_fail  $'// meta@strict\n// meta@int32\nfor(let i=0;i<1;i++){}'      "unga
 expect_clean $'// meta@strict\n// meta@enable(unsafe)\n// meta@int32\nfor(let i=0;i<1;i++){}' '' "strict + valid"
 
 echo "== forms: block, stacked, no-space, dump directive =="
-expect_dump  $'/* meta@unroll(2) */\nfor(let i=0;i<2;i++){}'              'meta: unroll(2)'
-expect_dump  $'/*\n meta@unroll(2)\n meta@reduce(sum)\n*/\nfor(let i=0;i<2;i++){}' 'meta: reduce(sum)'
-expect_dump  $'//meta@unroll(3)\nfor(let i=0;i<2;i++){}'                  'meta: unroll(3)'
+expect_dump  $'/* meta@prefetch(2) */\nfor(let i=0;i<2;i++){}'              'meta: prefetch(2)'
+expect_dump  $'/*\n meta@prefetch(2)\n meta@reduce(sum)\n*/\nfor(let i=0;i<2;i++){}' 'meta: reduce(sum)'
+expect_dump  $'//meta@prefetch(3)\nfor(let i=0;i<2;i++){}'                  'meta: prefetch(3)'
 # a file-level meta@dump enables the trace without the env var
 _run $'// meta@dump\n// meta@sealed\nclass C{}'; if grep -qF 'meta: sealed' "$TMP/err"; then ok; else bad "meta@dump self-enable"; fi
 
 echo "== every registered directive name is recognized (no 'unknown') =="
-names="unroll autovec int32 float64 nobounds nopoll reduce trip fixed stride1 contiguous prefetch independent parallel \
+names="prefetch autovec int32 float64 nobounds nopoll reduce stride1 contiguous independent parallel \
 inline noinline pure nosideeffects arena scoped_alloc noalloc memoize tailcall monomorphic \
 sealed fixed_layout pod final preallocate_fields soa noproto \
-likely unlikely unpredictable jumptable dense assume invariant noexcept nothrow \
-preallocate reuse pool stack noescape transient weak hot cold \
+jumptable dense assume invariant noexcept nothrow \
+preallocate reuse pool stack noescape transient weak \
 range nonnull nonzero type const frozen align length init volatile \
 enable strict dump"
 for n in $names; do
@@ -114,13 +114,13 @@ for(let i=0;i<1;i++){}"
 done
 
 echo "== exact dump lines (path normalized to FILE; every argument shape) =="
-expect_dump_line $'// meta@unroll(4)\nfor(let i=0;i<2;i++){}'                              'meta: unroll(4) @ FILE:1 [SAFE]'
+expect_dump_line $'// meta@prefetch(4)\nfor(let i=0;i<2;i++){}'                              'meta: prefetch(4) @ FILE:1 [SAFE]'
 expect_dump_line $'// meta@autovec\nfor(let i=0;i<2;i++){}'                                'meta: autovec @ FILE:1 [SAFE]'
 expect_dump_line $'// meta@enable(unsafe)\n// meta@int32\nlet x=1;'                        'meta: int32 @ FILE:2 [UNSAFE]'
 expect_dump_line $'// meta@sealed\nclass C{}'                                              'meta: sealed @ FILE:1 [SAFE]'
 expect_dump_line $'// meta@reduce(sum)\nfor(let i=0;i<2;i++){}'                            'meta: reduce(sum) @ FILE:1 [SAFE]'
-expect_dump_line $'// meta@trip(-5)\nfor(let i=0;i<2;i++){}'                               'meta: trip(-5) @ FILE:1 [SAFE]'
-expect_dump_line $'// meta@trip(999999999999999999999999999999)\nfor(let i=0;i<2;i++){}'  'meta: trip(9223372036854775807) @ FILE:1 [SAFE]'
+expect_dump_line $'// meta@prefetch(-5)\nfor(let i=0;i<2;i++){}'                           'meta: prefetch(-5) @ FILE:1 [SAFE]'
+expect_dump_line $'// meta@prefetch(999999999999999999999999999999)\nfor(let i=0;i<2;i++){}'  'meta: prefetch(9223372036854775807) @ FILE:1 [SAFE]'
 expect_dump_line $'// meta@preallocate(10)\nlet z=[];'                                     'meta: preallocate(10) @ FILE:1 [SAFE]'
 expect_dump_line $'// meta@enable(unsafe)\n// meta@range(x,0,255)\nlet x=1;'               'meta: range(x,0,255) @ FILE:2 [UNSAFE]'
 expect_dump_line $'// meta@enable(unsafe)\n// meta@type(v,i32)\nlet v=1;'                  'meta: type(v,i32) @ FILE:2 [UNSAFE]'
@@ -134,17 +134,14 @@ expect_dump_line $'// meta@enable(unsafe)\n// meta@nobounds, meta@nopoll\nfor(le
 
 echo "== every construct directive dumps with the correct safety tier =="
 nl=$'\n'
-# tier|directive-text(no internal spaces)|host — the 59 construct-attached
+# tier|directive-text(no internal spaces)|host — the 51 construct-attached
 # directives (file-level enable/strict/dump apply immediately and never dump).
-dirtable='SAFE|unroll(4)|for(let i=0;i<2;i++){}
-SAFE|autovec|for(let i=0;i<2;i++){}
+dirtable='SAFE|autovec|for(let i=0;i<2;i++){}
 UNSAFE|int32|let _s=1;
 UNSAFE|float64|let _s=1;
 UNSAFE|nobounds|for(let i=0;i<2;i++){}
 UNSAFE|nopoll|for(let i=0;i<2;i++){}
 SAFE|reduce(sum)|for(let i=0;i<2;i++){}
-SAFE|trip(4)|for(let i=0;i<2;i++){}
-SAFE|fixed|for(let i=0;i<2;i++){}
 UNSAFE|stride1|for(let i=0;i<2;i++){}
 UNSAFE|contiguous|for(let i=0;i<2;i++){}
 SAFE|prefetch(16)|for(let i=0;i<2;i++){}
@@ -167,9 +164,6 @@ UNSAFE|final|class _C{}
 SAFE|preallocate_fields(4)|class _C{}
 SAFE|soa|class _C{}
 UNSAFE|noproto|class _C{}
-SAFE|likely|if(1){}
-SAFE|unlikely|if(1){}
-SAFE|unpredictable|if(1){}
 SAFE|jumptable|switch(1){}
 SAFE|dense|switch(1){}
 UNSAFE|assume(x)|let _s=1;
@@ -183,8 +177,6 @@ UNSAFE|stack|let _s=1;
 UNSAFE|noescape|let _s=1;
 SAFE|transient|let _s=1;
 SAFE|weak|let _s=1;
-SAFE|hot|for(let i=0;i<2;i++){}
-SAFE|cold|for(let i=0;i<2;i++){}
 UNSAFE|range(x,0,9)|let _s=1;
 UNSAFE|nonnull(b)|let _s=1;
 UNSAFE|nonzero(q)|let _s=1;
@@ -204,7 +196,7 @@ while IFS='|' read -r tier dir host; do
     expect_dump "$src" "meta: $dir"   # captured with its arguments
     expect_dump "$src" "[$tier]"      # dumped with the correct safety tier
 done <<< "$dirtable"
-if [ "$tier_rows" -eq 59 ]; then ok; else bad "dirtable must list all 59 construct directives (has $tier_rows)"; fi
+if [ "$tier_rows" -eq 51 ]; then ok; else bad "dirtable must list all 51 construct directives (has $tier_rows)"; fi
 
 echo "== adversarial / malformed input: no crash (exit 0 or clean SyntaxError) =="
 expect_nocrash $'// meta@enable(unsafe)\n// meta@range(x,\nlet x=1;'                "truncated arg list"
@@ -214,12 +206,12 @@ expect_nocrash $'// meta@   '                                                   
 expect_nocrash $'// meta@()\n1;'                                                    "empty directive name"
 expect_nocrash $'// meta@enable(unsafe)\n// meta@type(caf\xc3\xa9, i32)\nlet x=1;'  "unicode in args"
 expect_nocrash $'// meta@enable(unsafe)\n// meta@assume(a>=b && c!=d)\nlet a=1;'    "stray operators"
-expect_nocrash $'// mentions meta@unroll not as a prefix\n1;'                       "meta@ mid-comment"
+expect_nocrash $'// mentions meta@prefetch not as a prefix\n1;'                       "meta@ mid-comment"
 expect_nocrash $'// meta@enable(unsafe)\n// meta@nonnull(***)\nlet x=1;'            "operators-only argument"
 expect_nocrash $'// meta@enable(unsafe)\n// meta@range(((x)),0,9)\nlet x=1;'        "nested parens"
 expect_nocrash $'// meta@strict\n// meta@bogus\n// meta@sealed\nclass C{}'          "strict abort mid-set"
 # CRLF line endings (written raw, bypassing _run's added \n)
-printf '// meta@unroll(4)\r\nfor(let i=0;i<2;i++){}\r\n' > "$TMP/src.js"
+printf '// meta@prefetch(4)\r\nfor(let i=0;i<2;i++){}\r\n' > "$TMP/src.js"
 "$QJS" "$TMP/src.js" >/dev/null 2>/dev/null; cr_ec=$?
 if [ "$cr_ec" -le 1 ]; then ok; else bad "crash (exit $cr_ec): CRLF line endings"; fi
 

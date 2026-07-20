@@ -50,10 +50,8 @@ function sumTo(n, acc) { return n === 0 ? acc : sumTo(n - 1, acc + n); }
 // meta@monomorphic(int32, int32)
 function mul(a, b) { return a * b; }
 
-// meta@hot
 function step(x) { return x + 1; }
 
-// meta@cold
 function onError(msg) { return "error: " + msg; }
 
 console.log("function level ok: add=" + add(2, 3) + " hash=" + hash(1234) +

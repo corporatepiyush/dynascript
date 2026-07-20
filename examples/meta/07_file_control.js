@@ -15,7 +15,7 @@
 // meta@strict
 
 let s = 0;
-// meta@unroll(8)
+// meta@prefetch(8)
 for (let i = 0; i < 32; i++) s += i;
 
 // meta@sealed

@@ -48,7 +48,7 @@ function expectOK(src, msg) {
 function test_invariant_loop() {
     sameResult(
         "let a=0; for (let i=0;i<100;i++) a+=i; a",
-        "// meta@enable(unsafe)\nlet a=0;\n// meta@unroll(4), meta@int32\nfor (let i=0;i<100;i++) a+=i; a",
+        "// meta@enable(unsafe)\nlet a=0;\n// meta@prefetch(4), meta@int32\nfor (let i=0;i<100;i++) a+=i; a",
         4950, "loop unroll+int32");
 
     sameResult(
@@ -94,7 +94,7 @@ function test_invariant_class() {
 function test_invariant_control_flow() {
     sameResult(
         "function c(x){let t;if(x>0)t=1;else t=-1;return t;} c(5)+c(-5)",
-        "function c(x){let t;\n// meta@likely\nif(x>0)t=1;else t=-1;return t;} c(5)+c(-5)",
+        "function c(x){let t;\n// meta@jumptable\nif(x>0)t=1;else t=-1;return t;} c(5)+c(-5)",
         0, "if likely");
 
     sameResult(
@@ -133,7 +133,7 @@ function test_strict_diagnostics() {
     /* illegal placement: class directive on a loop */
     expectThrows("// meta@strict\n// meta@sealed\nfor(let i=0;i<1;i++){}", "sealed on loop");
     /* illegal placement: loop directive on a class */
-    expectThrows("// meta@strict\n// meta@unroll(4)\nclass C{}", "unroll on class");
+    expectThrows("// meta@strict\n// meta@prefetch(4)\nclass C{}", "unroll on class");
     /* unsafe without enable */
     expectThrows("// meta@strict\n// meta@int32\nfor(let i=0;i<1;i++){}", "int32 ungated");
     /* malformed enable */
@@ -146,7 +146,7 @@ function test_strict_diagnostics() {
 
 function test_strict_accepts_valid() {
     /* correctly placed + enabled directives must NOT throw under strict */
-    expectOK("// meta@strict\n// meta@unroll(4)\nfor(let i=0;i<2;i++){}", "unroll on loop");
+    expectOK("// meta@strict\n// meta@prefetch(4)\nfor(let i=0;i<2;i++){}", "unroll on loop");
     expectOK("// meta@strict\n// meta@sealed\nclass C{}", "sealed on class");
     expectOK("// meta@strict\n// meta@enable(unsafe)\n// meta@int32\nfor(let i=0;i<2;i++){}", "int32 gated");
     expectOK("// meta@strict\n// meta@enable(unsafe)\n// meta@range(x,0,9)\nlet x=5;", "range with bounds");
@@ -155,10 +155,10 @@ function test_strict_accepts_valid() {
 
 function test_forms() {
     /* comma-separated, stacked lines, block comments, no-space, whitespace */
-    expectOK("// meta@enable(unsafe)\n// meta@unroll(4), meta@int32\nfor(let i=0;i<2;i++){}", "comma-separated");
-    expectOK("// meta@enable(unsafe)\n//meta@unroll(4)\nfor(let i=0;i<2;i++){}", "no space");
+    expectOK("// meta@enable(unsafe)\n// meta@prefetch(4), meta@int32\nfor(let i=0;i<2;i++){}", "comma-separated");
+    expectOK("// meta@enable(unsafe)\n//meta@prefetch(4)\nfor(let i=0;i<2;i++){}", "no space");
     expectOK("/* meta@sealed */\nclass C{}", "block comment");
-    expectOK("//   meta@unroll(2)\nfor(let i=0;i<2;i++){}", "leading spaces");
+    expectOK("//   meta@prefetch(2)\nfor(let i=0;i<2;i++){}", "leading spaces");
     /* a directive on plain code is simply not attached to a loop/func/class */
     expectOK("// meta@enable(unsafe)\n// meta@preallocate(4)\nlet z=[];", "preallocate on stmt");
 }
@@ -187,15 +187,12 @@ const HOST_STMT  = "let _s=1;";
 const META = [
     /* name,               tier, directive-text,            host */
     /* -- 4.1 loop level -- */
-    ["unroll",             S, "unroll(4)",                  HOST_LOOP],
     ["autovec",            S, "autovec",                    HOST_LOOP],
     ["int32",              U, "int32",                      HOST_STMT],
     ["float64",            U, "float64",                    HOST_STMT],
     ["nobounds",           U, "nobounds",                   HOST_LOOP],
     ["nopoll",             U, "nopoll",                     HOST_LOOP],
     ["reduce",             S, "reduce(sum)",                HOST_LOOP],
-    ["trip",               S, "trip(4)",                    HOST_LOOP],
-    ["fixed",              S, "fixed",                      HOST_LOOP],
     ["stride1",            U, "stride1",                    HOST_LOOP],
     ["contiguous",         U, "contiguous",                 HOST_LOOP],
     ["prefetch",           S, "prefetch(16)",               HOST_LOOP],
@@ -221,9 +218,6 @@ const META = [
     ["soa",                S, "soa",                        HOST_CLASS],
     ["noproto",            U, "noproto",                    HOST_CLASS],
     /* -- 4.4 control flow -- */
-    ["likely",             S, "likely",                     HOST_IF],
-    ["unlikely",           S, "unlikely",                   HOST_IF],
-    ["unpredictable",      S, "unpredictable",              HOST_IF],
     ["jumptable",          S, "jumptable",                  HOST_SWITCH],
     ["dense",              S, "dense",                       HOST_SWITCH],
     ["assume",             U, "assume(x)",                  HOST_STMT],
@@ -238,9 +232,6 @@ const META = [
     ["noescape",           U, "noescape",                   HOST_STMT],
     ["transient",          S, "transient",                  HOST_STMT],
     ["weak",               S, "weak",                        HOST_STMT],
-    /* -- shared -- */
-    ["hot",                S, "hot",                         HOST_LOOP],
-    ["cold",               S, "cold",                        HOST_LOOP],
     /* -- variable-based -- */
     ["range",              U, "range(x,0,9)",               HOST_STMT],
     ["nonnull",            U, "nonnull(b)",                  HOST_STMT],
@@ -255,10 +246,10 @@ const META = [
 ];
 
 function test_table_is_exhaustive() {
-    /* 62 directives in js_meta_table[] = 59 construct-attached (this table)
+    /* 54 directives in js_meta_table[] = 51 construct-attached (this table)
        + 3 file-level (enable/strict/dump). Update this table if the registry
        changes so the suite stays exhaustive. */
-    assert(META.length, 59, "META table must cover all 59 construct directives");
+    assert(META.length, 51, "META table must cover all 51 construct directives");
 }
 
 /* Every directive: legal placement accepted under strict; every UNSAFE one
@@ -281,7 +272,7 @@ function test_every_directive_gating() {
    Covers each construct-specific class (loop/func/class/branch/hot-cold). */
 function test_wrong_construct() {
     /* loop-only on class / function */
-    expectThrows("// meta@strict\n// meta@unroll(4)\nclass C{}", "unroll on class");
+    expectThrows("// meta@strict\n// meta@prefetch(4)\nclass C{}", "unroll on class");
     expectThrows("// meta@strict\n// meta@reduce(sum)\nclass C{}", "reduce on class");
     expectThrows("// meta@strict\n// meta@enable(unsafe)\n// meta@nobounds\nfunction f(){}",
                  "nobounds on function");
@@ -294,12 +285,9 @@ function test_wrong_construct() {
     expectThrows("// meta@strict\n// meta@inline\nfor(let i=0;i<1;i++){}", "inline on loop");
     expectThrows("// meta@strict\n// meta@memoize\nclass C{}", "memoize on class");
     /* branch-only on loop / function / class */
-    expectThrows("// meta@strict\n// meta@likely\nfor(let i=0;i<1;i++){}", "likely on loop");
+    expectThrows("// meta@strict\n// meta@jumptable\nfor(let i=0;i<1;i++){}", "likely on loop");
     expectThrows("// meta@strict\n// meta@jumptable\nfunction f(){}", "jumptable on function");
     expectThrows("// meta@strict\n// meta@dense\nclass C{}", "dense on class");
-    /* hot/cold apply to loop|function only, NOT class or plain statement */
-    expectThrows("// meta@strict\n// meta@hot\nclass C{}", "hot on class");
-    expectThrows("// meta@strict\n// meta@cold\nlet z=1;", "cold on plain statement");
     /* unknown directive is a strict error too */
     expectThrows("// meta@strict\n// meta@definitely_not_a_directive\n1;", "unknown directive");
 }
@@ -308,11 +296,11 @@ function test_wrong_construct() {
    multi-arg; and the arity / missing-target diagnostics. */
 function test_arg_forms() {
     /* numeric arg (optional; present) */
-    expectOK("// meta@strict\n// meta@unroll(8)\nfor(let i=0;i<2;i++){}", "numeric arg");
+    expectOK("// meta@strict\n// meta@prefetch(8)\nfor(let i=0;i<2;i++){}", "numeric arg");
     /* negative number is a legal single arg */
-    expectOK("// meta@strict\n// meta@unroll(-4)\nfor(let i=0;i<2;i++){}", "negative arg");
+    expectOK("// meta@strict\n// meta@prefetch(-4)\nfor(let i=0;i<2;i++){}", "negative arg");
     /* saturating-huge number stays a legal single arg (no wrap/throw) */
-    expectOK("// meta@strict\n// meta@trip(999999999999999999999999)\nfor(let i=0;i<2;i++){}",
+    expectOK("// meta@strict\n// meta@prefetch(999999999999999999999999)\nfor(let i=0;i<2;i++){}",
              "huge number saturates");
     /* variable target */
     expectOK("// meta@strict\n// meta@enable(unsafe)\n// meta@nonnull(buf)\nlet buf=[];",
@@ -329,7 +317,6 @@ function test_arg_forms() {
     expectThrows("// meta@strict\n// meta@enable(unsafe)\n// meta@nonnull\nlet x=1;", "nonnull no target");
     /* wrong numeric arity -> strict error */
     expectThrows("// meta@strict\n// meta@enable(unsafe)\n// meta@range(x)\nlet x=1;", "range too few args");
-    expectThrows("// meta@strict\n// meta@trip\nfor(let i=0;i<2;i++){}", "trip needs a count");
     expectThrows("// meta@strict\n// meta@enable(unsafe)\n// meta@align(b)\nlet b=0;", "align needs N");
 }
 
@@ -338,16 +325,16 @@ function test_arg_forms() {
 function test_forms_extended() {
     expectOK("/* meta@sealed */\nclass C{}", "block comment");
     expectOK("/* meta@sealed */ class C{}", "inline block comment");
-    expectOK("/*\n meta@unroll(2)\n*/\nfor(let i=0;i<2;i++){}", "block later-line");
+    expectOK("/*\n meta@prefetch(2)\n*/\nfor(let i=0;i<2;i++){}", "block later-line");
     expectOK("/* meta@sealed (seal it) */\nclass C{}", "block trailing prose");
-    expectOK("// meta@enable(unsafe)\n// meta@unroll(4), meta@int32, meta@nobounds\nfor(let i=0;i<2;i++){}",
+    expectOK("// meta@enable(unsafe)\n// meta@prefetch(4), meta@int32, meta@nobounds\nfor(let i=0;i<2;i++){}",
              "three comma-separated");
-    expectOK("// meta@enable(unsafe)\n// meta@unroll(4) meta@int32\nfor(let i=0;i<2;i++){}",
+    expectOK("// meta@enable(unsafe)\n// meta@prefetch(4) meta@int32\nfor(let i=0;i<2;i++){}",
              "space-separated");
-    expectOK("// meta@enable(unsafe)\n// meta@unroll(4)\n// meta@int32\n// meta@nobounds\nfor(let i=0;i<2;i++){}",
+    expectOK("// meta@enable(unsafe)\n// meta@prefetch(4)\n// meta@int32\n// meta@nobounds\nfor(let i=0;i<2;i++){}",
              "three stacked lines");
-    expectOK("//meta@unroll(4)\nfor(let i=0;i<2;i++){}", "no space after //");
-    expectOK("//\t  meta@unroll(2)\nfor(let i=0;i<2;i++){}", "leading tab+spaces");
+    expectOK("//meta@prefetch(4)\nfor(let i=0;i<2;i++){}", "no space after //");
+    expectOK("//\t  meta@prefetch(2)\nfor(let i=0;i<2;i++){}", "leading tab+spaces");
 }
 
 /* Malformed / adversarial inputs that must be accepted without a diagnostic
@@ -356,7 +343,7 @@ function test_adversarial_clean() {
     expectOK("// meta@", "bare meta@ at buffer end");
     expectOK("// meta@   ", "meta@ then whitespace only");
     expectOK("// meta@()\n1;", "empty directive name");
-    expectOK("// mentions meta@unroll but not as a directive prefix\n1;",
+    expectOK("// mentions meta@prefetch but not as a directive prefix\n1;",
              "meta@ not at comment start");
     /* a SCOPE directive on a plain statement is legal -> no warning */
     expectOK("// meta@enable(unsafe)\n// meta@int32\nlet z=1;", "int32 on statement");
@@ -398,8 +385,8 @@ function test_file_and_prologue() {
 function test_invariant_more() {
     sameResult(
         "let s=0; for(let i=0;i<32;i++) s+=i; s",
-        "let s=0;\n// meta@autovec, meta@fixed, meta@trip(32)\nfor(let i=0;i<32;i++) s+=i; s",
-        496, "loop autovec/fixed/trip");
+        "let s=0;\n// meta@autovec, meta@reduce(sum)\nfor(let i=0;i<32;i++) s+=i; s",
+        496, "loop autovec/reduce");
     sameResult(
         "let s=0; for(let i=0;i<16;i++) s+=i; s",
         "// meta@enable(unsafe)\nlet s=0;\n// meta@prefetch(8), meta@stride1, meta@contiguous\nfor(let i=0;i<16;i++) s+=i; s",
@@ -410,19 +397,19 @@ function test_invariant_more() {
         42, "function inline");
     sameResult(
         "function f(x){return x+1;} f(41)",
-        "// meta@noinline\n// meta@hot\nfunction f(x){return x+1;} f(41)",
-        42, "function noinline/hot");
+        "// meta@noinline\n// meta@memoize\nfunction f(x){return x+1;} f(41)",
+        42, "function noinline/memoize");
     sameResult(
         "class C{constructor(a,b,c,d){this.a=a;this.b=b;this.c=c;this.d=d;}} new C(1,2,3,4).d",
         "// meta@preallocate_fields(4)\n// meta@soa\nclass C{constructor(a,b,c,d){this.a=a;this.b=b;this.c=c;this.d=d;}} new C(1,2,3,4).d",
         4, "class preallocate_fields/soa");
     sameResult(
         "function c(x){let t;if((x&1)===0)t='e';else t='o';return t;} c(4)+c(3)",
-        "function c(x){let t;\n// meta@unlikely\nif((x&1)===0)t='e';else t='o';return t;} c(4)+c(3)",
+        "function c(x){let t;\n// meta@dense\nif((x&1)===0)t='e';else t='o';return t;} c(4)+c(3)",
         "eo", "if unlikely");
     sameResult(
         "function c(x){let t;if(x>0)t=1;else t=0;return t;} c(9)",
-        "function c(x){let t;\n// meta@unpredictable\nif(x>0)t=1;else t=0;return t;} c(9)",
+        "function c(x){let t;\n// meta@jumptable\nif(x>0)t=1;else t=0;return t;} c(9)",
         1, "if unpredictable");
     sameResult(
         "function sw(x){switch(x&3){case 0:case 1:case 2:case 3:return x&3;}} sw(6)",

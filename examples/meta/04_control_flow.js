@@ -10,13 +10,10 @@
 function classify(x) {
     let tag = "";
 
-    // meta@likely
     if (x > 0) tag = "pos"; else tag = "nonpos";
 
-    // meta@unlikely
     if (x === 0x7fffffff) tag += "!max";
 
-    // meta@unpredictable
     if ((x & 1) === 0) tag += ".even"; else tag += ".odd";
 
     // meta@jumptable

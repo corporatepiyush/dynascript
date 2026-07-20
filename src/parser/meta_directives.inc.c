@@ -64,20 +64,16 @@ typedef struct JSMetaDirInfo {
 #define MX_FN     (JS_META_CTX_FUNC)
 #define MX_CL     (JS_META_CTX_CLASS)
 #define MX_SCOPE  (JS_META_CTX_STMT | JS_META_CTX_LOOP | JS_META_CTX_FUNC) /* alloc/var hints: any statement, loop or function */
-#define MX_HOTCOLD (JS_META_CTX_LOOP | JS_META_CTX_FUNC)
 
 static const JSMetaDirInfo js_meta_table[] = {
     /* name             tier            needt min max  ctx        help */
     /* ---- 4.1 loop level ---- */
-    { "unroll",         JS_META_SAFE,   0,   0,  1, MX_LOOPS,  "replicate the loop body N times per test" },
     { "autovec",        JS_META_SAFE,   0,   0,  0, MX_LOOPS,  "route an elementwise numeric loop to a SIMD kernel" },
     { "int32",          JS_META_UNSAFE, 0,   0,  0, MX_SCOPE,  "assume loop/variable arithmetic is int32" },
     { "float64",        JS_META_UNSAFE, 0,   0,  0, MX_SCOPE,  "assume loop/variable arithmetic is float64" },
     { "nobounds",       JS_META_UNSAFE, 0,   0,  0, MX_LOOPS,  "assume every array index is in bounds" },
     { "nopoll",         JS_META_UNSAFE, 0,   0,  0, MX_LOOPS,  "skip the interrupt poll on the loop back-edge" },
     { "reduce",         JS_META_SAFE,   1,   0,  0, MX_LOOPS,  "associative reduction (sum|prod|min|max)" },
-    { "trip",           JS_META_SAFE,   0,   1,  1, MX_LOOPS,  "known trip count N" },
-    { "fixed",          JS_META_SAFE,   0,   0,  0, MX_LOOPS,  "constant trip count (full unroll if small)" },
     { "stride1",        JS_META_UNSAFE, 0,   0,  0, MX_LOOPS,  "unit-stride contiguous access" },
     { "contiguous",     JS_META_UNSAFE, 0,   0,  0, MX_LOOPS,  "contiguous access (enables block paths)" },
     { "prefetch",       JS_META_SAFE,   0,   0,  1, MX_LOOPS,  "software-prefetch the next iteration's element" },
@@ -103,9 +99,6 @@ static const JSMetaDirInfo js_meta_table[] = {
     { "soa",            JS_META_SAFE,   0,   0,  0, MX_CL,     "store arrays-of-instances struct-of-arrays" },
     { "noproto",        JS_META_UNSAFE, 0,   0,  0, MX_CL,     "own-property access only (skip proto walk)" },
     /* ---- 4.4 control flow ---- */
-    { "likely",         JS_META_SAFE,   0,   0,  0, MX_BR,     "bias branch: likely arm as fall-through" },
-    { "unlikely",       JS_META_SAFE,   0,   0,  0, MX_BR,     "bias branch: unlikely arm as forward jump" },
-    { "unpredictable",  JS_META_SAFE,   0,   0,  0, MX_BR,     "50/50 branch: emit branchless select" },
     { "jumptable",      JS_META_SAFE,   0,   0,  0, MX_BR,     "force switch to a computed jump table" },
     { "dense",          JS_META_SAFE,   0,   0,  0, MX_BR,     "switch cases are dense (jump table)" },
     { "assume",         JS_META_UNSAFE, 1,   0, -1, MX_SCOPE,  "optimiser may assume the predicate holds" },
@@ -120,9 +113,6 @@ static const JSMetaDirInfo js_meta_table[] = {
     { "noescape",       JS_META_UNSAFE, 0,   0,  0, MX_SCOPE,  "alias of stack" },
     { "transient",      JS_META_SAFE,   0,   0,  0, MX_SCOPE,  "short-lived (young-generation treatment)" },
     { "weak",           JS_META_SAFE,   0,   0,  0, MX_SCOPE,  "alias of transient" },
-    /* ---- shared ---- */
-    { "hot",            JS_META_SAFE,   0,   0,  0, MX_HOTCOLD,"optimise for this loop/function (IC priming)" },
-    { "cold",           JS_META_SAFE,   0,   0,  0, MX_HOTCOLD,"outline this loop/function (I-cache)" },
     /* ---- variable-based directives (dynascript additions) ---- */
     { "range",          JS_META_UNSAFE, 1,   2,  2, MX_SCOPE,  "range(v, lo, hi): v stays in [lo,hi] (branchless/unsigned)" },
     { "nonnull",        JS_META_UNSAFE, 1,   0,  0, MX_SCOPE,  "nonnull(v): v is never null/undefined (skip null checks)" },
@@ -153,7 +143,6 @@ static const JSMetaDirInfo js_meta_table[] = {
 #undef MX_FN
 #undef MX_CL
 #undef MX_SCOPE
-#undef MX_HOTCOLD
 
 /* One parsed directive. Holds only POD and pointers into the live source
    buffer (valid for the whole parse) — no atoms, no owned JSValues — so a set
