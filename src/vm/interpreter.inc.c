@@ -1899,6 +1899,67 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                            JS_VALUE_GET_TAG(sp[-2]) == JS_TAG_INT)) {
                     p = JS_VALUE_GET_OBJ(sp[-3]);
                     idx = JS_VALUE_GET_INT(sp[-2]);
+                    /* TypedArray element write fast path. Only inline when the
+                     * value is already a number (INT for integer arrays; INT or
+                     * FLOAT64 for float arrays) -- a non-number value would need
+                     * ToNumber, which can run user JS, so that goes slow. An
+                     * out-of-bounds index is a silent no-op (spec), matching the
+                     * slow path for an already-numeric value. */
+                    if (p->class_id >= JS_CLASS_UINT8C_ARRAY &&
+                        p->class_id <= JS_CLASS_FLOAT64_ARRAY) {
+                        int vtag = JS_VALUE_GET_TAG(sp[-1]);
+                        double d;
+                        if (idx < p->u.array.count) {
+                            switch (p->class_id) {
+                            case JS_CLASS_INT8_ARRAY:
+                            case JS_CLASS_UINT8_ARRAY:
+                                if (vtag != JS_TAG_INT) goto put_array_el_slow_path;
+                                p->u.array.u.uint8_ptr[idx] =
+                                    (uint8_t)JS_VALUE_GET_INT(sp[-1]);
+                                break;
+                            case JS_CLASS_UINT8C_ARRAY: {
+                                int v;
+                                if (vtag != JS_TAG_INT) goto put_array_el_slow_path;
+                                v = JS_VALUE_GET_INT(sp[-1]);
+                                p->u.array.u.uint8_ptr[idx] =
+                                    v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
+                                break;
+                            }
+                            case JS_CLASS_INT16_ARRAY:
+                            case JS_CLASS_UINT16_ARRAY:
+                                if (vtag != JS_TAG_INT) goto put_array_el_slow_path;
+                                p->u.array.u.uint16_ptr[idx] =
+                                    (uint16_t)JS_VALUE_GET_INT(sp[-1]);
+                                break;
+                            case JS_CLASS_INT32_ARRAY:
+                            case JS_CLASS_UINT32_ARRAY:
+                                if (vtag != JS_TAG_INT) goto put_array_el_slow_path;
+                                p->u.array.u.uint32_ptr[idx] =
+                                    (uint32_t)JS_VALUE_GET_INT(sp[-1]);
+                                break;
+                            case JS_CLASS_FLOAT32_ARRAY:
+                                if (vtag == JS_TAG_INT) d = JS_VALUE_GET_INT(sp[-1]);
+                                else if (vtag == JS_TAG_FLOAT64) d = JS_VALUE_GET_FLOAT64(sp[-1]);
+                                else goto put_array_el_slow_path;
+                                p->u.array.u.float_ptr[idx] = (float)d;
+                                break;
+                            case JS_CLASS_FLOAT64_ARRAY:
+                                if (vtag == JS_TAG_INT) d = JS_VALUE_GET_INT(sp[-1]);
+                                else if (vtag == JS_TAG_FLOAT64) d = JS_VALUE_GET_FLOAT64(sp[-1]);
+                                else goto put_array_el_slow_path;
+                                p->u.array.u.double_ptr[idx] = d;
+                                break;
+                            default: /* FLOAT16, BIG_INT64, BIG_UINT64 */
+                                goto put_array_el_slow_path;
+                            }
+                        } else if (vtag != JS_TAG_INT && vtag != JS_TAG_FLOAT64) {
+                            goto put_array_el_slow_path; /* OOB but value needs ToNumber */
+                        }
+                        /* value is an int/float immediate: nothing to free */
+                        JS_FreeValue(ctx, sp[-3]);
+                        sp -= 3;
+                        BREAK;
+                    }
                     if (unlikely(p->class_id != JS_CLASS_ARRAY))
                         goto put_array_el_slow_path;
                     if (unlikely(idx >= (uint32_t)p->u.array.count)) {
