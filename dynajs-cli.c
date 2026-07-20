@@ -42,9 +42,6 @@
 
 #include "cutils.h"
 #include "dynajs-libc.h"
-#ifdef CONFIG_SCL_MODULES
-#include "dynajs-scl.h"
-#endif
 #ifdef CONFIG_NATIVE_MODULES
 #include "dynajs-nat.h"
 #endif
@@ -305,9 +302,6 @@ static JSContext *JS_NewCustomContext(JSRuntime *rt)
     /* system modules */
     js_init_module_std(ctx, "std");
     js_init_module_os(ctx, "os");
-#ifdef CONFIG_SCL_MODULES
-    js_scl_init_all(ctx);
-#endif
 #ifdef CONFIG_NATIVE_MODULES
     js_nat_init_all(ctx);
 #endif

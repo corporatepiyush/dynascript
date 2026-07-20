@@ -211,46 +211,6 @@ ifdef CONFIG_TSAN
 CFLAGS+=-fsanitize=thread -fno-omit-frame-pointer
 LDFLAGS+=-fsanitize=thread -fno-omit-frame-pointer
 endif
-# route the runtime's backing allocator through secure-c-libs (opt-in).
-# SCL_DIR points at the secure-c-libs checkout providing libscl.a.
-SCL_DIR?=../secure-c-libs
-ifdef CONFIG_SCL_ALLOC
-CFLAGS+=-DCONFIG_SCL_ALLOC
-EXTRA_LIBS+=$(SCL_DIR)/libscl.a
-endif
-# expose secure-c-libs modules to JS as scl:* native modules (opt-in).
-ifdef CONFIG_SCL_MODULES
-CFLAGS+=-DCONFIG_SCL_MODULES
-# -I every secure-c-libs header directory
-CFLAGS+=$(addprefix -I,$(sort $(dir $(wildcard $(SCL_DIR)/libs/*/*.h $(SCL_DIR)/libs/*/*/*.h))))
-EXTRA_LIBS+=$(SCL_DIR)/libscl.a
-# each family is active iff its binding file is present (an integrated module
-# builds by default under CONFIG_SCL_MODULES); an explicit flag also works.
-ifneq ($(or $(wildcard dynajs-scl-http.c),$(CONFIG_SCL_MODULE_HTTP)),)
-CFLAGS+=-DCONFIG_SCL_MODULE_HTTP
-endif
-ifneq ($(or $(wildcard dynajs-scl-ml.c),$(CONFIG_SCL_MODULE_ML)),)
-CFLAGS+=-DCONFIG_SCL_MODULE_ML
-endif
-ifneq ($(or $(wildcard dynajs-scl-docparse.c),$(CONFIG_SCL_MODULE_DOCPARSE)),)
-CFLAGS+=-DCONFIG_SCL_MODULE_DOCPARSE
-endif
-ifneq ($(or $(wildcard dynajs-scl-compress.c),$(CONFIG_SCL_MODULE_COMPRESS)),)
-CFLAGS+=-DCONFIG_SCL_MODULE_COMPRESS
-endif
-ifneq ($(or $(wildcard dynajs-scl-random.c),$(CONFIG_SCL_MODULE_RANDOM)),)
-CFLAGS+=-DCONFIG_SCL_MODULE_RANDOM
-endif
-ifneq ($(or $(wildcard dynajs-scl-sort.c),$(CONFIG_SCL_MODULE_SORT)),)
-CFLAGS+=-DCONFIG_SCL_MODULE_SORT
-endif
-ifneq ($(or $(wildcard dynajs-scl-search.c),$(CONFIG_SCL_MODULE_SEARCH)),)
-CFLAGS+=-DCONFIG_SCL_MODULE_SEARCH
-endif
-ifneq ($(wildcard dynajs-scl-structures3.c),)
-CFLAGS+=-DCONFIG_SCL_MODULE_STRUCTURES3
-endif
-endif
 # in-repo native modules (self-contained, NO external deps). A family is active
 # iff its dynajs-<family>.c is present. No -I/-l into any external tree.
 ifdef CONFIG_NATIVE_MODULES
@@ -337,38 +297,6 @@ all: $(OBJDIR) $(OBJDIR)/dynajs.check.o $(OBJDIR)/dynajs-cli.check.o $(PROGS)
 DYNAJS_LIB_OBJS=$(OBJDIR)/dynajs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/dynajs-libc.o
 
 DYNAJS_OBJS=$(OBJDIR)/dynajs-cli.o $(OBJDIR)/repl.o $(DYNAJS_LIB_OBJS)
-ifdef CONFIG_SCL_MODULES
-# scl:* native module binding objects (each family's object added as it lands)
-SCL_MODULE_OBJS=$(OBJDIR)/dynajs-scl.o $(OBJDIR)/dynajs-scl-structures.o
-ifneq ($(wildcard dynajs-scl-structures-ext.c),)
-SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-structures-ext.o
-endif
-ifneq ($(or $(wildcard dynajs-scl-http.c),$(CONFIG_SCL_MODULE_HTTP)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-http.o
-endif
-ifneq ($(or $(wildcard dynajs-scl-ml.c),$(CONFIG_SCL_MODULE_ML)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-ml.o
-endif
-ifneq ($(or $(wildcard dynajs-scl-docparse.c),$(CONFIG_SCL_MODULE_DOCPARSE)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-docparse.o
-endif
-ifneq ($(or $(wildcard dynajs-scl-compress.c),$(CONFIG_SCL_MODULE_COMPRESS)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-compress.o
-endif
-ifneq ($(or $(wildcard dynajs-scl-random.c),$(CONFIG_SCL_MODULE_RANDOM)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-random.o
-endif
-ifneq ($(or $(wildcard dynajs-scl-sort.c),$(CONFIG_SCL_MODULE_SORT)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-sort.o
-endif
-ifneq ($(or $(wildcard dynajs-scl-search.c),$(CONFIG_SCL_MODULE_SEARCH)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-search.o
-endif
-ifneq ($(wildcard dynajs-scl-structures3.c),)
-SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-structures3.o
-endif
-DYNAJS_OBJS+=$(SCL_MODULE_OBJS)
-endif
 ifdef CONFIG_NATIVE_MODULES
 # in-repo native module objects (framework + each present family)
 NAT_MODULE_OBJS=$(OBJDIR)/dynajs-nat.o
