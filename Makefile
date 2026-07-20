@@ -152,6 +152,7 @@ CFLAGS+=-m32
 LDFLAGS+=-m32
 endif
 endif
+CFLAGS+=-std=gnu17 # pin C17 (gnu variant: computed-goto &&label / goto * need GNU extensions)
 CFLAGS+=-fwrapv # ensure that signed overflows behave as expected
 ifdef CONFIG_WERROR
 CFLAGS+=-Werror
