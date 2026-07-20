@@ -2536,12 +2536,12 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             OP_CMP(OP_gte, >=, js_relational_slow(ctx, sp, opcode));
 
 /* Fused compare+branch: pop 2, compare, branch to the 4-byte label when the
-   result is FALSE (the loop/if/&& exit polarity). Same fast/slow ladder as
-   OP_CMP; the slow path reuses js_relational_slow with the base opcode, which
-   leaves the boolean at sp[-2] and frees both operands. Handlers are always
-   compiled (dispatch table references them); emission is gated in
-   resolve_labels by CONFIG_FUSED_CMP. */
-#define OP_CMP_IF_FALSE(fused_op, base_op, binary_op)                   \
+   result matches the op's polarity (`take` is `!res` for the _if_false exit
+   polarity, `res` for _if_true). Same fast/slow ladder as OP_CMP; the slow path
+   reuses js_relational_slow with the base opcode, which leaves the boolean at
+   sp[-2] and frees both operands. Handlers are always compiled (dispatch table
+   references them); emission is gated in resolve_labels by CONFIG_FUSED_CMP. */
+#define OP_CMP_BRANCH(fused_op, base_op, binary_op, take)               \
             CASE(fused_op):                                             \
                 {                                                       \
                     JSValue op1, op2;                                   \
@@ -2579,15 +2579,79 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                         res = JS_VALUE_GET_INT(sp[-2]);                 \
                         sp -= 2;                                        \
                     }                                                   \
-                    if (!res)                                           \
+                    if (take)                                           \
                         pc += (int32_t)get_u32(pc - 4) - 4;            \
                 }                                                       \
             BREAK
 
-            OP_CMP_IF_FALSE(OP_lt_if_false, OP_lt, <);
-            OP_CMP_IF_FALSE(OP_lte_if_false, OP_lte, <=);
-            OP_CMP_IF_FALSE(OP_gt_if_false, OP_gt, >);
-            OP_CMP_IF_FALSE(OP_gte_if_false, OP_gte, >=);
+            OP_CMP_BRANCH(OP_lt_if_false, OP_lt, <, !res);
+            OP_CMP_BRANCH(OP_lte_if_false, OP_lte, <=, !res);
+            OP_CMP_BRANCH(OP_gt_if_false, OP_gt, >, !res);
+            OP_CMP_BRANCH(OP_gte_if_false, OP_gte, >=, !res);
+
+/* Fused strict-equality + branch: same tag ladder as OP_CMP_STRICT_EQ but
+   consumes both operands (no bool push) and branches on `take` (`!res^inv` /
+   `res^inv`). The slow path js_strict_eq2 cannot throw, so no exception path. */
+#define OP_STRICT_EQ_BRANCH(fused_op, inv, take)                        \
+            CASE(fused_op):                                             \
+                {                                                       \
+                JSValue op1, op2;                                       \
+                int res;                                                \
+                uint32_t tag1, tag2;                                    \
+                op1 = sp[-2];                                           \
+                op2 = sp[-1];                                           \
+                pc += 4;                                                \
+                tag1 = JS_VALUE_GET_TAG(op1);                           \
+                tag2 = JS_VALUE_GET_TAG(op2);                           \
+                if (likely(tag1 == JS_TAG_INT)) {                       \
+                    if (tag2 == JS_TAG_INT) {                           \
+                        res = JS_VALUE_GET_INT(op1) == JS_VALUE_GET_INT(op2); \
+                    } else if (JS_TAG_IS_FLOAT64(tag2)) {               \
+                        res = (JS_VALUE_GET_INT(op1) == JS_VALUE_GET_FLOAT64(op2)); \
+                    } else {                                            \
+                        JS_FreeValue(ctx, op2);                         \
+                        res = FALSE;                                    \
+                    }                                                   \
+                } else if (JS_TAG_IS_FLOAT64(tag1)) {                   \
+                    if (tag2 == JS_TAG_INT) {                           \
+                        res = JS_VALUE_GET_FLOAT64(op1) == JS_VALUE_GET_INT(op2); \
+                    } else if (JS_TAG_IS_FLOAT64(tag2)) {               \
+                        res = (JS_VALUE_GET_FLOAT64(op1) == JS_VALUE_GET_FLOAT64(op2)); \
+                    } else {                                            \
+                        JS_FreeValue(ctx, op2);                         \
+                        res = FALSE;                                    \
+                    }                                                   \
+                } else if (tag1 == JS_TAG_OBJECT) {                     \
+                    if (tag2 == JS_TAG_OBJECT) {                        \
+                        res = JS_VALUE_GET_OBJ(op1) == JS_VALUE_GET_OBJ(op2); \
+                    } else {                                            \
+                        res = FALSE;                                    \
+                    }                                                   \
+                    JS_FreeValue(ctx, op1);                             \
+                    JS_FreeValue(ctx, op2);                             \
+                } else if (tag1 == JS_TAG_NULL || tag1 == JS_TAG_UNDEFINED) { \
+                    res = (tag1 == tag2);                               \
+                    JS_FreeValue(ctx, op2);                             \
+                } else if (tag1 == JS_TAG_STRING && tag2 == JS_TAG_STRING) { \
+                    res = js_string_eq(ctx, JS_VALUE_GET_STRING(op1),   \
+                                       JS_VALUE_GET_STRING(op2));       \
+                    JS_FreeValue(ctx, op1);                             \
+                    JS_FreeValue(ctx, op2);                             \
+                } else {                                                \
+                    res = js_strict_eq2(ctx, op1, op2, JS_EQ_STRICT);   \
+                    JS_FreeValue(ctx, op1);                             \
+                    JS_FreeValue(ctx, op2);                             \
+                }                                                       \
+                sp -= 2;                                                \
+                if (take)                                               \
+                    pc += (int32_t)get_u32(pc - 4) - 4;                \
+                }                                                       \
+            BREAK
+
+            OP_STRICT_EQ_BRANCH(OP_strict_eq_if_false, 0, !(res ^ 0));
+            OP_STRICT_EQ_BRANCH(OP_strict_neq_if_false, 1, !(res ^ 1));
+            OP_STRICT_EQ_BRANCH(OP_strict_eq_if_true, 0, (res ^ 0));
+            OP_STRICT_EQ_BRANCH(OP_strict_neq_if_true, 1, (res ^ 1));
 
         CASE(OP_ext):
             /* Escape into bank 2: the next byte selects a quickjs-opcode2.h op.

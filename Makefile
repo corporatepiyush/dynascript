@@ -555,6 +555,7 @@ test: qjs$(EXE)
 	$(WINE) ./qjs$(EXE) tests/test_modern.js
 	$(WINE) ./qjs$(EXE) tests/test_disposable.js
 	$(WINE) ./qjs$(EXE) tests/test_meta.js
+	$(WINE) ./qjs$(EXE) tests/test_optimizer.js
 	$(WINE) ./qjs$(EXE) tests/test_loop.js
 	$(WINE) ./qjs$(EXE) tests/test_bigint.js
 	$(WINE) ./qjs$(EXE) tests/test_cyclic_import.js

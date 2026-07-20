@@ -264,6 +264,14 @@ DEF(    lt_if_false, 5, 2, 0, label)
 DEF(   lte_if_false, 5, 2, 0, label)
 DEF(    gt_if_false, 5, 2, 0, label)
 DEF(   gte_if_false, 5, 2, 0, label)
+/* fused strict-equality + branch; order within each pair must match
+   OP_strict_eq, OP_strict_neq (resolve_labels indexes by op - OP_strict_eq).
+   Bank-1 space is tight (~6 free slots); relational if_true polarity is left
+   for a bank-2 BRANCH shard if a benchmark ever justifies it. */
+DEF( strict_eq_if_false, 5, 2, 0, label)
+DEF(strict_neq_if_false, 5, 2, 0, label)
+DEF(  strict_eq_if_true, 5, 2, 0, label)
+DEF( strict_neq_if_true, 5, 2, 0, label)
 /* escape prefix into bank 2: the next byte selects a quickjs-opcode2.h op.
    Its real length/n_pop/n_push come from opcode_info2[op2]; every bytecode
    walker (interpreter, compute_stack_size, bc_read/bc_write) special-cases it. */
