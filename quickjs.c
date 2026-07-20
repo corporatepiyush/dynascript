@@ -63,6 +63,13 @@
 #ifndef CONFIG_FUSED_ARITH
 #define CONFIG_FUSED_ARITH 1
 #endif
+/* Dense-integer switch jump table: a `switch` whose cases are enough densely
+   packed constant integers gets an OP_switch jump-table prefix (O(1) dispatch)
+   before the unchanged linear compare chain (correct fallback). Gate exists so
+   a #define-off oracle build proves the transform output-identical. */
+#ifndef CONFIG_JUMP_SWITCH
+#define CONFIG_JUMP_SWITCH 1
+#endif
 #if defined(__EMSCRIPTEN__)
 #define DIRECT_DISPATCH  0
 #else
@@ -1199,6 +1206,18 @@ enum OP2CodeEnum {
 /* category ranges — contiguous per category for handler locality + range checks */
 #define OP2_ARITH_FIRST OP2_mul_loc_loc
 #define OP2_ARITH_LAST  OP2_sub_loc_loc
+
+/* OP_switch jump-table access. The table is a cpool string whose bytes are
+   opaque to the (de)serializer (never byte-swapped), so ints are packed and
+   read explicitly little-endian for host independence. */
+static inline uint32_t switch_tbl_get(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static inline void switch_tbl_put(uint8_t *p, uint32_t v) {
+    p[0] = v & 0xff; p[1] = (v >> 8) & 0xff;
+    p[2] = (v >> 16) & 0xff; p[3] = (v >> 24) & 0xff;
+}
 
 static int JS_InitAtoms(JSRuntime *rt);
 static JSAtom __JS_NewAtomInit(JSRuntime *rt, const char *str, int len,

@@ -211,6 +211,17 @@ typedef struct JSVarDef {
     int func_pool_idx;
 } JSVarDef;
 
+/* One emitted OP_switch's jump table, pre-resolution. `labels[v - min]` is the
+   case-body label id for value v (or -1 for a gap that falls through to the
+   linear compare chain). resolve_switch_tables() converts these to relative
+   offsets and packs them into the cpool string at `cp_idx`. */
+typedef struct JSSwitchInfo {
+    int cp_idx;   /* cpool slot holding the packed table (string) */
+    int min;      /* smallest const-int case value */
+    int count;    /* number of table slots = max - min + 1 */
+    int *labels;  /* count entries: body label id, or -1 for a gap */
+} JSSwitchInfo;
+
 typedef struct JSFunctionDef {
     JSContext *ctx;
     struct JSFunctionDef *parent;
@@ -306,6 +317,14 @@ typedef struct JSFunctionDef {
     JSValue *cpool;
     int cpool_count;
     int cpool_size;
+
+    /* dense-integer switch jump tables (CONFIG_JUMP_SWITCH). Parser-internal:
+       each entry links an emitted OP_switch (via its cpool slot) to the case
+       body labels; resolve_switch_tables() turns the labels into a packed
+       relative-offset table stored in cpool[cp_idx] after resolve_labels. */
+    struct JSSwitchInfo *switch_infos;
+    int switch_info_count;
+    int switch_info_size;
 
     /* list of variables in the closure */
     int closure_var_count;
@@ -2230,6 +2249,28 @@ static int cpool_add(JSParseState *s, JSValue val)
     fd->cpool[fd->cpool_count++] = val;
     return fd->cpool_count - 1;
 }
+
+#if CONFIG_JUMP_SWITCH
+/* Append an empty switch table to the current function, returning its index (or
+   -1 on OOM). Owned by fd from this point, so parse-error paths free labels[]
+   via js_free_function_def and never leak. During collection labels[] holds
+   (value,label) pairs; resolve rewrites it to the value-indexed offset form. */
+static int switch_info_add(JSParseState *s, int cp_idx)
+{
+    JSFunctionDef *fd = s->cur_func;
+    JSSwitchInfo *si;
+    if (js_resize_array(s->ctx, (void *)&fd->switch_infos,
+                        sizeof(fd->switch_infos[0]), &fd->switch_info_size,
+                        fd->switch_info_count + 1))
+        return -1;
+    si = &fd->switch_infos[fd->switch_info_count];
+    si->cp_idx = cp_idx;
+    si->min = 0;
+    si->count = 0;
+    si->labels = NULL;
+    return fd->switch_info_count++;
+}
+#endif
 
 static __exception int emit_push_const(JSParseState *s, JSValueConst val,
                                        BOOL as_atom)
@@ -7568,6 +7609,15 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             int label_case, label_break, label1;
             int default_label_pos;
             BlockEnv break_entry;
+#if CONFIG_JUMP_SWITCH
+            /* Dense-int jump table: collect every case's constant-int value and
+               its body label into fd->switch_infos[sw_info_idx].labels as
+               (val,label) pairs. Valid ONLY if EVERY case is a constant-int
+               literal — a non-const case expression evaluated before a matched
+               case has observable side effects a direct jump would skip. */
+            int sw_ncase = 0, sw_pairs_size = 0, sw_info_idx = -1, group_start;
+            BOOL sw_all_const = TRUE;
+#endif
 
             if (next_token(s))
                 goto fail;
@@ -7584,6 +7634,23 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             if (js_parse_expect(s, '{'))
                 goto fail;
 
+#if CONFIG_JUMP_SWITCH
+            /* Reserve a cpool slot for the packed jump table and emit the
+               OP_switch fast-path prefix (the discriminant is on the stack).
+               resolve_switch_tables() fills the slot after label resolution; a
+               non-qualifying switch gets a count=0 table (always falls through). */
+            {
+                int cp_idx = cpool_add(s, JS_NULL);
+                if (cp_idx < 0)
+                    goto fail;
+                sw_info_idx = switch_info_add(s, cp_idx);
+                if (sw_info_idx < 0)
+                    goto fail;
+                emit_op(s, OP_switch);
+                emit_u32(s, cp_idx);
+            }
+#endif
+
             default_label_pos = -1;
             label_case = -1;
             while (s->token.val != '}') {
@@ -7595,21 +7662,64 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
                     }
                     emit_label(s, label_case);
                     label_case = -1;
+#if CONFIG_JUMP_SWITCH
+                    group_start = sw_ncase;
+#endif
                     for (;;) {
                         /* parse a sequence of case clauses */
+                        int case_bc_pos;
                         if (next_token(s))
                             goto fail;
                         emit_op(s, OP_dup);
+                        case_bc_pos = s->cur_func->byte_code.size;
                         if (js_parse_expr(s))
                             goto fail;
                         if (js_parse_expect(s, ':'))
                             goto fail;
+#if CONFIG_JUMP_SWITCH
+                        /* record a const-int case value (single OP_push_i32) as a
+                           (val,-1) pair, or disqualify the switch on any other
+                           case shape. labels[] is fd-owned so goto fail is safe. */
+                        {
+                            const uint8_t *bc = s->cur_func->byte_code.buf;
+                            int expr_len = s->cur_func->byte_code.size - case_bc_pos;
+                            if (sw_all_const && expr_len == 5 &&
+                                bc[case_bc_pos] == OP_push_i32) {
+                                JSSwitchInfo *si = &s->cur_func->switch_infos[sw_info_idx];
+                                if (js_resize_array(s->ctx, (void *)&si->labels,
+                                                    sizeof(si->labels[0]),
+                                                    &sw_pairs_size, 2 * (sw_ncase + 1)))
+                                    goto fail;
+                                si->labels[2 * sw_ncase] = get_i32(bc + case_bc_pos + 1);
+                                si->labels[2 * sw_ncase + 1] = -1; /* filled at body */
+                                sw_ncase++;
+                            } else {
+                                sw_all_const = FALSE;
+                            }
+                        }
+#else
+                        (void)case_bc_pos;
+#endif
                         emit_op(s, OP_strict_eq);
                         if (s->token.val == TOK_CASE) {
                             label1 = emit_goto(s, OP_if_true, label1);
                         } else {
                             label_case = emit_goto(s, OP_if_false, -1);
                             emit_label(s, label1);
+#if CONFIG_JUMP_SWITCH
+                            /* mark the body start with a fresh label and bind
+                               every pending value in this group to it */
+                            if (sw_all_const) {
+                                int body_label = new_label(s);
+                                JSSwitchInfo *si;
+                                int k;
+                                emit_label(s, body_label);
+                                update_label(s->cur_func, body_label, 1);
+                                si = &s->cur_func->switch_infos[sw_info_idx];
+                                for (k = group_start; k < sw_ncase; k++)
+                                    si->labels[2 * k + 1] = body_label;
+                            }
+#endif
                             break;
                         }
                     }
@@ -7656,6 +7766,53 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             }
             emit_label(s, label_break);
             emit_op(s, OP_drop); /* drop the switch expression */
+
+#if CONFIG_JUMP_SWITCH
+            /* Finalize the table: convert the (val,label) pairs to the
+               value-indexed form if the switch is a dense enough run of
+               constant ints; otherwise leave count=0 (OP_switch falls through).
+               labels[] stays fd-owned throughout, so nothing leaks. */
+            if (sw_info_idx >= 0) {
+                JSSwitchInfo *si = &s->cur_func->switch_infos[sw_info_idx];
+                int *pairs = si->labels;
+                if (sw_all_const && sw_ncase >= 4) {
+                    int mn = pairs[0], mx = pairs[0], k, range, filled = 0;
+                    int *tbl;
+                    for (k = 1; k < sw_ncase; k++) {
+                        if (pairs[2 * k] < mn) mn = pairs[2 * k];
+                        if (pairs[2 * k] > mx) mx = pairs[2 * k];
+                    }
+                    range = mx - mn + 1;
+                    if (range >= 4 && range <= 1024) {
+                        tbl = js_malloc(s->ctx, sizeof(int) * range);
+                        if (!tbl)
+                            goto fail;
+                        for (k = 0; k < range; k++)
+                            tbl[k] = -1;
+                        for (k = 0; k < sw_ncase; k++) {
+                            int slot = pairs[2 * k] - mn;
+                            if (tbl[slot] == -1) { /* first case with this value wins */
+                                tbl[slot] = pairs[2 * k + 1];
+                                filled++;
+                            }
+                        }
+                        if (filled >= 4 && range <= filled * 4) {
+                            js_free(s->ctx, pairs);
+                            si->labels = tbl;
+                            si->min = mn;
+                            si->count = range;
+                        } else {
+                            js_free(s->ctx, tbl); /* too sparse / too many dup */
+                        }
+                    }
+                }
+                if (si->count == 0) {
+                    js_free(s->ctx, si->labels);
+                    si->labels = NULL;
+                    si->min = 0;
+                }
+            }
+#endif
 
             pop_break_entry(s->cur_func);
             pop_scope(s);
@@ -10491,6 +10648,10 @@ static void js_free_function_def(JSContext *ctx, JSFunctionDef *fd)
     js_free(ctx, fd->jump_slots);
     js_free(ctx, fd->label_slots);
     js_free(ctx, fd->line_number_slots);
+
+    for(i = 0; i < fd->switch_info_count; i++)
+        js_free(ctx, fd->switch_infos[i].labels);
+    js_free(ctx, fd->switch_infos);
 
     for(i = 0; i < fd->cpool_count; i++) {
         JS_FreeValue(ctx, fd->cpool[i]);
@@ -14113,8 +14274,17 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
     js_free(ctx, s->jump_slots);
     s->jump_slots = NULL;
 #endif
-    js_free(ctx, s->label_slots);
-    s->label_slots = NULL;
+#if CONFIG_JUMP_SWITCH
+    /* resolve_switch_tables() (called next, before compute_stack_size) reads the
+       resolved label addresses to build OP_switch jump tables, so keep
+       label_slots alive here when this function has any; it is freed later by
+       js_free_function_def. */
+    if (s->switch_info_count == 0)
+#endif
+    {
+        js_free(ctx, s->label_slots);
+        s->label_slots = NULL;
+    }
     /* XXX: should delay until copying to runtime bytecode function */
     compute_pc2line_info(s);
     js_free(ctx, s->line_number_slots);
@@ -14187,6 +14357,80 @@ static __exception int ss_check(JSContext *ctx, StackSizeState *s,
     s->pc_stack[s->pc_stack_len++] = pos;
     return 0;
 }
+
+#if CONFIG_JUMP_SWITCH
+/* After resolve_labels has assigned final label addresses, pack each emitted
+   OP_switch's jump table into its cpool slot as a byte string:
+   [min:i32][count:i32][rel_off:i32 * count], all little-endian. rel_off is
+   target_addr - switch_pos (0 = gap, the interpreter falls through). Runs before
+   compute_stack_size, which reads the packed table to check the case targets. */
+static __exception int resolve_switch_tables(JSContext *ctx, JSFunctionDef *fd)
+{
+    const uint8_t *bc = fd->byte_code.buf;
+    int bc_len = fd->byte_code.size;
+    int pos, op, len, i, k;
+
+    if (fd->switch_info_count == 0)
+        return 0;
+    for (pos = 0; pos < bc_len; pos += len) {
+        op = bc[pos];
+        if (op == OP_ext) {          /* bank-2 op: real size in opcode_info2 */
+            len = opcode_info2[bc[pos + 1]].size;
+            continue;
+        }
+        len = short_opcode_info(op).size;
+        if (op != OP_switch)
+            continue;
+        {
+            int cp_idx = get_u32(bc + pos + 1);
+            JSSwitchInfo *si = NULL;
+            uint8_t *buf;
+            JSValue str;
+            int tlen;
+            for (i = 0; i < fd->switch_info_count; i++) {
+                if (fd->switch_infos[i].cp_idx == cp_idx) {
+                    si = &fd->switch_infos[i];
+                    break;
+                }
+            }
+            if (!si) {
+                JS_ThrowInternalError(ctx, "orphan OP_switch (pc=%d)", pos);
+                return -1;
+            }
+            tlen = 8 + si->count * 4;
+            buf = js_malloc(ctx, tlen);
+            if (!buf)
+                return -1;
+            switch_tbl_put(buf, (uint32_t)si->min);
+            switch_tbl_put(buf + 4, (uint32_t)si->count);
+            for (k = 0; k < si->count; k++) {
+                int lab = si->labels[k];
+                int32_t off = (lab < 0) ? 0 : (fd->label_slots[lab].addr - pos);
+                switch_tbl_put(buf + 8 + k * 4, (uint32_t)off);
+            }
+            str = js_new_string8_len(ctx, (const char *)buf, tlen);
+            js_free(ctx, buf);
+            if (JS_IsException(str))
+                return -1;
+            JS_FreeValue(ctx, fd->cpool[cp_idx]); /* JS_NULL placeholder */
+            fd->cpool[cp_idx] = str;
+        }
+    }
+    /* Last reader of label_slots and switch_infos. resolve_labels deferred
+       freeing label_slots to here for switch functions; js_create_function's
+       success path raw-frees fd without touching either, so release them now
+       (NULLed so the error/js_free_function_def path never double-frees). */
+    js_free(ctx, fd->label_slots);
+    fd->label_slots = NULL;
+    for (i = 0; i < fd->switch_info_count; i++)
+        js_free(ctx, fd->switch_infos[i].labels);
+    js_free(ctx, fd->switch_infos);
+    fd->switch_infos = NULL;
+    fd->switch_info_count = 0;
+    fd->switch_info_size = 0;
+    return 0;
+}
+#endif
 
 static __exception int compute_stack_size(JSContext *ctx,
                                           JSFunctionDef *fd,
@@ -14320,6 +14564,24 @@ static __exception int compute_stack_size(JSContext *ctx,
             if (ss_check(ctx, s, pos + 1 + diff, op, stack_len, catch_pos))
                 goto fail;
             break;
+#if CONFIG_JUMP_SWITCH
+        case OP_switch:
+            {
+                /* multi-target branch: check every non-gap case body target at
+                   the same stack level (OP_switch neither pops nor pushes); the
+                   fall-through to pos_next is handled after the switch. */
+                const uint8_t *t =
+                    JS_VALUE_GET_STRING(fd->cpool[get_u32(bc_buf + pos + 1)])->u.str8;
+                uint32_t count = switch_tbl_get(t + 4), k;
+                for (k = 0; k < count; k++) {
+                    int32_t off = (int32_t)switch_tbl_get(t + 8 + k * 4);
+                    if (off != 0 &&
+                        ss_check(ctx, s, pos + off, op, stack_len, catch_pos))
+                        goto fail;
+                }
+            }
+            break;
+#endif
         case OP_gosub:
             diff = get_u32(bc_buf + pos + 1);
             if (ss_check(ctx, s, pos + 1 + diff, op, stack_len + 1, catch_pos))
@@ -14724,6 +14986,11 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
 
     if (resolve_labels(ctx, fd))
         goto fail;
+
+#if CONFIG_JUMP_SWITCH
+    if (resolve_switch_tables(ctx, fd))
+        goto fail;
+#endif
 
     if (compute_stack_size(ctx, fd, &stack_size) < 0)
         goto fail;
@@ -16155,8 +16422,9 @@ typedef enum BCTagEnum {
 } BCTagEnum;
 
 /* 9: bank-2 ARITH shard (OP_ext + OP2_mul/add/sub_loc_loc) now emitted
-   10: fused compare-branch extensions (relational if_true + strict_eq/neq branch) */
-#define BC_VERSION 10
+   10: fused compare-branch extensions (relational if_true + strict_eq/neq branch)
+   11: dense-integer switch jump table (OP_switch + packed cpool table) */
+#define BC_VERSION 11
 
 typedef struct BCWriterState {
     JSContext *ctx;

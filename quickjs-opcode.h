@@ -272,6 +272,13 @@ DEF( strict_eq_if_false, 5, 2, 0, label)
 DEF(strict_neq_if_false, 5, 2, 0, label)
 DEF(  strict_eq_if_true, 5, 2, 0, label)
 DEF( strict_neq_if_true, 5, 2, 0, label)
+/* dense-integer switch jump-table dispatch (CONFIG_JUMP_SWITCH). Fast-path
+   PREFIX before the linear compare chain: peeks sp[-1] (does not pop); if it is
+   a JS_TAG_INT in the table's [min,max) with a non-gap slot, jumps to that case
+   body; otherwise falls through to the chain (which handles floats/strings/
+   out-of-range via ===). The u32 operand indexes a cpool string packing
+   [min:i32][count:i32][rel_off:i32 * count]. */
+DEF(         switch, 5, 0, 0, const)
 /* escape prefix into bank 2: the next byte selects a quickjs-opcode2.h op.
    Its real length/n_pop/n_push come from opcode_info2[op2]; every bytecode
    walker (interpreter, compute_stack_size, bc_read/bc_write) special-cases it. */

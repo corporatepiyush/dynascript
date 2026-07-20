@@ -1142,6 +1142,31 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                     goto exception;
             }
             BREAK;
+        CASE(OP_switch):
+            {
+                /* Dense-int switch fast path. Peek sp[-1] (do NOT pop — the
+                   linear compare chain and the trailing OP_drop still need it);
+                   if it is an int in the table range with a non-gap slot, jump
+                   to that case body, else fall through to the chain. The table
+                   is a cpool string packed little-endian:
+                   [min:i32][count:i32][rel_off:i32 * count], rel_off relative to
+                   this OP_switch byte (0 = gap = fall through). */
+                const uint8_t *pc_op = pc - 1;
+                uint32_t cp_idx = get_u32(pc);
+                pc += 4;
+                if (JS_VALUE_GET_TAG(sp[-1]) == JS_TAG_INT) {
+                    const uint8_t *t = JS_VALUE_GET_STRING(b->cpool[cp_idx])->u.str8;
+                    int32_t min = (int32_t)switch_tbl_get(t);
+                    uint32_t count = switch_tbl_get(t + 4);
+                    uint32_t idx = (uint32_t)(JS_VALUE_GET_INT(sp[-1]) - min);
+                    if (idx < count) {
+                        int32_t off = (int32_t)switch_tbl_get(t + 8 + idx * 4);
+                        if (off != 0)
+                            pc = pc_op + off;
+                    }
+                }
+            }
+            BREAK;
 #if SHORT_OPCODES
         CASE(OP_if_true8):
             {
