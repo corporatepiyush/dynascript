@@ -45,6 +45,9 @@
 #ifdef CONFIG_SCL_MODULES
 #include "dynajs-scl.h"
 #endif
+#ifdef CONFIG_NATIVE_MODULES
+#include "dynajs-nat.h"
+#endif
 
 extern const uint8_t dynajsc_repl[];
 extern const uint32_t dynajsc_repl_size;
@@ -304,6 +307,9 @@ static JSContext *JS_NewCustomContext(JSRuntime *rt)
     js_init_module_os(ctx, "os");
 #ifdef CONFIG_SCL_MODULES
     js_scl_init_all(ctx);
+#endif
+#ifdef CONFIG_NATIVE_MODULES
+    js_nat_init_all(ctx);
 #endif
     return ctx;
 }

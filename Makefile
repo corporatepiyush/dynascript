@@ -251,6 +251,38 @@ ifneq ($(wildcard dynajs-scl-structures3.c),)
 CFLAGS+=-DCONFIG_SCL_MODULE_STRUCTURES3
 endif
 endif
+# in-repo native modules (self-contained, NO external deps). A family is active
+# iff its dynajs-<family>.c is present. No -I/-l into any external tree.
+ifdef CONFIG_NATIVE_MODULES
+CFLAGS+=-DCONFIG_NATIVE_MODULES
+ifneq ($(wildcard dynajs-random.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_RANDOM
+endif
+ifneq ($(wildcard dynajs-sort.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_SORT
+endif
+ifneq ($(wildcard dynajs-search.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_SEARCH
+endif
+ifneq ($(wildcard dynajs-compress.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_COMPRESS
+endif
+ifneq ($(wildcard dynajs-http.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_HTTP
+endif
+ifneq ($(wildcard dynajs-structures.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_STRUCTURES
+endif
+ifneq ($(wildcard dynajs-structures3.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_STRUCTURES3
+endif
+ifneq ($(wildcard dynajs-ml.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_ML
+endif
+ifneq ($(wildcard dynajs-docparse.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_DOCPARSE
+endif
+endif
 ifdef CONFIG_WIN32
 LDEXPORT=
 else
@@ -336,6 +368,38 @@ ifneq ($(wildcard dynajs-scl-structures3.c),)
 SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-structures3.o
 endif
 DYNAJS_OBJS+=$(SCL_MODULE_OBJS)
+endif
+ifdef CONFIG_NATIVE_MODULES
+# in-repo native module objects (framework + each present family)
+NAT_MODULE_OBJS=$(OBJDIR)/dynajs-nat.o
+ifneq ($(wildcard dynajs-random.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-random.o
+endif
+ifneq ($(wildcard dynajs-sort.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-sort.o
+endif
+ifneq ($(wildcard dynajs-search.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-search.o
+endif
+ifneq ($(wildcard dynajs-compress.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-compress.o
+endif
+ifneq ($(wildcard dynajs-http.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-http.o
+endif
+ifneq ($(wildcard dynajs-structures.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-structures.o
+endif
+ifneq ($(wildcard dynajs-structures3.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-structures3.o
+endif
+ifneq ($(wildcard dynajs-ml.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-ml.o
+endif
+ifneq ($(wildcard dynajs-docparse.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-docparse.o
+endif
+DYNAJS_OBJS+=$(NAT_MODULE_OBJS)
 endif
 
 HOST_LIBS=-lm -ldl -lpthread
