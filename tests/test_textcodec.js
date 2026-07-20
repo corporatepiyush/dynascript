@@ -1,5 +1,5 @@
 /* WHATWG TextEncoder / TextDecoder (UTF-8) tests.
-   Run: ./qjs tests/test_textcodec.js  -> prints "ALL PASS" on success. */
+   Run: ./dynajs tests/test_textcodec.js  -> prints "ALL PASS" on success. */
 
 function assert(actual, expected, message) {
     if (arguments.length === 1)

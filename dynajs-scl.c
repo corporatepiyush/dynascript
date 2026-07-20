@@ -1,8 +1,8 @@
 /*
  * dynascript native modules backed by secure-c-libs -- shared framework.
- * See qjs-scl.h for the arena-per-object memory model.
+ * See dynajs-scl.h for the arena-per-object memory model.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 

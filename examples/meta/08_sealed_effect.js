@@ -1,8 +1,8 @@
 /*
  * meta@sealed / meta@fixed_layout — the ACTUAL runtime effect (§4.3)
  *
- * Run:   qjs examples/meta/08_sealed_effect.js
- * Trace: DYNASCRIPT_META_DUMP=1 qjs examples/meta/08_sealed_effect.js
+ * Run:   dynajs examples/meta/08_sealed_effect.js
+ * Trace: DYNASCRIPT_META_DUMP=1 dynajs examples/meta/08_sealed_effect.js
  *
  * Unlike every other directive (which is front-end-only today), meta@sealed is
  * the one landed codegen transform: when construction of the OUTERMOST class of

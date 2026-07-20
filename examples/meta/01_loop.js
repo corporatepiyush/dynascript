@@ -1,8 +1,8 @@
 /*
  * meta@ directives — LOOP level (§4.1 of META_DIRECTIVES.md)
  *
- * Run:   qjs examples/meta/01_loop.js
- * Trace: DYNASCRIPT_META_DUMP=1 qjs examples/meta/01_loop.js
+ * Run:   dynajs examples/meta/01_loop.js
+ * Trace: DYNASCRIPT_META_DUMP=1 dynajs examples/meta/01_loop.js
  *
  * A directive attaches to the *next statement*, so it must sit IMMEDIATELY
  * before the loop it targets (put accumulator initialisation above it). Every

@@ -1,5 +1,5 @@
 // Copyright 2025 Google LLC
-// Fuzz target for the QuickJS bytecode / object deserializer (JS_ReadObject).
+// Fuzz target for the DynaJS bytecode / object deserializer (JS_ReadObject).
 //
 // The previous version round-tripped TRUSTED bytecode through
 // JS_WriteObject/JS_ReadObject and only fed a lightly-mutated copy to the
@@ -27,7 +27,7 @@
 // attacker-controlled bytecode is a different (trusted-input) threat model and
 // would only add interpreter noise; the goal here is the reader.
 
-#include "quickjs.h"
+#include "dynajs.h"
 
 #include <stdint.h>
 #include <stdlib.h>

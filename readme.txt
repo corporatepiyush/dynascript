@@ -1,1 +1,1 @@
-The main documentation is in doc/quickjs.pdf or doc/quickjs.html.
+The main documentation is in doc/dynajs.pdf or doc/dynajs.html.

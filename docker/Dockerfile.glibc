@@ -12,9 +12,9 @@ WORKDIR /src
 COPY . .
 
 # clean any host build artifacts that slipped past .dockerignore, then build
-# and run the in-tree test suite (make test only needs qjs + tests/*.js).
+# and run the in-tree test suite (make test only needs dynajs + tests/*.js).
 RUN make clean || true
 RUN make CONFIG_CLANG=y -j"$(nproc)"
 RUN make CONFIG_CLANG=y test
 
-CMD ["./qjs", "-e", "print('dynascript on glibc (' + (typeof Array.fromAsync) + ' fromAsync) OK')"]
+CMD ["./dynajs", "-e", "print('dynascript on glibc (' + (typeof Array.fromAsync) + ' fromAsync) OK')"]

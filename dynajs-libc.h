@@ -1,5 +1,5 @@
 /*
- * QuickJS C library
+ * DynaJS C library
  *
  * Copyright (c) 2017-2018 Fabrice Bellard
  *
@@ -21,13 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#ifndef QUICKJS_LIBC_H
-#define QUICKJS_LIBC_H
+#ifndef DYNAJS_LIBC_H
+#define DYNAJS_LIBC_H
 
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "quickjs.h"
+#include "dynajs.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -63,4 +63,4 @@ void js_std_set_worker_new_context_func(JSContext *(*func)(JSRuntime *rt));
 } /* extern "C" { */
 #endif
 
-#endif /* QUICKJS_LIBC_H */
+#endif /* DYNAJS_LIBC_H */

@@ -16,4 +16,4 @@ RUN make CONFIG_CLANG=y \
 RUN make CONFIG_CLANG=y \
       LDFLAGS="-g -fuse-ld=lld --rtlib=compiler-rt" test
 
-CMD ["./qjs", "-e", "print('dynascript on musl (' + (typeof Array.fromAsync) + ' fromAsync) OK')"]
+CMD ["./dynajs", "-e", "print('dynascript on musl (' + (typeof Array.fromAsync) + ' fromAsync) OK')"]

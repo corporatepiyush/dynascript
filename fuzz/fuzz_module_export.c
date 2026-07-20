@@ -1,5 +1,5 @@
 // Copyright 2025 Google LLC
-// Fuzz target for the QuickJS module + script parser on raw input.
+// Fuzz target for the DynaJS module + script parser on raw input.
 //
 // The previous version wrapped the input in snprintf("export ... %s", input)
 // templates. That truncated the input at the first NUL byte and only ever fed
@@ -9,7 +9,7 @@
 // parser + codegen is fuzzed on arbitrary bytes without executing anything
 // (no interrupt handler / event loop needed).
 
-#include "quickjs.h"
+#include "dynajs.h"
 
 #include <stdint.h>
 #include <stdlib.h>

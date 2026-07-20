@@ -1,5 +1,5 @@
 /*
- * QuickJS C library
+ * DynaJS C library
  *
  * Copyright (c) 2017-2021 Fabrice Bellard
  * Copyright (c) 2017-2021 Charlie Gordon
@@ -75,7 +75,7 @@ typedef sig_t sighandler_t;
 
 #include "cutils.h"
 #include "list.h"
-#include "quickjs-libc.h"
+#include "dynajs-libc.h"
 
 #if !defined(PATH_MAX)
 #define PATH_MAX 4096
@@ -583,7 +583,7 @@ int js_module_set_import_meta(JSContext *ctx, JSValueConst func_val,
     if (!strchr(module_name, ':')) {
         strcpy(buf, "file://");
 #if !defined(_WIN32)
-        /* realpath() cannot be used with modules compiled with qjsc
+        /* realpath() cannot be used with modules compiled with dynajsc
            because the corresponding module source code is not
            necessarily present */
         if (use_realpath) {

@@ -1,15 +1,15 @@
-// run_all.js — spawn `qjs` on every example in this directory and aggregate the
-// results into one overall PASS/FAIL. qjs runs a single file at a time, so this
+// run_all.js — spawn `dynajs` on every example in this directory and aggregate the
+// results into one overall PASS/FAIL. dynajs runs a single file at a time, so this
 // runner shells out with os.exec (block:true inherits stdio and returns the
 // child's exit code).
 //
 // Usage:
-//   qjs examples/js/run_all.js                 # uses $QJS, else "qjs" on PATH
-//   QJS=/path/to/qjs qjs examples/js/run_all.js
-//   qjs examples/js/run_all.js /path/to/qjs    # explicit interpreter as arg
+//   dynajs examples/js/run_all.js                 # uses $DYNAJS, else "dynajs" on PATH
+//   DYNAJS=/path/to/dynajs dynajs examples/js/run_all.js
+//   dynajs examples/js/run_all.js /path/to/dynajs    # explicit interpreter as arg
 //
 // NB: the async_streams example needs Array.fromAsync (a dynascript addition);
-// point QJS at the dynascript qjs to run the whole suite.
+// point DYNAJS at the dynascript dynajs to run the whole suite.
 
 import * as std from "std";
 import * as os from "os";
@@ -40,16 +40,16 @@ function scriptDir() {
   return slash < 0 ? "." : self.slice(0, slash);
 }
 
-/** Which qjs to spawn: explicit arg, then $QJS, then the freshly-built
- *  ./qjs at the repo root (some examples use dynascript-only features such
- *  as Array.fromAsync), then "qjs" on PATH. */
-function resolveQjs() {
+/** Which dynajs to spawn: explicit arg, then $DYNAJS, then the freshly-built
+ *  ./dynajs at the repo root (some examples use dynascript-only features such
+ *  as Array.fromAsync), then "dynajs" on PATH. */
+function resolveDynajs() {
   if (scriptArgs[1]) return scriptArgs[1];
-  const env = std.getenv("QJS");
+  const env = std.getenv("DYNAJS");
   if (env) return env;
-  const [f, err] = [std.open("./qjs", "r"), 0];
-  if (f) { f.close(); return "./qjs"; }
-  return "qjs";
+  const [f, err] = [std.open("./dynajs", "r"), 0];
+  if (f) { f.close(); return "./dynajs"; }
+  return "dynajs";
 }
 
 /** print + flush, so our lines interleave correctly with child stdio. */
@@ -60,16 +60,16 @@ function log(line = "") {
 
 function main() {
   const dir = scriptDir();
-  const qjs = resolveQjs();
+  const dynajs = resolveDynajs();
 
-  log(`running ${EXAMPLES.length} examples with: ${qjs}\n`);
+  log(`running ${EXAMPLES.length} examples with: ${dynajs}\n`);
 
   const results = [];
   for (const file of EXAMPLES) {
     const path = `${dir}/${file}`;
     log(`──────── ${file} ────────`);
     const started = Date.now();
-    const code = os.exec([qjs, path], { block: true });
+    const code = os.exec([dynajs, path], { block: true });
     const ms = Date.now() - started;
     results.push({ file, code, ms });
     log("");

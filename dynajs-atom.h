@@ -1,5 +1,5 @@
 /*
- * QuickJS atom definitions
+ * DynaJS atom definitions
  *
  * Copyright (c) 2017-2018 Fabrice Bellard
  * Copyright (c) 2017-2018 Charlie Gordon

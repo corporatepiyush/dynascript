@@ -1,5 +1,5 @@
 /*
- * QuickJS Javascript Engine
+ * DynaJS Javascript Engine
  *
  * Copyright (c) 2017-2021 Fabrice Bellard
  * Copyright (c) 2017-2021 Charlie Gordon
@@ -22,8 +22,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#ifndef QUICKJS_H
-#define QUICKJS_H
+#ifndef DYNAJS_H
+#define DYNAJS_H
 
 #include <stdio.h>
 #include <stdint.h>
@@ -1178,4 +1178,4 @@ void JS_PrintValue(JSContext *ctx, JSPrintValueWrite *write_func, void *write_op
 } /* extern "C" { */
 #endif
 
-#endif /* QUICKJS_H */
+#endif /* DYNAJS_H */

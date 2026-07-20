@@ -8,11 +8,11 @@ test262o
 *.o
 *.d
 *.so
-qjs
-qjsc
-qjs-debug
+dynajs
+dynajsc
+dynajs-debug
 run-test262
 run-test262-debug
-host-qjsc
+host-dynajsc
 repl.c
 *.dSYM

@@ -1,5 +1,5 @@
 // Copyright 2025 Google LLC
-// Fuzz target for the QuickJS JSON reader (JS_ParseJSON).
+// Fuzz target for the DynaJS JSON reader (JS_ParseJSON).
 //
 // The previous version wrapped the input in snprintf("JSON.parse(%s)")
 // templates and fed the result to JS_Eval. That fuzzed the JS *parser*, not
@@ -16,7 +16,7 @@
 // limit below caps pathological allocations so they fail cleanly instead of
 // being reported as OOM.
 
-#include "quickjs.h"
+#include "dynajs.h"
 
 #include <stdint.h>
 #include <stdlib.h>

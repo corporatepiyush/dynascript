@@ -5,8 +5,8 @@
 // destroyed. No native pointer escapes, so peak RSS stays flat across calls.
 //
 // Requires a build with the module linked in:
-//   make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_COMPRESS=y qjs
-// then:  ./qjs examples/js/scl_compress.js
+//   make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_COMPRESS=y dynajs
+// then:  ./dynajs examples/js/scl_compress.js
 //
 // NOTE: the bundled libscl compressor emits valid, fully round-trippable gzip,
 // but its LZ77 match finder currently yields a near-stored ratio; this binding

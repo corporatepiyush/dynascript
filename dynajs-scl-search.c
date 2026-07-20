@@ -27,7 +27,7 @@
  *   - Needle longer than the haystack, or no occurrence, or an empty haystack:
  *     indexOf -> -1, indexOfAll -> [].
  *
- * Memory discipline (see qjs-scl.h): both string arguments are fully materialised
+ * Memory discipline (see dynajs-scl.h): both string arguments are fully materialised
  * to C locals via JS_ToCStringLen BEFORE any search runs -- coercion may run
  * arbitrary JS (toString/valueOf), but each returned C string is owned by us and
  * stays valid until JS_FreeCString regardless of any JS that runs afterwards.
@@ -42,7 +42,7 @@
  * points so indexOf and indexOfAll share one matcher with identical overlapping
  * semantics and KMP's guaranteed O(N+M) worst case (no adversarial-input blowup).
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 

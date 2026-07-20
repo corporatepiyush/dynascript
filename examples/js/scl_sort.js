@@ -3,7 +3,7 @@
  *
  * Requires the SCL-modules build:
  *     make CONFIG_SCL_MODULES=y
- *     ./qjs examples/js/scl_sort.js
+ *     ./dynajs examples/js/scl_sort.js
  *
  * These are TRANSIENT functions, not resource objects: each call spins up a
  * private arena, copies the whole input into it, sorts/searches natively, copies

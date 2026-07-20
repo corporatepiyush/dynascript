@@ -1,5 +1,5 @@
 /*
- * QuickJS opcode definitions
+ * DynaJS opcode definitions
  *
  * Copyright (c) 2017-2018 Fabrice Bellard
  * Copyright (c) 2017-2018 Charlie Gordon
@@ -279,7 +279,7 @@ DEF( strict_neq_if_true, 5, 2, 0, label)
    out-of-range via ===). The u32 operand indexes a cpool string packing
    [min:i32][count:i32][rel_off:i32 * count]. */
 DEF(         switch, 5, 0, 0, const)
-/* escape prefix into bank 2: the next byte selects a quickjs-opcode2.h op.
+/* escape prefix into bank 2: the next byte selects a dynajs-opcode2.h op.
    Its real length/n_pop/n_push come from opcode_info2[op2]; every bytecode
    walker (interpreter, compute_stack_size, bc_read/bc_write) special-cases it. */
 DEF(            ext, 1, 0, 0, none)

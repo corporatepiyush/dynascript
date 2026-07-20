@@ -19,7 +19,7 @@
  *   2. range checks — the optimizer/specializer tests membership with a pair of
  *      compares (OP2_<CAT>_FIRST..LAST) instead of a switch.
  * Keep each category's DEF2 rows contiguous; add new ops at the end of their
- * category. Category bounds are derived in quickjs.c (OP2_<CAT>_FIRST/LAST).
+ * category. Category bounds are derived in dynajs.c (OP2_<CAT>_FIRST/LAST).
  *
  * Every consumer that walks bytecode by size (interpreter dispatch,
  * compute_stack_size, bc_read/bc_write) special-cases OP_ext and reads the real

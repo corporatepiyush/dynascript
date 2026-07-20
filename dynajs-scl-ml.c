@@ -6,7 +6,7 @@
  *   try { m.fit([[1],[2],[3]], [2,4,6]); print(m.predict([[4]])[0]); }
  *   finally { m.close(); }        // deterministic free (arena destroyed)
  *
- * Memory model (see qjs-scl.h): each model owns a private SCL arena that backs
+ * Memory model (see dynajs-scl.h): each model owns a private SCL arena that backs
  * the native model handle and its internal scratch allocator; disposing it is a
  * single arena destroy. JS array inputs are COPIED into a short-lived per-call
  * arena, wrapped as an SCL dataset, and the native predictions are COPIED back
@@ -14,7 +14,7 @@
  * per-call arena is destroyed before returning, so repeated fit()/predict()
  * does not grow the model arena.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 

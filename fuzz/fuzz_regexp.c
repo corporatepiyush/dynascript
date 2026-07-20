@@ -14,7 +14,7 @@
  */
 
 #include "libregexp.h"
-#include "quickjs-libc.h"
+#include "dynajs-libc.h"
 
 static int nbinterrupts = 0;
 

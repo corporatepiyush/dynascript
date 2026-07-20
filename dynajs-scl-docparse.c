@@ -11,7 +11,7 @@
  * the arena is destroyed before returning. No arena pointer escapes into the JS
  * heap, so the result survives the free and these need not be resource classes.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 

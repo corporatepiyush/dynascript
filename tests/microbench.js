@@ -91,7 +91,7 @@ if (typeof performance !== "undefined") {
     get_clock = () => performance.now();
 } else
 if (typeof os !== "undefined") {
-    // use more precise clock on QuickJS
+    // use more precise clock on DynaJS
     get_clock = os.now;
 } else {
     // use Date.now and round up to the next millisecond
@@ -1379,7 +1379,7 @@ function load_result(filename)
         }
     } else
     if (typeof std !== "undefined") {
-        // read the file in QuickJS
+        // read the file in DynaJS
         var f = std.open(filename, "r");
         if (f) {
             str = f.readAsString();
@@ -1415,7 +1415,7 @@ function save_result(filename, obj)
         }
     } else
     if (typeof std !== "undefined") {
-        // save the file in QuickJS
+        // save the file in DynaJS
         var f = std.open(filename, "w");
         if (f) {
             f.puts(str);

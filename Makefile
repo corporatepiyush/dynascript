@@ -1,5 +1,5 @@
 #
-# QuickJS Javascript Engine
+# DynaJS Javascript Engine
 #
 # Copyright (c) 2017-2021 Fabrice Bellard
 # Copyright (c) 2017-2021 Charlie Gordon
@@ -168,8 +168,8 @@ endif
 endif
 
 CFLAGS+=$(DEFINES)
-# repo root on the include path so quickjs.c's src/*.inc.c fragments can
-# resolve project headers (e.g. quickjs-opcode.h) regardless of their subdir
+# repo root on the include path so dynajs.c's src/*.inc.c fragments can
+# resolve project headers (e.g. dynajs-opcode.h) regardless of their subdir
 CFLAGS+=-I.
 CFLAGS_DEBUG=$(CFLAGS) -O0
 CFLAGS_SMALL=$(CFLAGS) -Os
@@ -226,28 +226,28 @@ CFLAGS+=$(addprefix -I,$(sort $(dir $(wildcard $(SCL_DIR)/libs/*/*.h $(SCL_DIR)/
 EXTRA_LIBS+=$(SCL_DIR)/libscl.a
 # each family is active iff its binding file is present (an integrated module
 # builds by default under CONFIG_SCL_MODULES); an explicit flag also works.
-ifneq ($(or $(wildcard qjs-scl-http.c),$(CONFIG_SCL_MODULE_HTTP)),)
+ifneq ($(or $(wildcard dynajs-scl-http.c),$(CONFIG_SCL_MODULE_HTTP)),)
 CFLAGS+=-DCONFIG_SCL_MODULE_HTTP
 endif
-ifneq ($(or $(wildcard qjs-scl-ml.c),$(CONFIG_SCL_MODULE_ML)),)
+ifneq ($(or $(wildcard dynajs-scl-ml.c),$(CONFIG_SCL_MODULE_ML)),)
 CFLAGS+=-DCONFIG_SCL_MODULE_ML
 endif
-ifneq ($(or $(wildcard qjs-scl-docparse.c),$(CONFIG_SCL_MODULE_DOCPARSE)),)
+ifneq ($(or $(wildcard dynajs-scl-docparse.c),$(CONFIG_SCL_MODULE_DOCPARSE)),)
 CFLAGS+=-DCONFIG_SCL_MODULE_DOCPARSE
 endif
-ifneq ($(or $(wildcard qjs-scl-compress.c),$(CONFIG_SCL_MODULE_COMPRESS)),)
+ifneq ($(or $(wildcard dynajs-scl-compress.c),$(CONFIG_SCL_MODULE_COMPRESS)),)
 CFLAGS+=-DCONFIG_SCL_MODULE_COMPRESS
 endif
-ifneq ($(or $(wildcard qjs-scl-random.c),$(CONFIG_SCL_MODULE_RANDOM)),)
+ifneq ($(or $(wildcard dynajs-scl-random.c),$(CONFIG_SCL_MODULE_RANDOM)),)
 CFLAGS+=-DCONFIG_SCL_MODULE_RANDOM
 endif
-ifneq ($(or $(wildcard qjs-scl-sort.c),$(CONFIG_SCL_MODULE_SORT)),)
+ifneq ($(or $(wildcard dynajs-scl-sort.c),$(CONFIG_SCL_MODULE_SORT)),)
 CFLAGS+=-DCONFIG_SCL_MODULE_SORT
 endif
-ifneq ($(or $(wildcard qjs-scl-search.c),$(CONFIG_SCL_MODULE_SEARCH)),)
+ifneq ($(or $(wildcard dynajs-scl-search.c),$(CONFIG_SCL_MODULE_SEARCH)),)
 CFLAGS+=-DCONFIG_SCL_MODULE_SEARCH
 endif
-ifneq ($(wildcard qjs-scl-structures3.c),)
+ifneq ($(wildcard dynajs-scl-structures3.c),)
 CFLAGS+=-DCONFIG_SCL_MODULE_STRUCTURES3
 endif
 endif
@@ -265,19 +265,19 @@ endif
 endif
 endif
 
-PROGS=qjs$(EXE) qjsc$(EXE) run-test262$(EXE)
+PROGS=dynajs$(EXE) dynajsc$(EXE) run-test262$(EXE)
 
 ifneq ($(CROSS_PREFIX),)
-QJSC_CC=gcc
-QJSC=./host-qjsc
-PROGS+=$(QJSC)
+DYNAJSC_CC=gcc
+DYNAJSC=./host-dynajsc
+PROGS+=$(DYNAJSC)
 else
-QJSC_CC=$(CC)
-QJSC=./qjsc$(EXE)
+DYNAJSC_CC=$(CC)
+DYNAJSC=./dynajsc$(EXE)
 endif
-PROGS+=libquickjs.a
+PROGS+=libdynajs.a
 ifdef CONFIG_LTO
-PROGS+=libquickjs.lto.a
+PROGS+=libdynajs.lto.a
 endif
 
 # examples
@@ -286,7 +286,7 @@ ifndef CONFIG_ASAN
 ifndef CONFIG_MSAN
 ifndef CONFIG_UBSAN
 PROGS+=examples/hello examples/test_fib
-# no -m32 option in qjsc
+# no -m32 option in dynajsc
 ifndef CONFIG_M32
 ifndef CONFIG_WIN32
 PROGS+=examples/hello_module
@@ -300,42 +300,42 @@ endif
 endif
 endif
 
-all: $(OBJDIR) $(OBJDIR)/quickjs.check.o $(OBJDIR)/qjs.check.o $(PROGS)
+all: $(OBJDIR) $(OBJDIR)/dynajs.check.o $(OBJDIR)/dynajs-cli.check.o $(PROGS)
 
-QJS_LIB_OBJS=$(OBJDIR)/quickjs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/quickjs-libc.o
+DYNAJS_LIB_OBJS=$(OBJDIR)/dynajs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/dynajs-libc.o
 
-QJS_OBJS=$(OBJDIR)/qjs.o $(OBJDIR)/repl.o $(QJS_LIB_OBJS)
+DYNAJS_OBJS=$(OBJDIR)/dynajs-cli.o $(OBJDIR)/repl.o $(DYNAJS_LIB_OBJS)
 ifdef CONFIG_SCL_MODULES
 # scl:* native module binding objects (each family's object added as it lands)
-SCL_MODULE_OBJS=$(OBJDIR)/qjs-scl.o $(OBJDIR)/qjs-scl-structures.o
-ifneq ($(wildcard qjs-scl-structures-ext.c),)
-SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-structures-ext.o
+SCL_MODULE_OBJS=$(OBJDIR)/dynajs-scl.o $(OBJDIR)/dynajs-scl-structures.o
+ifneq ($(wildcard dynajs-scl-structures-ext.c),)
+SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-structures-ext.o
 endif
-ifneq ($(or $(wildcard qjs-scl-http.c),$(CONFIG_SCL_MODULE_HTTP)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-http.o
+ifneq ($(or $(wildcard dynajs-scl-http.c),$(CONFIG_SCL_MODULE_HTTP)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-http.o
 endif
-ifneq ($(or $(wildcard qjs-scl-ml.c),$(CONFIG_SCL_MODULE_ML)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-ml.o
+ifneq ($(or $(wildcard dynajs-scl-ml.c),$(CONFIG_SCL_MODULE_ML)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-ml.o
 endif
-ifneq ($(or $(wildcard qjs-scl-docparse.c),$(CONFIG_SCL_MODULE_DOCPARSE)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-docparse.o
+ifneq ($(or $(wildcard dynajs-scl-docparse.c),$(CONFIG_SCL_MODULE_DOCPARSE)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-docparse.o
 endif
-ifneq ($(or $(wildcard qjs-scl-compress.c),$(CONFIG_SCL_MODULE_COMPRESS)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-compress.o
+ifneq ($(or $(wildcard dynajs-scl-compress.c),$(CONFIG_SCL_MODULE_COMPRESS)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-compress.o
 endif
-ifneq ($(or $(wildcard qjs-scl-random.c),$(CONFIG_SCL_MODULE_RANDOM)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-random.o
+ifneq ($(or $(wildcard dynajs-scl-random.c),$(CONFIG_SCL_MODULE_RANDOM)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-random.o
 endif
-ifneq ($(or $(wildcard qjs-scl-sort.c),$(CONFIG_SCL_MODULE_SORT)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-sort.o
+ifneq ($(or $(wildcard dynajs-scl-sort.c),$(CONFIG_SCL_MODULE_SORT)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-sort.o
 endif
-ifneq ($(or $(wildcard qjs-scl-search.c),$(CONFIG_SCL_MODULE_SEARCH)),)
-SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-search.o
+ifneq ($(or $(wildcard dynajs-scl-search.c),$(CONFIG_SCL_MODULE_SEARCH)),)
+SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-search.o
 endif
-ifneq ($(wildcard qjs-scl-structures3.c),)
-SCL_MODULE_OBJS+=$(OBJDIR)/qjs-scl-structures3.o
+ifneq ($(wildcard dynajs-scl-structures3.c),)
+SCL_MODULE_OBJS+=$(OBJDIR)/dynajs-scl-structures3.o
 endif
-QJS_OBJS+=$(SCL_MODULE_OBJS)
+DYNAJS_OBJS+=$(SCL_MODULE_OBJS)
 endif
 
 HOST_LIBS=-lm -ldl -lpthread
@@ -348,19 +348,19 @@ LIBS+=$(EXTRA_LIBS)
 $(OBJDIR):
 	mkdir -p $(OBJDIR) $(OBJDIR)/examples $(OBJDIR)/tests
 
-qjs$(EXE): $(QJS_OBJS)
+dynajs$(EXE): $(DYNAJS_OBJS)
 	$(CC) $(LDFLAGS) $(LDEXPORT) -o $@ $^ $(LIBS)
 
-qjs-debug$(EXE): $(patsubst %.o, %.debug.o, $(QJS_OBJS))
+dynajs-debug$(EXE): $(patsubst %.o, %.debug.o, $(DYNAJS_OBJS))
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-qjsc$(EXE): $(OBJDIR)/qjsc.o $(QJS_LIB_OBJS)
+dynajsc$(EXE): $(OBJDIR)/dynajsc.o $(DYNAJS_LIB_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-fuzz_eval: $(OBJDIR)/fuzz_eval.o $(OBJDIR)/fuzz_common.o libquickjs.fuzz.a
+fuzz_eval: $(OBJDIR)/fuzz_eval.o $(OBJDIR)/fuzz_common.o libdynajs.fuzz.a
 	$(CC) $(CFLAGS_OPT) $^ -o fuzz_eval $(LIB_FUZZING_ENGINE)
 
-fuzz_compile: $(OBJDIR)/fuzz_compile.o $(OBJDIR)/fuzz_common.o libquickjs.fuzz.a
+fuzz_compile: $(OBJDIR)/fuzz_compile.o $(OBJDIR)/fuzz_common.o libdynajs.fuzz.a
 	$(CC) $(CFLAGS_OPT) $^ -o fuzz_compile $(LIB_FUZZING_ENGINE)
 
 fuzz_regexp: $(OBJDIR)/fuzz_regexp.o $(OBJDIR)/libregexp.fuzz.o $(OBJDIR)/cutils.fuzz.o $(OBJDIR)/libunicode.fuzz.o
@@ -368,33 +368,33 @@ fuzz_regexp: $(OBJDIR)/fuzz_regexp.o $(OBJDIR)/libregexp.fuzz.o $(OBJDIR)/cutils
 
 # reader targets drive JS_ParseJSON / JS_ReadObject on the raw buffer; they
 # do not use fuzz_common's test_one_input_init
-fuzz_json: $(OBJDIR)/fuzz_json.o libquickjs.fuzz.a
+fuzz_json: $(OBJDIR)/fuzz_json.o libdynajs.fuzz.a
 	$(CC) $(CFLAGS_OPT) $^ -o fuzz_json $(LIB_FUZZING_ENGINE)
 
-fuzz_bytecode: $(OBJDIR)/fuzz_bytecode.o libquickjs.fuzz.a
+fuzz_bytecode: $(OBJDIR)/fuzz_bytecode.o libdynajs.fuzz.a
 	$(CC) $(CFLAGS_OPT) $^ -o fuzz_bytecode $(LIB_FUZZING_ENGINE)
 
-fuzz_module_export: $(OBJDIR)/fuzz_module_export.o libquickjs.fuzz.a
+fuzz_module_export: $(OBJDIR)/fuzz_module_export.o libdynajs.fuzz.a
 	$(CC) $(CFLAGS_OPT) $^ -o fuzz_module_export $(LIB_FUZZING_ENGINE)
 
 libfuzzer: fuzz_eval fuzz_compile fuzz_regexp fuzz_json fuzz_bytecode fuzz_module_export
 
 ifneq ($(CROSS_PREFIX),)
 
-$(QJSC): $(OBJDIR)/qjsc.host.o \
-    $(patsubst %.o, %.host.o, $(QJS_LIB_OBJS))
+$(DYNAJSC): $(OBJDIR)/dynajsc.host.o \
+    $(patsubst %.o, %.host.o, $(DYNAJS_LIB_OBJS))
 	$(HOST_CC) $(LDFLAGS) -o $@ $^ $(HOST_LIBS)
 
 endif #CROSS_PREFIX
 
-QJSC_DEFINES:=-DCONFIG_CC=\"$(QJSC_CC)\" -DCONFIG_PREFIX=\"$(PREFIX)\"
+DYNAJSC_DEFINES:=-DCONFIG_CC=\"$(DYNAJSC_CC)\" -DCONFIG_PREFIX=\"$(PREFIX)\"
 ifdef CONFIG_LTO
-QJSC_DEFINES+=-DCONFIG_LTO
+DYNAJSC_DEFINES+=-DCONFIG_LTO
 endif
-QJSC_HOST_DEFINES:=-DCONFIG_CC=\"$(HOST_CC)\" -DCONFIG_PREFIX=\"$(PREFIX)\"
+DYNAJSC_HOST_DEFINES:=-DCONFIG_CC=\"$(HOST_CC)\" -DCONFIG_PREFIX=\"$(PREFIX)\"
 
-$(OBJDIR)/qjsc.o: CFLAGS+=$(QJSC_DEFINES)
-$(OBJDIR)/qjsc.host.o: CFLAGS+=$(QJSC_HOST_DEFINES)
+$(OBJDIR)/dynajsc.o: CFLAGS+=$(DYNAJSC_DEFINES)
+$(OBJDIR)/dynajsc.host.o: CFLAGS+=$(DYNAJSC_HOST_DEFINES)
 
 ifdef CONFIG_LTO
 LTOEXT=.lto
@@ -402,19 +402,19 @@ else
 LTOEXT=
 endif
 
-libquickjs$(LTOEXT).a: $(QJS_LIB_OBJS)
+libdynajs$(LTOEXT).a: $(DYNAJS_LIB_OBJS)
 	$(AR) rcs $@ $^
 
 ifdef CONFIG_LTO
-libquickjs.a: $(patsubst %.o, %.nolto.o, $(QJS_LIB_OBJS))
+libdynajs.a: $(patsubst %.o, %.nolto.o, $(DYNAJS_LIB_OBJS))
 	$(AR) rcs $@ $^
 endif # CONFIG_LTO
 
-libquickjs.fuzz.a: $(patsubst %.o, %.fuzz.o, $(QJS_LIB_OBJS))
+libdynajs.fuzz.a: $(patsubst %.o, %.fuzz.o, $(DYNAJS_LIB_OBJS))
 	$(AR) rcs $@ $^
 
-repl.c: $(QJSC) repl.js
-	$(QJSC) -s -c -o $@ -m repl.js
+repl.c: $(DYNAJSC) repl.js
+	$(DYNAJSC) -s -c -o $@ -m repl.js
 
 ifneq ($(wildcard unicode/UnicodeData.txt),)
 $(OBJDIR)/libunicode.o $(OBJDIR)/libunicode.nolto.o: libunicode-table.h
@@ -423,10 +423,10 @@ libunicode-table.h: unicode_gen
 	./unicode_gen unicode $@
 endif
 
-run-test262$(EXE): $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS)
+run-test262$(EXE): $(OBJDIR)/run-test262.o $(DYNAJS_LIB_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-run-test262-debug: $(patsubst %.o, %.debug.o, $(OBJDIR)/run-test262.o $(QJS_LIB_OBJS))
+run-test262-debug: $(patsubst %.o, %.debug.o, $(OBJDIR)/run-test262.o $(DYNAJS_LIB_OBJS))
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 # object suffix order: nolto
@@ -466,21 +466,21 @@ clean:
 	rm -f *.a *.o *.d *~ unicode_gen regexp_test fuzz_eval fuzz_compile fuzz_regexp $(PROGS)
 	rm -f hello.c test_fib.c
 	rm -f examples/*.so tests/*.so
-	rm -rf $(OBJDIR)/ *.dSYM/ qjs-debug$(EXE)
+	rm -rf $(OBJDIR)/ *.dSYM/ dynajs-debug$(EXE)
 	rm -rf run-test262-debug$(EXE)
 	rm -f run_octane run_sunspider_like
 
 install: all
 	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
-	$(STRIP) qjs$(EXE) qjsc$(EXE)
-	install -m755 qjs$(EXE) qjsc$(EXE) "$(DESTDIR)$(PREFIX)/bin"
-	mkdir -p "$(DESTDIR)$(PREFIX)/lib/quickjs"
-	install -m644 libquickjs.a "$(DESTDIR)$(PREFIX)/lib/quickjs"
+	$(STRIP) dynajs$(EXE) dynajsc$(EXE)
+	install -m755 dynajs$(EXE) dynajsc$(EXE) "$(DESTDIR)$(PREFIX)/bin"
+	mkdir -p "$(DESTDIR)$(PREFIX)/lib/dynajs"
+	install -m644 libdynajs.a "$(DESTDIR)$(PREFIX)/lib/dynajs"
 ifdef CONFIG_LTO
-	install -m644 libquickjs.lto.a "$(DESTDIR)$(PREFIX)/lib/quickjs"
+	install -m644 libdynajs.lto.a "$(DESTDIR)$(PREFIX)/lib/dynajs"
 endif
-	mkdir -p "$(DESTDIR)$(PREFIX)/include/quickjs"
-	install -m644 quickjs.h quickjs-libc.h "$(DESTDIR)$(PREFIX)/include/quickjs"
+	mkdir -p "$(DESTDIR)$(PREFIX)/include/dynajs"
+	install -m644 dynajs.h dynajs-libc.h "$(DESTDIR)$(PREFIX)/include/dynajs"
 
 ###############################################################################
 # examples
@@ -491,10 +491,10 @@ HELLO_OPTS=-fno-string-normalize -fno-map -fno-promise -fno-typedarray \
            -fno-typedarray -fno-regexp -fno-json -fno-eval -fno-proxy \
            -fno-date -fno-module-loader
 
-hello.c: $(QJSC) $(HELLO_SRCS)
-	$(QJSC) -e $(HELLO_OPTS) -o $@ $(HELLO_SRCS)
+hello.c: $(DYNAJSC) $(HELLO_SRCS)
+	$(DYNAJSC) -e $(HELLO_OPTS) -o $@ $(HELLO_SRCS)
 
-examples/hello: $(OBJDIR)/hello.o $(QJS_LIB_OBJS)
+examples/hello: $(OBJDIR)/hello.o $(DYNAJS_LIB_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 # example of static JS compilation with modules
@@ -502,15 +502,15 @@ HELLO_MODULE_SRCS=examples/hello_module.js
 HELLO_MODULE_OPTS=-fno-string-normalize -fno-map -fno-typedarray \
            -fno-typedarray -fno-regexp -fno-json -fno-eval -fno-proxy \
            -fno-date -m
-examples/hello_module: $(QJSC) libquickjs$(LTOEXT).a $(HELLO_MODULE_SRCS)
-	$(QJSC) $(HELLO_MODULE_OPTS) -o $@ $(HELLO_MODULE_SRCS)
+examples/hello_module: $(DYNAJSC) libdynajs$(LTOEXT).a $(HELLO_MODULE_SRCS)
+	$(DYNAJSC) $(HELLO_MODULE_OPTS) -o $@ $(HELLO_MODULE_SRCS)
 
 # use of an external C module (static compilation)
 
-test_fib.c: $(QJSC) examples/test_fib.js
-	$(QJSC) -e -M examples/fib.so,fib -m -o $@ examples/test_fib.js
+test_fib.c: $(DYNAJSC) examples/test_fib.js
+	$(DYNAJSC) -e -M examples/fib.so,fib -m -o $@ examples/test_fib.js
 
-examples/test_fib: $(OBJDIR)/test_fib.o $(OBJDIR)/examples/fib.o libquickjs$(LTOEXT).a
+examples/test_fib: $(OBJDIR)/test_fib.o $(OBJDIR)/examples/fib.o libdynajs$(LTOEXT).a
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 examples/fib.so: $(OBJDIR)/examples/fib.pic.o
@@ -522,7 +522,7 @@ examples/point.so: $(OBJDIR)/examples/point.pic.o
 ###############################################################################
 # documentation
 
-DOCS=doc/quickjs.pdf doc/quickjs.html
+DOCS=doc/dynajs.pdf doc/dynajs.html
 
 build_doc: $(DOCS)
 
@@ -548,32 +548,32 @@ ifdef CONFIG_SHARED_LIBS
 test: tests/bjson.so examples/point.so
 endif
 
-test: qjs$(EXE)
-	$(WINE) ./qjs$(EXE) tests/test_closure.js
-	$(WINE) ./qjs$(EXE) tests/test_language.js
-	$(WINE) ./qjs$(EXE) --std tests/test_builtin.js
-	$(WINE) ./qjs$(EXE) tests/test_modern.js
-	$(WINE) ./qjs$(EXE) tests/test_disposable.js
-	$(WINE) ./qjs$(EXE) tests/test_meta.js
-	$(WINE) ./qjs$(EXE) tests/test_optimizer.js
-	$(WINE) ./qjs$(EXE) tests/test_loop.js
-	$(WINE) ./qjs$(EXE) tests/test_bigint.js
-	$(WINE) ./qjs$(EXE) tests/test_cyclic_import.js
-	$(WINE) ./qjs$(EXE) tests/test_worker.js
+test: dynajs$(EXE)
+	$(WINE) ./dynajs$(EXE) tests/test_closure.js
+	$(WINE) ./dynajs$(EXE) tests/test_language.js
+	$(WINE) ./dynajs$(EXE) --std tests/test_builtin.js
+	$(WINE) ./dynajs$(EXE) tests/test_modern.js
+	$(WINE) ./dynajs$(EXE) tests/test_disposable.js
+	$(WINE) ./dynajs$(EXE) tests/test_meta.js
+	$(WINE) ./dynajs$(EXE) tests/test_optimizer.js
+	$(WINE) ./dynajs$(EXE) tests/test_loop.js
+	$(WINE) ./dynajs$(EXE) tests/test_bigint.js
+	$(WINE) ./dynajs$(EXE) tests/test_cyclic_import.js
+	$(WINE) ./dynajs$(EXE) tests/test_worker.js
 ifndef CONFIG_WIN32
-	$(WINE) ./qjs$(EXE) tests/test_std.js
-	$(WINE) ./qjs$(EXE) tests/test_rw_handler.js
+	$(WINE) ./dynajs$(EXE) tests/test_std.js
+	$(WINE) ./dynajs$(EXE) tests/test_rw_handler.js
 endif
 ifdef CONFIG_SHARED_LIBS
-	$(WINE) ./qjs$(EXE) tests/test_bjson.js
-	$(WINE) ./qjs$(EXE) examples/test_point.js
+	$(WINE) ./dynajs$(EXE) tests/test_bjson.js
+	$(WINE) ./dynajs$(EXE) examples/test_point.js
 endif
 
-stats: qjs$(EXE)
-	$(WINE) ./qjs$(EXE) -qd
+stats: dynajs$(EXE)
+	$(WINE) ./dynajs$(EXE) -qd
 
-microbench: qjs$(EXE)
-	$(WINE) ./qjs$(EXE) --std tests/microbench.js
+microbench: dynajs$(EXE)
+	$(WINE) ./dynajs$(EXE) --std tests/microbench.js
 
 ifeq ($(wildcard test262/features.txt),)
 test2-bootstrap:
@@ -629,9 +629,9 @@ node-microbench:
 	node tests/microbench.js -s microbench-node.txt
 	node --jitless tests/microbench.js -s microbench-node-jitless.txt
 
-bench-v8: qjs
+bench-v8: dynajs
 	make -C tests/bench-v8
-	./qjs -d tests/bench-v8/combined.js
+	./dynajs -d tests/bench-v8/combined.js
 
 node-bench-v8:
 	make -C tests/bench-v8
@@ -640,13 +640,13 @@ node-bench-v8:
 tests/bjson.so: $(OBJDIR)/tests/bjson.pic.o
 	$(CC) $(LDFLAGS) -shared -o $@ $^ $(LIBS)
 
-BENCHMARKDIR=../quickjs-benchmarks
+BENCHMARKDIR=../dynajs-benchmarks
 
 run_sunspider_like: $(BENCHMARKDIR)/run_sunspider_like.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -DNO_INCLUDE_DIR -I. -o $@ $< libquickjs$(LTOEXT).a $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -DNO_INCLUDE_DIR -I. -o $@ $< libdynajs$(LTOEXT).a $(LIBS)
 
 run_octane: $(BENCHMARKDIR)/run_octane.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -DNO_INCLUDE_DIR -I. -o $@ $< libquickjs$(LTOEXT).a $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -DNO_INCLUDE_DIR -I. -o $@ $< libdynajs$(LTOEXT).a $(LIBS)
 
 benchmarks: run_sunspider_like run_octane
 	./run_sunspider_like $(BENCHMARKDIR)/kraken-1.0/

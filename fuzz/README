@@ -1,7 +1,7 @@
-libFuzzer support for QuickJS
+libFuzzer support for DynaJS
 =============================
 
-Build QuickJS with libFuzzer support as follows:
+Build DynaJS with libFuzzer support as follows:
 
   CONFIG_CLANG=y make libfuzzer
 

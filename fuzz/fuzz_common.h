@@ -13,8 +13,8 @@
  limitations under the License.
  */
 
-#include "quickjs.h"
-#include "quickjs-libc.h"
+#include "dynajs.h"
+#include "dynajs-libc.h"
 
 static int nbinterrupts = 0;
 

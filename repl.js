@@ -1,5 +1,5 @@
 /*
- * QuickJS Read Eval Print Loop
+ * DynaJS Read Eval Print Loop
  *
  * Copyright (c) 2017-2020 Fabrice Bellard
  * Copyright (c) 2017-2020 Charlie Gordon
@@ -84,7 +84,7 @@ import * as os from "os";
     var pstate = "";
     var prompt = "";
     var plen = 0;
-    var ps1 = "qjs > ";
+    var ps1 = "dynajs > ";
     var ps2 = "  ... ";
     var utf8 = true;
     var show_time = false;
@@ -941,7 +941,7 @@ import * as os from "os";
     }
 
     function cmd_start() {
-        std.puts('QuickJS - Type "\\h" for help\n');
+        std.puts('DynaJS - Type "\\h" for help\n');
 
         cmd_readline_start();
     }

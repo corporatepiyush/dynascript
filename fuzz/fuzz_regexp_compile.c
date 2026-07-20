@@ -1,8 +1,8 @@
 // Copyright 2025 Google LLC
-// Fuzz target for QuickJS RegExp compilation
+// Fuzz target for DynaJS RegExp compilation
 
-#include "quickjs.h"
-#include "quickjs-libc.h"
+#include "dynajs.h"
+#include "dynajs-libc.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

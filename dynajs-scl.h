@@ -9,10 +9,10 @@
  * for objects that were leaked. Native results are copied into JS values at the
  * call boundary, so no arena pointer ever escapes into the JS heap.
  */
-#ifndef QJS_SCL_H
-#define QJS_SCL_H
+#ifndef DYNAJS_SCL_H
+#define DYNAJS_SCL_H
 
-#include "quickjs.h"
+#include "dynajs.h"
 
 #ifdef CONFIG_SCL_MODULES
 
@@ -91,4 +91,4 @@ int js_scl_init_structures3(JSContext *ctx);
 int js_scl_init_all(JSContext *ctx);
 
 #endif /* CONFIG_SCL_MODULES */
-#endif /* QJS_SCL_H */
+#endif /* DYNAJS_SCL_H */

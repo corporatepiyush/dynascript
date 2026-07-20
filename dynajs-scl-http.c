@@ -12,7 +12,7 @@
  *     c.close();                 // deterministic free (arena destroyed)
  *   }
  *
- * Memory model (see qjs-scl.h): every HttpClient owns a private SCL arena; the
+ * Memory model (see dynajs-scl.h): every HttpClient owns a private SCL arena; the
  * scl_http_client_t and all of its buffers are allocated from that arena, so a
  * single scl_alloc_arena_destroy() reclaims everything on .close() (the class
  * finalizer is only a safety net for a leaked client). A response's native
@@ -25,7 +25,7 @@
  * JSContext from those threads cannot be made ASan/TSan-clean without a
  * cross-thread marshal to the JS thread. See the note at the end of this file.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #if defined(CONFIG_SCL_MODULES) && defined(CONFIG_SCL_MODULE_HTTP)
 
@@ -505,7 +505,7 @@ int js_scl_init_http(JSContext *ctx)
  * HttpServer -- deferred (follow-up), on purpose.
  *
  * scl_http_server spawns an acceptor + N worker threads; the application
- * handler (scl_http_handler_fn) is invoked ON A WORKER THREAD. A QuickJS
+ * handler (scl_http_handler_fn) is invoked ON A WORKER THREAD. A DynaJS
  * JSContext/JSRuntime is single-threaded (only SharedArrayBuffer atomics are
  * cross-thread), so invoking a JS callback from a worker thread is a data race
  * on the whole interpreter -- it cannot be made ASan/TSan-clean by any local

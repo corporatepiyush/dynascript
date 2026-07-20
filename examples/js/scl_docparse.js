@@ -4,8 +4,8 @@
 // the returned value is fully independent (no native pointer escapes).
 //
 // Requires a build with the module linked in:
-//   make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_DOCPARSE=y qjs
-// then:  ./qjs examples/js/scl_docparse.js
+//   make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_DOCPARSE=y dynajs
+// then:  ./dynajs examples/js/scl_docparse.js
 
 import { parseJson, parseCsv } from "scl:docparse";
 import { test, run, assert, assertEqual, assertThrows, deepEqual } from "./harness.js";

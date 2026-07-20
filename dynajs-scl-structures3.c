@@ -9,7 +9,7 @@
  *   try { uf.union(0, 1); print(uf.connected(0, 1), uf.count); }
  *   finally { uf.close(); }
  *
- * Each object owns a private SCL arena (see qjs-scl.h): the native struct and
+ * Each object owns a private SCL arena (see dynajs-scl.h): the native struct and
  * all of its nodes are allocated from that arena, so disposal is one O(1)
  * scl_alloc_arena_destroy after the structure's own destroy. Native values are
  * copied to/from JS numbers at the boundary, so nothing native escapes.
@@ -21,7 +21,7 @@
  * can call this.close() and free the arena; resolving afterwards means the
  * resolve sees r->closed and throws instead of touching a freed arena.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 

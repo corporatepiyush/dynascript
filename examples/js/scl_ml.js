@@ -4,7 +4,7 @@
  *
  * Requires the SCL-modules build with the ML family enabled:
  *     make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_ML=y
- *     ./qjs examples/js/scl_ml.js
+ *     ./dynajs examples/js/scl_ml.js
  *
  * Each model owns a private arena; .close() (aliased .dispose()) frees it
  * immediately -- O(1), no GC. The finalizer is only a safety net, so production

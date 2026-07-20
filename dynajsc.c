@@ -1,5 +1,5 @@
 /*
- * QuickJS command line compiler
+ * DynaJS command line compiler
  *
  * Copyright (c) 2018-2021 Fabrice Bellard
  *
@@ -34,7 +34,7 @@
 #endif
 
 #include "cutils.h"
-#include "quickjs-libc.h"
+#include "dynajs-libc.h"
 
 typedef struct {
     char *name;
@@ -60,7 +60,7 @@ static uint64_t feature_bitmap;
 static FILE *outfile;
 static BOOL byte_swap;
 static BOOL dynamic_export;
-static const char *c_ident_prefix = "qjsc_";
+static const char *c_ident_prefix = "dynajsc_";
 
 #define FE_ALL (-1)
 
@@ -388,11 +388,11 @@ static const char main_c_template2[] =
     "  return 0;\n"
     "}\n";
 
-#define PROG_NAME "qjsc"
+#define PROG_NAME "dynajsc"
 
 void help(void)
 {
-    printf("QuickJS Compiler version " CONFIG_VERSION "\n"
+    printf("DynaJS Compiler version " CONFIG_VERSION "\n"
            "usage: " PROG_NAME " [options] [files]\n"
            "\n"
            "options are:\n"
@@ -464,15 +464,15 @@ static int output_executable(const char *out_filename, const char *cfilename,
         pstrcpy(exe_dir, sizeof(exe_dir), ".");
     }
 
-    /* if 'quickjs.h' is present at the same path as the executable, we
+    /* if 'dynajs.h' is present at the same path as the executable, we
        use it as include and lib directory */
-    snprintf(buf, sizeof(buf), "%s/quickjs.h", exe_dir);
+    snprintf(buf, sizeof(buf), "%s/dynajs.h", exe_dir);
     if (access(buf, R_OK) == 0) {
         pstrcpy(inc_dir, sizeof(inc_dir), exe_dir);
         pstrcpy(lib_dir, sizeof(lib_dir), exe_dir);
     } else {
-        snprintf(inc_dir, sizeof(inc_dir), "%s/include/quickjs", CONFIG_PREFIX);
-        snprintf(lib_dir, sizeof(lib_dir), "%s/lib/quickjs", CONFIG_PREFIX);
+        snprintf(inc_dir, sizeof(inc_dir), "%s/include/dynajs", CONFIG_PREFIX);
+        snprintf(lib_dir, sizeof(lib_dir), "%s/lib/dynajs", CONFIG_PREFIX);
     }
 
     lto_suffix = "";
@@ -498,7 +498,7 @@ static int output_executable(const char *out_filename, const char *cfilename,
     if (dynamic_export)
         *arg++ = "-rdynamic";
     *arg++ = cfilename;
-    snprintf(libjsname, sizeof(libjsname), "%s/libquickjs%s%s.a",
+    snprintf(libjsname, sizeof(libjsname), "%s/libdynajs%s%s.a",
              lib_dir, bn_suffix, lto_suffix);
     *arg++ = libjsname;
     *arg++ = "-lm";
@@ -544,7 +544,7 @@ static size_t get_suffixed_size(const char *str)
         break;
     default:
         if (*p != '\0') {
-            fprintf(stderr, "qjs: invalid suffix: %s\n", p);
+            fprintf(stderr, "dynajs: invalid suffix: %s\n", p);
             exit(1);
         }
         break;
@@ -567,7 +567,7 @@ static const char *get_short_optarg(int *poptind, int opt,
     } else if (*poptind < argc) {
         optarg = argv[(*poptind)++];
     } else {
-        fprintf(stderr, "qjsc: expecting parameter for -%c\n", opt);
+        fprintf(stderr, "dynajsc: expecting parameter for -%c\n", opt);
         exit(1);
     }
     return optarg;
@@ -718,9 +718,9 @@ int main(int argc, char **argv)
                 continue;
             }
             if (opt) {
-                fprintf(stderr, "qjsc: unknown option '-%c'\n", opt);
+                fprintf(stderr, "dynajsc: unknown option '-%c'\n", opt);
             } else {
-                fprintf(stderr, "qjsc: unknown option '--%s'\n", longopt);
+                fprintf(stderr, "dynajsc: unknown option '--%s'\n", longopt);
             }
             help();
         }
@@ -763,12 +763,12 @@ int main(int argc, char **argv)
     /* loader for ES6 modules */
     JS_SetModuleLoaderFunc2(rt, NULL, jsc_module_loader, NULL, NULL);
 
-    fprintf(fo, "/* File generated automatically by the QuickJS compiler. */\n"
+    fprintf(fo, "/* File generated automatically by the DynaJS compiler. */\n"
             "\n"
             );
 
     if (output_type != OUTPUT_C) {
-        fprintf(fo, "#include \"quickjs-libc.h\"\n"
+        fprintf(fo, "#include \"dynajs-libc.h\"\n"
                 "\n"
                 );
     } else {

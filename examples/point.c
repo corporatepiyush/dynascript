@@ -1,5 +1,5 @@
 /*
- * QuickJS: Example of C module with a class
+ * DynaJS: Example of C module with a class
  *
  * Copyright (c) 2019 Fabrice Bellard
  *
@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#include "../quickjs.h"
+#include "../dynajs.h"
 #include <math.h>
 
 #define countof(x) (sizeof(x) / sizeof((x)[0]))

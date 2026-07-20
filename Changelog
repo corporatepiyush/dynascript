@@ -17,15 +17,15 @@
 
 - added JSON modules and import attributes
 - added JS_PrintValue() API
-- qjs: pretty print objects in print() and console.log()
-- qjs: better promise rejection tracker heuristics
+- dynajs: pretty print objects in print() and console.log()
+- dynajs: better promise rejection tracker heuristics
 - added RegExp v flag
 - added RegExp modifiers
 - added RegExp.escape
 - added Float16Array
 - added Promise.try
 - improved JSON parser spec conformance
-- qjs: improved compatibility of std.parseExtJSON() with JSON5 and
+- dynajs: improved compatibility of std.parseExtJSON() with JSON5 and
   accept JSON5 modules
 - added JS_FreePropertyEnum() and JS_AtomToCStringLen() API
 - added Error.isError()
@@ -33,16 +33,16 @@
 
 2025-04-26:
 
-- removed the bignum extensions and qjscalc
+- removed the bignum extensions and dynajscalc
 - new BigInt implementation optimized for small numbers
 - added WeakRef, FinalizationRegistry and symbols as weakrefs
 - added builtin float64 printing and parsing functions for more correctness
 - faster repeated string concatenation
-- qjs: promise unhandled rejections are fatal errors by default
+- dynajs: promise unhandled rejections are fatal errors by default
 - added column number in debug information
 - removed the "use strip" extension
-- qjs: added -s and --strip-source options
-- qjsc: added -s and --keep-source options
+- dynajs: added -s and --strip-source options
+- dynajsc: added -s and --keep-source options
 - added JS_GetAnyOpaque()
 - added more callbacks for exotic objects in JSClassExoticMethods
 - misc bug fixes
@@ -94,7 +94,7 @@ TypedArray.prototype.{with,toReversed,toSorted}
 - added IsHTMLDDA support
 - faster for-of loops
 - os.Worker now takes a module filename as parameter
-- qjsc: added -D option to compile dynamically loaded modules or workers
+- dynajsc: added -D option to compile dynamically loaded modules or workers
 - misc bug fixes
 
 2020-07-05:
@@ -128,7 +128,7 @@ TypedArray.prototype.{with,toReversed,toSorted}
 
 - keep CONFIG_BIGNUM in the makefile
 - added os.chdir()
-- qjs: added -I option
+- dynajs: added -I option
 - more memory checks in the bignum operations
 - modified operator overloading semantics to be closer to the TC39
   proposal
@@ -138,7 +138,7 @@ TypedArray.prototype.{with,toReversed,toSorted}
 
 2020-01-05:
 
-- always compile the bignum code. Added '--bignum' option to qjs.
+- always compile the bignum code. Added '--bignum' option to dynajs.
 - added BigDecimal
 - added String.prototype.replaceAll
 - misc bug fixes
@@ -165,7 +165,7 @@ TypedArray.prototype.{with,toReversed,toSorted}
 
 - added os.exec and other system calls
 - exported JS_ValueToAtom()
-- qjsc: added 'qjsc_' prefix to the generated C identifiers
+- dynajsc: added 'dynajsc_' prefix to the generated C identifiers
 - added cross-compilation support
 - misc bug fixes
 
@@ -190,7 +190,7 @@ TypedArray.prototype.{with,toReversed,toSorted}
 - added public class fields and private class fields, methods and
   accessors (TC39 proposal)
 - changed JS_ToCStringLen() prototype
-- qjsc: handle '-' in module names and modules with the same filename
+- dynajsc: handle '-' in module names and modules with the same filename
 - added std.urlGet
 - exported JS_GetOwnPropertyNames() and JS_GetOwnProperty()
 - exported some bigint C functions
@@ -213,7 +213,7 @@ TypedArray.prototype.{with,toReversed,toSorted}
 
 - updated test262 tests
 - updated to Unicode version 12.1.0
-- fixed missing Date object in qjsc
+- fixed missing Date object in dynajsc
 - fixed multi-context creation
 - misc ES2020 related fixes
 - simplified power and division operators in bignum extension

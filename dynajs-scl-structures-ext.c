@@ -10,7 +10,7 @@
  * function (js_scl_init_structures_ext) and its own class ids, so it can be
  * merged with the base module later without collision.
  *
- * Same arena-per-object memory model as qjs-scl.h: every object owns a private
+ * Same arena-per-object memory model as dynajs-scl.h: every object owns a private
  * SCL arena; .close()/[Symbol.dispose] runs the matching scl_*_destroy and then
  * destroys the arena (O(1) reclaim). Scalars are copied to/from JS numbers and
  * C strings are freed at the call boundary, so nothing native escapes into JS.
@@ -20,7 +20,7 @@
  * with no recursion or fixed-size traversal stack -- so both the close() and the
  * finalizer paths stay ASan-clean regardless of element count.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 
@@ -113,7 +113,7 @@ static scl_bloom_t *bloom_this(JSContext *ctx, JSValueConst this_val)
 }
 
 /* coerce args before resolving the native handle -- coercion can run JS that
- * close()s this object (see the note in qjs-scl-structures.c) */
+ * close()s this object (see the note in dynajs-scl-structures.c) */
 static JSValue js_scl_bloom_add(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv)
 {

@@ -1,5 +1,5 @@
 /*
- * ECMA Test 262 Runner for QuickJS
+ * ECMA Test 262 Runner for DynaJS
  *
  * Copyright (c) 2017-2021 Fabrice Bellard
  * Copyright (c) 2017-2021 Charlie Gordon
@@ -42,7 +42,7 @@
 
 #include "cutils.h"
 #include "list.h"
-#include "quickjs-libc.h"
+#include "dynajs-libc.h"
 
 #define CMD_NAME "run-test262"
 

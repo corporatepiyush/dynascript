@@ -8,11 +8,11 @@
 # meta@strict escalation to a non-zero exit. Complements tests/test_meta.js
 # (which covers the result-invariant and the throwable strict errors).
 #
-# Usage:  tests/meta/run_dump_tests.sh          # uses ./qjs
-#         QJS=/path/to/qjs tests/meta/run_dump_tests.sh
+# Usage:  tests/meta/run_dump_tests.sh          # uses ./dynajs
+#         DYNAJS=/path/to/dynajs tests/meta/run_dump_tests.sh
 #
 set -u
-QJS="${QJS:-./qjs}"
+DYNAJS="${DYNAJS:-./dynajs}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
@@ -21,9 +21,9 @@ pass=0; fail=0
 _run() {
     printf '%s\n' "$1" > "$TMP/src.js"
     if [ "${2:-}" = "dump" ]; then
-        DYNASCRIPT_META_DUMP=1 "$QJS" "$TMP/src.js" >/dev/null 2>"$TMP/err"
+        DYNASCRIPT_META_DUMP=1 "$DYNAJS" "$TMP/src.js" >/dev/null 2>"$TMP/err"
     else
-        "$QJS" "$TMP/src.js" >/dev/null 2>"$TMP/err"
+        "$DYNAJS" "$TMP/src.js" >/dev/null 2>"$TMP/err"
     fi
     echo $? > "$TMP/ec"
 }
@@ -212,10 +212,10 @@ expect_nocrash $'// meta@enable(unsafe)\n// meta@range(((x)),0,9)\nlet x=1;'    
 expect_nocrash $'// meta@strict\n// meta@bogus\n// meta@sealed\nclass C{}'          "strict abort mid-set"
 # CRLF line endings (written raw, bypassing _run's added \n)
 printf '// meta@prefetch(4)\r\nfor(let i=0;i<2;i++){}\r\n' > "$TMP/src.js"
-"$QJS" "$TMP/src.js" >/dev/null 2>/dev/null; cr_ec=$?
+"$DYNAJS" "$TMP/src.js" >/dev/null 2>/dev/null; cr_ec=$?
 if [ "$cr_ec" -le 1 ]; then ok; else bad "crash (exit $cr_ec): CRLF line endings"; fi
 
-echo "== meta@sealed: behavior + serialization round-trip (QJS_BYTECODE_CACHE) =="
+echo "== meta@sealed: behavior + serialization round-trip (DYNAJS_BYTECODE_CACHE) =="
 cat > "$TMP/seal.js" <<'JS'
 // meta@sealed
 class Base { constructor(x){ this.x = x; } }
@@ -231,12 +231,12 @@ console.log([Object.isExtensible(b), b.x, add, Object.isExtensible(pl),
 JS
 SEAL_EXP="false,5,true,true,false,1,2,true"
 rm -f "$TMP/seal.js.qbc"
-seal_plain=$("$QJS" "$TMP/seal.js" 2>/dev/null)
+seal_plain=$("$DYNAJS" "$TMP/seal.js" 2>/dev/null)
 [ "$seal_plain" = "$SEAL_EXP" ] && ok || bad "sealed (no cache): got [$seal_plain] want [$SEAL_EXP]"
-seal_cold=$(QJS_BYTECODE_CACHE=1 "$QJS" "$TMP/seal.js" 2>/dev/null)
+seal_cold=$(DYNAJS_BYTECODE_CACHE=1 "$DYNAJS" "$TMP/seal.js" 2>/dev/null)
 [ -f "$TMP/seal.js.qbc" ] && ok || bad "sealed cold: .qbc cache not written"
 [ "$seal_cold" = "$SEAL_EXP" ] && ok || bad "sealed cold: got [$seal_cold]"
-seal_warm=$(QJS_BYTECODE_CACHE=1 "$QJS" "$TMP/seal.js" 2>/dev/null)
+seal_warm=$(DYNAJS_BYTECODE_CACHE=1 "$DYNAJS" "$TMP/seal.js" 2>/dev/null)
 [ "$seal_warm" = "$SEAL_EXP" ] && ok || bad "sealed warm (from .qbc): got [$seal_warm] want [$SEAL_EXP]"
 # directive on a non-class statement warns; after a use-strict prologue there is none
 expect_warn  $'// meta@sealed\nlet z=1;'                     "'meta@sealed' applies to a class"

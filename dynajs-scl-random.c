@@ -13,7 +13,7 @@
  *   const id = uuid();  // "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx" (RFC 4122 v4)
  *
  * Backing PRNG is xoshiro256** (256-bit state, splitmix64 seeding). Each Random
- * owns a private SCL arena (see qjs-scl.h) that holds its scl_rand_prng_t; the
+ * owns a private SCL arena (see dynajs-scl.h) that holds its scl_rand_prng_t; the
  * struct is POD, so disposal is a single arena destroy -- no per-node free.
  * Native results are copied into fresh JS values at the boundary; no arena
  * pointer ever escapes into the JS heap.
@@ -25,7 +25,7 @@
  * mirrors its argument's type: a Number bound (<= 2^53) yields a Number, a
  * BigInt bound yields a BigInt, so the result never silently loses precision.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 

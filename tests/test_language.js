@@ -263,7 +263,7 @@ function test_prototype()
     assert(f.prototype.constructor, f, "prototype");
 
     var g = function g() { };
-    /* QuickJS bug */
+    /* DynaJS bug */
     Object.defineProperty(g, "prototype", { writable: false });
     assert(g.prototype.constructor, g, "prototype");
 }

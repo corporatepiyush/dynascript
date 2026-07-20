@@ -6,10 +6,10 @@
  *   try { v.push(1.5); v.push(2.5); print(v.get(0), v.length); }
  *   finally { v.close(); }        // deterministic free (arena destroyed)
  *
- * Each object owns a private SCL arena (see qjs-scl.h). Native values are
+ * Each object owns a private SCL arena (see dynajs-scl.h). Native values are
  * copied to/from JS numbers at the boundary, so nothing native escapes.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 

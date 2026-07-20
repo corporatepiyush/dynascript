@@ -4,7 +4,7 @@
  *
  * Requires the SCL-modules build:
  *     make CONFIG_SCL_MODULES=y
- *     ./qjs examples/js/scl_structures3.js
+ *     ./dynajs examples/js/scl_structures3.js
  *
  *   LRUCache(capacity) : int32 key -> double value, evicts least-recently-used
  *   UnionFind(n)       : disjoint-set forest over elements 0..n-1

@@ -4,7 +4,7 @@
  *
  * Requires the SCL-modules build:
  *     make CONFIG_SCL_MODULES=y
- *     ./qjs examples/js/scl_structures.js
+ *     ./dynajs examples/js/scl_structures.js
  *
  * Each native object owns a private arena; .close() (aliased .dispose())
  * frees it immediately -- O(1), no GC. The finalizer is only a safety net,

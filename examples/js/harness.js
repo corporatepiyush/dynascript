@@ -6,7 +6,7 @@
 // in exactly "PASS" or "FAIL" and exits the process with 0 or 1 so the suite
 // can be scripted (see run_all.js).
 //
-// Runs on the dynascript `qjs` (QuickJS-ng fork). The only platform dependency
+// Runs on the dynascript `dynajs` (DynaJS-ng fork). The only platform dependency
 // is `std.exit`, imported below; everything else is pure ECMAScript.
 
 import * as std from "std";

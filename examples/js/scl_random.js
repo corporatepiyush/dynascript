@@ -4,7 +4,7 @@
  *
  * Requires the SCL-modules build:
  *     make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_RANDOM=y
- *     ./qjs examples/js/scl_random.js
+ *     ./dynajs examples/js/scl_random.js
  *
  * Random is an arena-per-object PRNG (xoshiro256**): a private arena holds its
  * state and .close() (aliased .dispose()) frees it immediately -- O(1), no GC.

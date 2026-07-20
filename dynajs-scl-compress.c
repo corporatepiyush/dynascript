@@ -14,7 +14,7 @@
  * string). The arena is destroyed before returning on EVERY path -- success and
  * error -- so no native pointer ever escapes and RSS stays flat across calls.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 

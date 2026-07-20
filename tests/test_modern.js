@@ -1,6 +1,6 @@
 /* Modern ECMAScript (ES2023..ES2026 track) + runtime globals test suite.
    Style follows tests/test_builtin.js; coverage breadth inspired by the
-   Bun runtime test suite, adapted to the qjs shell (no external harness). */
+   Bun runtime test suite, adapted to the dynajs shell (no external harness). */
 "use strict";
 
 function assert(actual, expected, message) {

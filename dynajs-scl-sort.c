@@ -5,7 +5,7 @@
  *   const s = sort([3, 1, 2]);      // -> new ascending Array; input NOT mutated
  *   const i = binarySearch(s, 2);   // -> index, or -1 if absent
  *
- * TRANSIENT operations (see qjs-scl.h): each call spins up a private SCL arena,
+ * TRANSIENT operations (see dynajs-scl.h): each call spins up a private SCL arena,
  * reads the WHOLE JS Array into an arena-backed double[], runs an scl_sort_*
  * over it, copies the sorted values into a FRESH JS Array, then destroys the
  * arena. Nothing native escapes into the JS heap, so peak RSS stays flat across
@@ -25,7 +25,7 @@
  * leaving NaN placement unspecified; we pin it down instead.) -0 and +0 compare
  * equal, matching `a-b`.
  */
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 
 #ifdef CONFIG_SCL_MODULES
 

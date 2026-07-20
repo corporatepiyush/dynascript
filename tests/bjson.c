@@ -1,5 +1,5 @@
 /*
- * QuickJS: binary JSON module (test only)
+ * DynaJS: binary JSON module (test only)
  *
  * Copyright (c) 2017-2019 Fabrice Bellard
  *
@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#include "../quickjs-libc.h"
+#include "../dynajs-libc.h"
 #include "../cutils.h"
 
 static JSValue js_bjson_read(JSContext *ctx, JSValueConst this_val,

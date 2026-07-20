@@ -5,7 +5,7 @@
 // step (the GC finalizer is only a safety net). A response's native bytes are
 // copied into JS strings at the boundary, then freed — nothing native escapes.
 //
-// Run:  qjs examples/js/scl_http.js [http://host:port/base]
+// Run:  dynajs examples/js/scl_http.js [http://host:port/base]
 // With no argument it demonstrates the clean error path against a closed port.
 //
 // API:

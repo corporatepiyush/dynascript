@@ -19,7 +19,7 @@ Memory:
 
 Built-in standard library:
 - BSD sockets
-- modules: use realpath in module name normalizer and put it in quickjs-libc
+- modules: use realpath in module name normalizer and put it in dynajs-libc
 - modules: if no ".", use a well known module loading path ?
 - get rid of __loadScript, use more common name
 

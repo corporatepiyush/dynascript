@@ -15,7 +15,7 @@ sudo sh -c 'echo -1 > /proc/sys/fs/binfmt_misc/status'  # remove ALL binfmt_misc
 - Use the --assimilate option to build a platform specific binary for
   better startup time:
 
-  ./qjs --assimilate
+  ./dynajs --assimilate
 
 - See https://github.com/jart/cosmopolitan for more information about
   platform specific issues.

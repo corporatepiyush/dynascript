@@ -573,7 +573,7 @@ function assert_json_error(str, line_num, col_num)
             throw_error("unexpected exception type");
             return;
         }
-        /* XXX: the way quickjs returns JSON errors is not similar to Node or spiderMonkey */
+        /* XXX: the way dynajs returns JSON errors is not similar to Node or spiderMonkey */
         check_error_pos(e, SyntaxError, tab[1], tab[2]);
     }
     if (!err) {

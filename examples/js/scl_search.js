@@ -1,10 +1,10 @@
 /*
  * scl:search -- native substring search (KMP) backed by secure-c-libs.
  *
- * Build a qjs with the module, then run this script:
+ * Build a dynajs with the module, then run this script:
  *   make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_SEARCH=y \
- *        SCL_DIR=../secure-c-libs -j4 qjs
- *   ./qjs examples/scl_search.js
+ *        SCL_DIR=../secure-c-libs -j4 dynajs
+ *   ./dynajs examples/scl_search.js
  */
 import { indexOf, indexOfAll } from "scl:search";
 

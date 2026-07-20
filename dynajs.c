@@ -1,5 +1,5 @@
 /*
- * QuickJS Javascript Engine
+ * DynaJS Javascript Engine
  *
  * Copyright (c) 2017-2025 Fabrice Bellard
  * Copyright (c) 2017-2025 Charlie Gordon
@@ -42,7 +42,7 @@
 
 #include "cutils.h"
 #include "list.h"
-#include "quickjs.h"
+#include "dynajs.h"
 #include "libregexp.h"
 #include "libunicode.h"
 #include "dtoa.h"
@@ -59,7 +59,7 @@
    `get_loc A; get_loc B; <mul|add|sub>` into a single [OP_ext][op2][a][b] op
    that reads both locals directly — 6 bytes / 1 dispatch replacing 7 bytes /
    3 dispatches). Gate exists so a #define-off oracle build proves it output-
-   identical. Bank-2 ARITH shard; see quickjs-opcode2.h. */
+   identical. Bank-2 ARITH shard; see dynajs-opcode2.h. */
 #ifndef CONFIG_FUSED_ARITH
 #define CONFIG_FUSED_ARITH 1
 #endif
@@ -1153,7 +1153,7 @@ typedef struct JSMapState {
 enum {
     __JS_ATOM_NULL = JS_ATOM_NULL,
 #define DEF(name, str) JS_ATOM_ ## name,
-#include "quickjs-atom.h"
+#include "dynajs-atom.h"
 #undef DEF
     JS_ATOM_END,
 };
@@ -1162,14 +1162,14 @@ enum {
 
 static const char js_atom_init[] =
 #define DEF(name, str) str "\0"
-#include "quickjs-atom.h"
+#include "dynajs-atom.h"
 #undef DEF
 ;
 
 typedef enum OPCodeFormat {
 #define FMT(f) OP_FMT_ ## f,
 #define DEF(id, size, n_pop, n_push, f)
-#include "quickjs-opcode.h"
+#include "dynajs-opcode.h"
 #undef DEF
 #undef FMT
 } OPCodeFormat;
@@ -1178,7 +1178,7 @@ enum OPCodeEnum {
 #define FMT(f)
 #define DEF(id, size, n_pop, n_push, f) OP_ ## id,
 #define def(id, size, n_pop, n_push, f)
-#include "quickjs-opcode.h"
+#include "dynajs-opcode.h"
 #undef def
 #undef DEF
 #undef FMT
@@ -1189,17 +1189,17 @@ enum OPCodeEnum {
 #define FMT(f)
 #define DEF(id, size, n_pop, n_push, f)
 #define def(id, size, n_pop, n_push, f) OP_ ## id,
-#include "quickjs-opcode.h"
+#include "dynajs-opcode.h"
 #undef def
 #undef DEF
 #undef FMT
     OP_TEMP_END,
 };
 
-/* Bank-2 opcode ids (emitted as [OP_ext][op2]); see quickjs-opcode2.h. */
+/* Bank-2 opcode ids (emitted as [OP_ext][op2]); see dynajs-opcode2.h. */
 enum OP2CodeEnum {
 #define DEF2(id, size, n_pop, n_push, f) OP2_ ## id,
-#include "quickjs-opcode2.h"
+#include "dynajs-opcode2.h"
 #undef DEF2
     OP2_COUNT,
 };

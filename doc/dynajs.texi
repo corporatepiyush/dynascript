@@ -10,19 +10,19 @@
 @titlepage
 @afourpaper
 @sp 7
-@center @titlefont{QuickJS Javascript Engine}
+@center @titlefont{DynaJS Javascript Engine}
 @sp 3
 @center Version: @value{VERSION}
 @end titlepage
 
 @setfilename spec.info
-@settitle QuickJS Javascript Engine
+@settitle DynaJS Javascript Engine
 
 @contents
 
 @chapter Introduction
 
-QuickJS (version @value{VERSION}) is a small and embeddable Javascript
+DynaJS (version @value{VERSION}) is a small and embeddable Javascript
 engine. It supports most of the ES2025 specification
 @footnote{@url{https://tc39.es/ecma262/2025 }}.
 
@@ -60,26 +60,26 @@ Edit the top of the @code{Makefile} if you wish to select specific
 options then run @code{make}.
 
 You can type @code{make install} as root if you wish to install the binaries and support files to
-@code{/usr/local} (this is not necessary to use QuickJS).
+@code{/usr/local} (this is not necessary to use DynaJS).
 
 Note: On some OSes atomic operations are not available or need a
 specific library. If you get related errors, you should either add
 @code{-latomics} in the Makefile @code{LIBS} variable or disable
-@code{CONFIG_ATOMICS} in @file{quickjs.c}.
+@code{CONFIG_ATOMICS} in @file{dynajs.c}.
 
 @section Quick start
 
-@code{qjs} is the command line interpreter (Read-Eval-Print Loop). You can pass
+@code{dynajs} is the command line interpreter (Read-Eval-Print Loop). You can pass
 Javascript files and/or expressions as arguments to execute them:
 
 @example
-./qjs examples/hello.js
+./dynajs examples/hello.js
 @end example
 
-@code{qjsc} is the command line compiler:
+@code{dynajsc} is the command line compiler:
 
 @example
-./qjsc -o hello examples/hello.js
+./dynajsc -o hello examples/hello.js
 ./hello
 @end example
 
@@ -87,10 +87,10 @@ generates a @code{hello} executable with no external dependency.
 
 @section Command line options
 
-@subsection @code{qjs} interpreter
+@subsection @code{dynajs} interpreter
 
 @verbatim
-usage: qjs [options] [file [args]]
+usage: dynajs [options] [file [args]]
 @end verbatim
 
 Options are:
@@ -139,10 +139,10 @@ just instantiate the interpreter and quit.
 
 @end table
 
-@subsection @code{qjsc} compiler
+@subsection @code{dynajsc} compiler
 
 @verbatim
-usage: qjsc [options] [files]
+usage: dynajsc [options] [files]
 @end verbatim
 
 Options are:
@@ -187,12 +187,12 @@ Disable selected language features to produce a smaller executable file.
 @section Built-in tests
 
 Run @code{make test} to run the few built-in tests included in the
-QuickJS archive.
+DynaJS archive.
 
 @section Test262 (ECMAScript Test Suite)
 
-A test262 runner is included in the QuickJS archive. The test262 tests
-can be installed in the QuickJS source directory with:
+A test262 runner is included in the DynaJS archive. The test262 tests
+can be installed in the DynaJS source directory with:
 
 @example
 git clone https://github.com/tc39/test262.git test262
@@ -237,7 +237,7 @@ options of the test262 runner.
 
 @code{run-test262} accepts the @code{-N} option to be invoked from
 @code{test262-harness}@footnote{@url{https://github.com/bterlson/test262-harness}}
-thru @code{eshost}. Unless you want to compare QuickJS with other
+thru @code{eshost}. Unless you want to compare DynaJS with other
 engines under the same conditions, we do not recommend to run the
 tests this way as it is much slower (typically half an hour instead of
 about 100 seconds).
@@ -279,7 +279,7 @@ to the current module path.
 modules, such as @code{std} or @code{os}.
 
 @item Module names ending with @code{.so} are native modules using the
-QuickJS C API.
+DynaJS C API.
 
 @end itemize
 
@@ -798,10 +798,10 @@ The worker instances have the following properties:
 
 @end table
 
-@section QuickJS C API
+@section DynaJS C API
 
 The C API was designed to be simple and efficient. The C API is
-defined in the header @code{quickjs.h}.
+defined in the header @code{dynajs.h}.
 
 @subsection Runtime and contexts
 
@@ -849,17 +849,17 @@ occurred. The actual exception object is stored in the
 
 Use @code{JS_Eval()} to evaluate a script or module source.
 
-If the script or module was compiled to bytecode with @code{qjsc}, it
+If the script or module was compiled to bytecode with @code{dynajsc}, it
 can be evaluated by calling @code{js_std_eval_binary()}. The advantage
 is that no compilation is needed so it is faster and smaller because
 the compiler can be removed from the executable if no @code{eval} is
 required.
 
-Note: the bytecode format is linked to a given QuickJS
+Note: the bytecode format is linked to a given DynaJS
 version. Moreover, no security check is done before its
 execution. Hence the bytecode should not be loaded from untrusted
 sources. That's why there is no option to output the bytecode to a
-binary file in @code{qjsc}.
+binary file in @code{dynajsc}.
 
 @subsection JS Classes
 
@@ -884,13 +884,13 @@ is used to define a prototype for a given class in a given
 JSContext. @code{JS_NewObjectClass()} sets this prototype in the
 created object.
 
-Examples are available in @file{quickjs-libc.c}.
+Examples are available in @file{dynajs-libc.c}.
 
 @subsection C Modules
 
 Native ES6 modules are supported and can be dynamically or statically
 linked. Look at the @file{test_bjson} and @file{bjson.so}
-examples. The standard library @file{quickjs-libc.c} is also a good example
+examples. The standard library @file{dynajs-libc.c} is also a good example
 of a native module.
 
 @subsection Memory handling
@@ -936,9 +936,9 @@ Direct @code{eval} in strict mode is optimized.
 
 @section Executable generation
 
-@subsection @code{qjsc} compiler
+@subsection @code{dynajsc} compiler
 
-The @code{qjsc} compiler generates C sources from Javascript files. By
+The @code{dynajsc} compiler generates C sources from Javascript files. By
 default the C sources are compiled with the system compiler
 (@code{gcc} or @code{clang}).
 
@@ -957,7 +957,7 @@ compiler.
 
 @subsection Binary JSON
 
-@code{qjsc} works by compiling scripts or modules and then serializing
+@code{dynajsc} works by compiling scripts or modules and then serializing
 them to a binary format. A subset of this format (without functions or
 modules) can be used as binary JSON. The example @file{test_bjson.js}
 shows how to use it.
@@ -1061,9 +1061,9 @@ small BigInt values.
 
 @chapter License
 
-QuickJS is released under the MIT license.
+DynaJS is released under the MIT license.
 
-Unless otherwise specified, the QuickJS sources are copyright Fabrice
+Unless otherwise specified, the DynaJS sources are copyright Fabrice
 Bellard and Charlie Gordon.
 
 @bye

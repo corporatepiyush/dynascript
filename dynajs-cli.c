@@ -1,5 +1,5 @@
 /*
- * QuickJS stand alone interpreter
+ * DynaJS stand alone interpreter
  *
  * Copyright (c) 2017-2021 Fabrice Bellard
  * Copyright (c) 2017-2021 Charlie Gordon
@@ -41,13 +41,13 @@
 #endif
 
 #include "cutils.h"
-#include "quickjs-libc.h"
+#include "dynajs-libc.h"
 #ifdef CONFIG_SCL_MODULES
-#include "qjs-scl.h"
+#include "dynajs-scl.h"
 #endif
 
-extern const uint8_t qjsc_repl[];
-extern const uint32_t qjsc_repl_size;
+extern const uint8_t dynajsc_repl[];
+extern const uint32_t dynajsc_repl_size;
 
 static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
                     const char *filename, int eval_flags)
@@ -85,7 +85,7 @@ static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
  * the parser entirely. The cache key is the exact source bytes, the engine
  * build version and the eval flags; JS_ReadObject additionally validates the
  * internal bytecode version, so a blob from an incompatible engine degrades to
- * a recompile rather than misbehaving. Opt in with QJS_BYTECODE_CACHE=1.
+ * a recompile rather than misbehaving. Opt in with DYNAJS_BYTECODE_CACHE=1.
  */
 #define QBC_MAGIC 0x31434251u  /* 'Q','B','C','1' */
 
@@ -115,7 +115,7 @@ static uint64_t fnv1a64(const void *data, size_t len)
 
 static BOOL bytecode_cache_enabled(void)
 {
-    const char *e = getenv("QJS_BYTECODE_CACHE");
+    const char *e = getenv("DYNAJS_BYTECODE_CACHE");
     return e && e[0] && e[0] != '0';
 }
 
@@ -452,11 +452,11 @@ static const JSMallocFunctions trace_mf = {
     js_trace_malloc_usable_size,
 };
 
-#define PROG_NAME "qjs"
+#define PROG_NAME "dynajs"
 
 void help(void)
 {
-    printf("QuickJS version " CONFIG_VERSION "\n"
+    printf("DynaJS version " CONFIG_VERSION "\n"
            "usage: " PROG_NAME " [options] [file [args]]\n"
            "-h  --help         list options\n"
            "-e  --eval EXPR    evaluate EXPR\n"
@@ -528,7 +528,7 @@ int main(int argc, char **argv)
                     expr = argv[optind++];
                     break;
                 }
-                fprintf(stderr, "qjs: missing expression for -e\n");
+                fprintf(stderr, "dynajs: missing expression for -e\n");
                 exit(2);
             }
             if (opt == 'I' || !strcmp(longopt, "include")) {
@@ -588,9 +588,9 @@ int main(int argc, char **argv)
                 continue;
             }
             if (opt) {
-                fprintf(stderr, "qjs: unknown option '-%c'\n", opt);
+                fprintf(stderr, "dynajs: unknown option '-%c'\n", opt);
             } else {
-                fprintf(stderr, "qjs: unknown option '--%s'\n", longopt);
+                fprintf(stderr, "dynajs: unknown option '--%s'\n", longopt);
             }
             help();
         }
@@ -603,7 +603,7 @@ int main(int argc, char **argv)
         rt = JS_NewRuntime();
     }
     if (!rt) {
-        fprintf(stderr, "qjs: cannot allocate JS runtime\n");
+        fprintf(stderr, "dynajs: cannot allocate JS runtime\n");
         exit(2);
     }
     JS_SetStripInfo(rt, strip_flags);
@@ -612,7 +612,7 @@ int main(int argc, char **argv)
     js_std_init_handlers(rt);
     ctx = JS_NewCustomContext(rt);
     if (!ctx) {
-        fprintf(stderr, "qjs: cannot allocate JS context\n");
+        fprintf(stderr, "dynajs: cannot allocate JS context\n");
         exit(2);
     }
 
@@ -664,7 +664,7 @@ int main(int argc, char **argv)
         }
         if (interactive) {
             JS_SetHostPromiseRejectionTracker(rt, NULL, NULL);
-            js_std_eval_binary(ctx, qjsc_repl, qjsc_repl_size, 0);
+            js_std_eval_binary(ctx, dynajsc_repl, dynajsc_repl_size, 0);
         }
         js_std_loop(ctx);
     }
