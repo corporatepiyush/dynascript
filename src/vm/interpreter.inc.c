@@ -1695,11 +1695,67 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                            JS_VALUE_GET_TAG(prop) == JS_TAG_INT)) {     \
                     p = JS_VALUE_GET_OBJ(obj);                          \
                     idx = JS_VALUE_GET_INT(prop);                       \
-                    if (unlikely(p->class_id != JS_CLASS_ARRAY))        \
+                    /* inline the number-typed fast reads (mirrors the switch  \
+                     * in JS_GetPropertyValue) so a TypedArray element read is  \
+                     * a direct load, not a call into the slow path. BigInt     \
+                     * arrays and every other class fall through to slow. */    \
+                    switch (p->class_id) {                              \
+                    case JS_CLASS_ARRAY:                                \
+                    case JS_CLASS_ARGUMENTS:                            \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = JS_DupValue(ctx, p->u.array.u.values[idx]); \
+                        break;                                          \
+                    case JS_CLASS_INT8_ARRAY:                          \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = JS_NewInt32(ctx, p->u.array.u.int8_ptr[idx]); \
+                        break;                                          \
+                    case JS_CLASS_UINT8C_ARRAY:                        \
+                    case JS_CLASS_UINT8_ARRAY:                         \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = JS_NewInt32(ctx, p->u.array.u.uint8_ptr[idx]); \
+                        break;                                          \
+                    case JS_CLASS_INT16_ARRAY:                         \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = JS_NewInt32(ctx, p->u.array.u.int16_ptr[idx]); \
+                        break;                                          \
+                    case JS_CLASS_UINT16_ARRAY:                        \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = JS_NewInt32(ctx, p->u.array.u.uint16_ptr[idx]); \
+                        break;                                          \
+                    case JS_CLASS_INT32_ARRAY:                         \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = JS_NewInt32(ctx, p->u.array.u.int32_ptr[idx]); \
+                        break;                                          \
+                    case JS_CLASS_UINT32_ARRAY:                        \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = JS_NewUint32(ctx, p->u.array.u.uint32_ptr[idx]); \
+                        break;                                          \
+                    case JS_CLASS_FLOAT16_ARRAY:                       \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = __JS_NewFloat64(ctx,                      \
+                                  fromfp16(p->u.array.u.fp16_ptr[idx])); \
+                        break;                                          \
+                    case JS_CLASS_FLOAT32_ARRAY:                       \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = __JS_NewFloat64(ctx, p->u.array.u.float_ptr[idx]); \
+                        break;                                          \
+                    case JS_CLASS_FLOAT64_ARRAY:                       \
+                        if (unlikely(idx >= p->u.array.count))          \
+                            goto name ## _slow_path;                    \
+                        val = __JS_NewFloat64(ctx, p->u.array.u.double_ptr[idx]); \
+                        break;                                          \
+                    default:                                           \
                         goto name ## _slow_path;                        \
-                    if (unlikely(idx >= p->u.array.count))              \
-                        goto name ## _slow_path;                        \
-                    val = JS_DupValue(ctx, p->u.array.u.values[idx]);   \
+                    }                                                   \
                 } else {                                                \
                     name ## _slow_path:                                 \
                     sf->cur_pc = pc;                                    \
