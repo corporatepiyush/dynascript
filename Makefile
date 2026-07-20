@@ -173,6 +173,12 @@ CFLAGS+=-I.
 CFLAGS_DEBUG=$(CFLAGS) -O0
 CFLAGS_SMALL=$(CFLAGS) -Os
 CFLAGS_OPT=$(CFLAGS) -O2
+# opt-in local-CPU tuning for benchmarking; off by default so shipped builds
+# stay portable. -mcpu=native picks up the host uarch (NEON/SVE widths, etc.).
+ifdef CONFIG_NATIVE
+CFLAGS_OPT+=-mcpu=native
+CFLAGS_SMALL+=-mcpu=native
+endif
 CFLAGS_NOLTO:=$(CFLAGS_OPT)
 ifdef CONFIG_COSMO
 LDFLAGS+=-s # better to strip by default
