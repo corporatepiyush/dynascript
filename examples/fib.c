@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#include "../dynajs.h"
+#include "dynajs.h"
 
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 

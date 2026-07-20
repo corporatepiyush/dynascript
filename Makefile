@@ -168,9 +168,13 @@ endif
 endif
 
 CFLAGS+=$(DEFINES)
-# repo root on the include path so dynajs.c's src/*.inc.c fragments can
-# resolve project headers (e.g. dynajs-opcode.h) regardless of their subdir
-CFLAGS+=-I.
+# -I. resolves dynajs.c's "src/*.inc.c" unity includes from the repo root;
+# -Isrc resolves the project headers (dynajs.h, dynajs-opcode.h, cutils.h, ...)
+# now that all engine sources live under src/. VPATH lets the object rules find
+# src/<x>.c for a flat $(OBJDIR)/<x>.o (generated repl.c etc. stay in the root,
+# which make searches before VPATH).
+CFLAGS+=-I. -Isrc
+VPATH=src
 CFLAGS_DEBUG=$(CFLAGS) -O0
 CFLAGS_SMALL=$(CFLAGS) -Os
 CFLAGS_OPT=$(CFLAGS) -O2
@@ -215,31 +219,31 @@ endif
 # iff its dynajs-<family>.c is present. No -I/-l into any external tree.
 ifdef CONFIG_NATIVE_MODULES
 CFLAGS+=-DCONFIG_NATIVE_MODULES
-ifneq ($(wildcard dynajs-random.c),)
+ifneq ($(wildcard src/dynajs-random.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_RANDOM
 endif
-ifneq ($(wildcard dynajs-sort.c),)
+ifneq ($(wildcard src/dynajs-sort.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_SORT
 endif
-ifneq ($(wildcard dynajs-search.c),)
+ifneq ($(wildcard src/dynajs-search.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_SEARCH
 endif
-ifneq ($(wildcard dynajs-compress.c),)
+ifneq ($(wildcard src/dynajs-compress.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_COMPRESS
 endif
-ifneq ($(wildcard dynajs-http.c),)
+ifneq ($(wildcard src/dynajs-http.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_HTTP
 endif
-ifneq ($(wildcard dynajs-structures.c),)
+ifneq ($(wildcard src/dynajs-structures.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_STRUCTURES
 endif
-ifneq ($(wildcard dynajs-structures3.c),)
+ifneq ($(wildcard src/dynajs-structures3.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_STRUCTURES3
 endif
-ifneq ($(wildcard dynajs-ml.c),)
+ifneq ($(wildcard src/dynajs-ml.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_ML
 endif
-ifneq ($(wildcard dynajs-docparse.c),)
+ifneq ($(wildcard src/dynajs-docparse.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_DOCPARSE
 endif
 endif
@@ -300,31 +304,31 @@ DYNAJS_OBJS=$(OBJDIR)/dynajs-cli.o $(OBJDIR)/repl.o $(DYNAJS_LIB_OBJS)
 ifdef CONFIG_NATIVE_MODULES
 # in-repo native module objects (framework + each present family)
 NAT_MODULE_OBJS=$(OBJDIR)/dynajs-nat.o
-ifneq ($(wildcard dynajs-random.c),)
+ifneq ($(wildcard src/dynajs-random.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-random.o
 endif
-ifneq ($(wildcard dynajs-sort.c),)
+ifneq ($(wildcard src/dynajs-sort.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-sort.o
 endif
-ifneq ($(wildcard dynajs-search.c),)
+ifneq ($(wildcard src/dynajs-search.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-search.o
 endif
-ifneq ($(wildcard dynajs-compress.c),)
+ifneq ($(wildcard src/dynajs-compress.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-compress.o
 endif
-ifneq ($(wildcard dynajs-http.c),)
+ifneq ($(wildcard src/dynajs-http.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-http.o
 endif
-ifneq ($(wildcard dynajs-structures.c),)
+ifneq ($(wildcard src/dynajs-structures.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-structures.o
 endif
-ifneq ($(wildcard dynajs-structures3.c),)
+ifneq ($(wildcard src/dynajs-structures3.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-structures3.o
 endif
-ifneq ($(wildcard dynajs-ml.c),)
+ifneq ($(wildcard src/dynajs-ml.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-ml.o
 endif
-ifneq ($(wildcard dynajs-docparse.c),)
+ifneq ($(wildcard src/dynajs-docparse.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-docparse.o
 endif
 DYNAJS_OBJS+=$(NAT_MODULE_OBJS)
@@ -447,8 +451,8 @@ $(OBJDIR)/%.fuzz.o: %.c | $(OBJDIR)
 $(OBJDIR)/%.check.o: %.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -DCONFIG_CHECK_JSVALUE -c -o $@ $<
 
-regexp_test: libregexp.c libunicode.c cutils.c
-	$(CC) $(LDFLAGS) $(CFLAGS) -DTEST -o $@ libregexp.c libunicode.c cutils.c $(LIBS)
+regexp_test: src/libregexp.c src/libunicode.c src/cutils.c
+	$(CC) $(LDFLAGS) $(CFLAGS) -DTEST -o $@ $^ $(LIBS)
 
 unicode_gen: $(OBJDIR)/unicode_gen.host.o $(OBJDIR)/cutils.host.o libunicode.c unicode_gen_def.h
 	$(HOST_CC) $(LDFLAGS) $(CFLAGS) -o $@ $(OBJDIR)/unicode_gen.host.o $(OBJDIR)/cutils.host.o
@@ -472,7 +476,7 @@ ifdef CONFIG_LTO
 	install -m644 libdynajs.lto.a "$(DESTDIR)$(PREFIX)/lib/dynajs"
 endif
 	mkdir -p "$(DESTDIR)$(PREFIX)/include/dynajs"
-	install -m644 dynajs.h dynajs-libc.h "$(DESTDIR)$(PREFIX)/include/dynajs"
+	install -m644 src/dynajs.h src/dynajs-libc.h "$(DESTDIR)$(PREFIX)/include/dynajs"
 
 ###############################################################################
 # examples

@@ -160,13 +160,13 @@ mkdir -p $outdir $outdir/doc $outdir/tests $outdir/examples
 
 cp Makefile VERSION TODO Changelog readme.txt LICENSE \
    release.sh unicode_download.sh \
-   dynajs.c dynajsc.c repl.js \
-   dynajs.c dynajs.h dynajs-atom.h \
-   dynajs-libc.c dynajs-libc.h dynajs-opcode.h \
-   cutils.c cutils.h list.h \
-   libregexp.c libregexp.h libregexp-opcode.h \
-   libunicode.c libunicode.h libunicode-table.h \
-   dtoa.c dtoa.h \
+   src/dynajs.c src/dynajsc.c repl.js \
+   src/dynajs.h src/dynajs-atom.h \
+   src/dynajs-libc.c src/dynajs-libc.h src/dynajs-opcode.h \
+   src/cutils.c src/cutils.h src/list.h \
+   src/libregexp.c src/libregexp.h src/libregexp-opcode.h \
+   src/libunicode.c src/libunicode.h src/libunicode-table.h \
+   src/dtoa.c src/dtoa.h \
    unicode_gen.c unicode_gen_def.h \
    run-test262.c test262o.conf test262.conf \
    test262o_errors.txt test262_errors.txt \

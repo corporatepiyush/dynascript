@@ -464,11 +464,11 @@ static int output_executable(const char *out_filename, const char *cfilename,
         pstrcpy(exe_dir, sizeof(exe_dir), ".");
     }
 
-    /* if 'dynajs.h' is present at the same path as the executable, we
-       use it as include and lib directory */
-    snprintf(buf, sizeof(buf), "%s/dynajs.h", exe_dir);
+    /* if 'src/dynajs.h' is present next to the executable (a local build tree),
+       use src/ for includes and the executable dir for libdynajs.a */
+    snprintf(buf, sizeof(buf), "%s/src/dynajs.h", exe_dir);
     if (access(buf, R_OK) == 0) {
-        pstrcpy(inc_dir, sizeof(inc_dir), exe_dir);
+        snprintf(inc_dir, sizeof(inc_dir), "%s/src", exe_dir);
         pstrcpy(lib_dir, sizeof(lib_dir), exe_dir);
     } else {
         snprintf(inc_dir, sizeof(inc_dir), "%s/include/dynajs", CONFIG_PREFIX);
