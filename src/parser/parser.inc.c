@@ -250,6 +250,9 @@ typedef struct JSFunctionDef {
     uint8_t strip_debug : 1; /* strip all debug info (implies strip_source = TRUE) */
     uint8_t strip_source : 1; /* strip only source code */
     uint8_t is_sealed_class : 1; /* meta@sealed on this class constructor */
+    uint8_t has_class_instance_fields : 1; /* class ctor with instance field
+                                              initializers or a private brand;
+                                              disqualifies construction pre-sizing */
     JSFunctionKindEnum func_kind : 8;
     JSParseFunctionEnum func_type : 8;
     uint8_t js_mode; /* bitmap of JS_MODE_x */
@@ -3916,6 +3919,12 @@ static __exception int js_parse_class(JSParseState *s, BOOL is_class_expr,
         if (js_parse_class_default_ctor(s, class_flags & JS_DEFINE_CLASS_HAS_HERITAGE, &ctor_fd))
             goto fail;
     }
+    /* If the class declares instance fields or needs an instance private brand,
+       the constructor's <class_fields_init> preamble runs user code that adds
+       own properties to (and can observe) 'this' before the body's field
+       stores, so construction pre-sizing is unsafe here. */
+    if (class_fields[0].fields_init_fd != NULL || class_fields[0].need_brand)
+        ctor_fd->has_class_instance_fields = TRUE;
     if (s->meta_pending_sealed_class) {
         /* meta@sealed: instances of this class are made non-extensible when the
            constructor completes, so the shape the constructor builds is final. */
@@ -14472,6 +14481,156 @@ static int add_global_variables(JSContext *ctx, JSFunctionDef *fd)
 /* create a function object from a function definition. The function
    definition is freed. All the child functions are also created. It
    must be done this way to resolve all the variables. */
+#if CONFIG_PRESIZE_CTOR
+#define JS_PRESIZE_MAX_FIELDS 32
+
+/* Opcodes allowed in the constructor prelude that precedes the field-store run.
+   None of them add own properties to 'this'; given the eligibility gate (no
+   class instance fields), the <class_fields_init> idiom's call_method is dead
+   (the closure var is undefined), so no user code observes 'this' here. */
+static BOOL presize_prelude_op(int op)
+{
+    /* Straight-line prologue ops only. NO control-flow branch (if_false/goto/…):
+       it would let a CONDITIONAL `this.f=v` store be mis-recorded as an
+       unconditional field (a real correctness bug). OP_call_method is the class
+       ctor's implicit <fields-init>/brand call; it is only reached here when the
+       eligibility gate has already required !has_class_instance_fields (so that
+       call is empty and cannot observe `this`). Anything else forces a bail. */
+    switch (op) {
+    case OP_push_this: case OP_put_loc0: case OP_check_ctor:
+    case OP_get_var_ref_check:
+    case OP_get_var_ref: case OP_get_var_ref0: case OP_get_var_ref1:
+    case OP_get_var_ref2: case OP_get_var_ref3:
+    case OP_dup: case OP_swap: case OP_drop:
+    case OP_get_loc0: case OP_call_method:
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+/* A "leaf load" value op: exactly one stack push, runs no user code, cannot
+   throw, cannot observe 'this'. Requiring every field value to be a leaf load
+   makes the whole store run side-effect-free and observation-free, so
+   pre-creating the properties (value undefined) is unobservable. */
+static BOOL presize_leaf_value_op(int op)
+{
+    switch (op) {
+    case OP_get_arg: case OP_get_arg0: case OP_get_arg1:
+    case OP_get_arg2: case OP_get_arg3:
+    case OP_get_loc: case OP_get_loc8:
+    case OP_get_loc0: case OP_get_loc1: case OP_get_loc2: case OP_get_loc3:
+    case OP_get_var_ref: case OP_get_var_ref0: case OP_get_var_ref1:
+    case OP_get_var_ref2: case OP_get_var_ref3:
+    case OP_null: case OP_undefined:
+    case OP_push_false: case OP_push_true: case OP_push_empty_string:
+    case OP_push_i32: case OP_push_i8: case OP_push_i16:
+    case OP_push_const: case OP_push_const8: case OP_push_atom_value:
+    case OP_push_minus1: case OP_push_0: case OP_push_1: case OP_push_2:
+    case OP_push_3: case OP_push_4: case OP_push_5: case OP_push_6:
+    case OP_push_7:
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+/* Detect the leading unconditional straight-line `this.<atom> = <leaf>` store
+   run in a constructor and record its (deduped, ordered) atom list as a
+   construction pre-size hint on 'b'. Scans the final resolved bytecode; bails
+   (records nothing) on anything it cannot prove safe. */
+static void js_ctor_presize_analyze(JSContext *ctx, JSFunctionBytecode *b)
+{
+    const uint8_t *code = b->byte_code_buf;
+    int len = b->byte_code_len;
+    int pos = 0, op, oplen, i;
+    JSAtom fields[JS_PRESIZE_MAX_FIELDS];
+    int nf = 0;
+    BOOL in_stores = FALSE;
+    /* Highest join target of any forward conditional branch seen in the prelude.
+       A store is only unconditional if it lies at/after this point (no branch
+       can skip it). Class ctors legitimately guard the implicit <fields-init>
+       call with an if_false8 whose target sits just before the field stores —
+       that is safe; a real `if (c) this.f=v` guards the STORE itself and is not. */
+    int max_branch_target = 0;
+    JSCtorPresize *cp;
+
+    while (pos < len) {
+        op = code[pos];
+        if (op >= OP_COUNT)             /* OP_ext / bank ops: bail */
+            break;
+        oplen = short_opcode_info(op).size;
+        if (oplen <= 0 || pos + oplen > len)
+            break;
+        if (op == OP_if_false || op == OP_if_false8) {
+            int tgt;
+            if (in_stores)
+                goto done;              /* no branch within the store run */
+            if (op == OP_if_false)
+                tgt = pos + 1 + (int32_t)get_u32(code + pos + 1);
+            else
+                tgt = pos + 1 + (int8_t)code[pos + 1];
+            if (tgt <= pos)
+                break;                  /* backward branch (loop): unanalyzable */
+            if (tgt > max_branch_target)
+                max_branch_target = tgt;
+            pos += oplen;
+            continue;
+        }
+        if (op == OP_get_loc0) {
+            /* try to match a store: get_loc0 ; <leaf> ; put_field ATOM, but only
+               when this store is reached unconditionally (past every branch join) */
+            int p1 = pos + 1;
+            int vop = (p1 < len) ? code[p1] : -1;
+            if (pos >= max_branch_target && vop >= 0 && vop < OP_COUNT &&
+                presize_leaf_value_op(vop)) {
+                int vlen = short_opcode_info(vop).size;
+                int p2 = p1 + vlen;
+                if (vlen > 0 && p2 + 5 <= len && code[p2] == OP_put_field) {
+                    JSAtom atom = get_u32(code + p2 + 1);
+                    if (__JS_AtomIsTaggedInt(atom))
+                        break;          /* array-index semantics: bail */
+                    for (i = 0; i < nf; i++)
+                        if (fields[i] == atom)
+                            goto done;   /* repeat: end the safe prefix */
+                    if (nf >= JS_PRESIZE_MAX_FIELDS)
+                        goto done;
+                    fields[nf++] = atom;
+                    in_stores = TRUE;
+                    pos = p2 + 5;
+                    continue;
+                }
+            }
+            /* a get_loc0 that does not begin an unconditional store */
+            if (in_stores)
+                goto done;
+            pos += oplen;               /* still in the prelude */
+            continue;
+        }
+        if (in_stores)
+            goto done;                  /* first op after the store run */
+        if (!presize_prelude_op(op))
+            goto done;                  /* unrecognized prelude op: bail */
+        pos += oplen;
+    }
+done:
+    if (nf == 0)
+        return;
+    cp = js_mallocz(ctx, sizeof(*cp));
+    if (!cp)
+        return;
+    cp->fields = js_malloc(ctx, sizeof(JSAtom) * nf);
+    if (!cp->fields) {
+        js_free(ctx, cp);
+        return;
+    }
+    for (i = 0; i < nf; i++)
+        cp->fields[i] = JS_DupAtom(ctx, fields[i]);
+    cp->field_count = nf;
+    b->ctor_presize = cp;
+}
+#endif /* CONFIG_PRESIZE_CTOR */
+
 static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
 {
     JSValue func_obj;
@@ -14712,6 +14871,24 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
                                      fd->eval_type == JS_EVAL_TYPE_INDIRECT);
     b->realm = JS_DupContext(ctx);
 
+#if CONFIG_PRESIZE_CTOR
+    /* Construction pre-sizing applies only to a plain function or a base class
+       constructor (non-derived, no instance fields), used with 'new'. */
+    if (fd->func_kind == JS_FUNC_NORMAL &&
+        !fd->is_derived_class_constructor &&
+        !fd->has_class_instance_fields &&
+        !fd->is_eval &&
+        fd->this_var_idx == 0 &&   /* `this` occupies local slot 0, so the
+                                      scanner's get_loc0 stores are provably
+                                      `this.f=` — not a non-this local aliased
+                                      into slot 0 via `var s=…; s.f=…`. A ctor
+                                      that never uses `this` has this_var_idx<0. */
+        (fd->has_prototype ||
+         fd->func_type == JS_PARSE_FUNC_CLASS_CONSTRUCTOR)) {
+        js_ctor_presize_analyze(ctx, b);
+    }
+#endif
+
     add_gc_object(ctx->rt, &b->header, JS_GC_OBJ_TYPE_FUNCTION_BYTECODE);
 
 #if defined(DUMP_BYTECODE) && (DUMP_BYTECODE & 1)
@@ -14762,6 +14939,18 @@ static void free_function_bytecode(JSRuntime *rt, JSFunctionBytecode *b)
         JS_FreeContext(b->realm);
 
     JS_FreeAtomRT(rt, b->func_name);
+#if CONFIG_PRESIZE_CTOR
+    if (b->ctor_presize) {
+        JSCtorPresize *cp = b->ctor_presize;
+        for (i = 0; i < cp->field_count; i++)
+            JS_FreeAtomRT(rt, cp->fields[i]);
+        js_free_rt(rt, cp->fields);
+        if (cp->cached_shape)
+            js_free_shape(rt, cp->cached_shape);
+        js_free_rt(rt, cp);
+        b->ctor_presize = NULL;
+    }
+#endif
     if (b->has_debug) {
         JS_FreeAtomRT(rt, b->debug.filename);
         js_free_rt(rt, b->debug.pc2line_buf);

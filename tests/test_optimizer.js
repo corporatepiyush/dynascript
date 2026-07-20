@@ -211,10 +211,84 @@ function test_cmp_no_reorder_across_label() {
     assert(f(5), 17);
 }
 
+/* ---- construction pre-sizing (create `this` at the ctor's final shape) ---- */
+function keys(o) { return JSON.stringify(Object.getOwnPropertyNames(o)); }
+
+function test_presize_basic() {
+    class Vec3 { constructor(x, y, z) { this.x = x; this.y = y; this.z = z; } }
+    var v = new Vec3(1, 2, 3);
+    assert(keys(v), '["x","y","z"]');
+    assert(v.x === 1 && v.y === 2 && v.z === 3, true);
+    function F(a, b) { this.a = a; this.b = b; }
+    assert(keys(new F(4, 5)), '["a","b"]');
+    // enumeration order preserved
+    class W { constructor() { this.z = 1; this.a = 2; this.m = 3; } }
+    assert(keys(new W()), '["z","a","m"]');
+}
+
+function test_presize_conditional_field() {
+    // a field guarded by a branch must NOT be pre-created (regression: a
+    // conditional store was mis-recorded as unconditional). The condition is a
+    // closure var so it reaches the scanner's branch handling.
+    function mk(c) { function F() { if (c) this.a = 1; this.b = 2; } return F; }
+    assert(keys(new (mk(false))()), '["b"]');
+    assert(keys(new (mk(true))()), '["a","b"]');
+    // unconditional prefix before a conditional field is still pre-sized safely
+    function mk2(c) { function F() { this.x = 0; if (c) this.a = 1; this.z = 2; } return F; }
+    assert(keys(new (mk2(false))()), '["x","z"]');
+    assert(keys(new (mk2(true))()), '["x","a","z"]');
+}
+
+function test_presize_loc0_not_this() {
+    // local slot 0 aliased to a non-`this` object must NOT get phantom own props
+    // on the instance (regression: get_loc0 was assumed to be `this`).
+    function make() {
+        var cap = {};
+        function F() { var s = cap; cap; s.foo = 1; s.bar = 2; }
+        return { F: F, cap: cap };
+    }
+    var m = make();
+    var o = new m.F();
+    assert(keys(o), '[]');                 // `this` untouched
+    assert(o.hasOwnProperty('foo'), false);
+    assert(keys(m.cap), '["foo","bar"]');  // writes landed on the alias
+}
+
+function test_presize_proto_interference() {
+    // a prototype accessor / non-writable for a field must disable pre-sizing
+    function F() { this.a = 1; this.b = 2; }
+    Object.defineProperty(F.prototype, "a", { set(v) { this._a = v; }, configurable: true });
+    var o = new F();
+    assert(o._a, 1);
+    assert(o.hasOwnProperty('a'), false);  // setter ran, no own 'a'
+    // a writable inherited data property is shadowed normally (own prop created)
+    function G() { this.a = 1; this.b = 2; }
+    G.prototype.a = 99;
+    assert(new G().a, 1);
+    assert(keys(new G()), '["a","b"]');
+}
+
+function test_presize_throw_and_return() {
+    // throw mid-constructor: instance is discarded, no observable leak of fields
+    function F() { this.a = 1; throw new Error("x"); }
+    assert_throws(Error, function () { new F(); });
+    // explicit object return overrides the pre-sized `this`
+    function G() { this.a = 1; return { z: 9 }; }
+    assert(keys(new G()), '["z"]');
+    // Reflect.construct with a different new.target: proto comes from newTarget
+    function H() { this.a = 1; }
+    function Other() {}
+    var o = Reflect.construct(H, [], Other);
+    assert(Object.getPrototypeOf(o) === Other.prototype, true);
+    assert(keys(o), '["a"]');
+}
+
 var tests = [
     test_arith_fused_int, test_arith_fused_float, test_arith_fused_slow,
     test_arith_slow_at_max_depth, test_arith_tdz, test_arith_large_index,
     test_cmp_relational, test_cmp_strict, test_cmp_no_reorder_across_label,
+    test_presize_basic, test_presize_conditional_field, test_presize_loc0_not_this,
+    test_presize_proto_interference, test_presize_throw_and_return,
 ];
 for (var i = 0; i < tests.length; i++)
     tests[i]();

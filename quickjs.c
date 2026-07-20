@@ -699,6 +699,31 @@ typedef enum JSFunctionKindEnum {
     JS_FUNC_ASYNC_GENERATOR = (JS_FUNC_GENERATOR | JS_FUNC_ASYNC),
 } JSFunctionKindEnum;
 
+/* Construction pre-sizing: a base (non-derived) constructor whose body begins
+   with an unconditional straight-line run of `this.<name> = <leaf>` stores gets
+   its instance created directly at the final shape, turning the field stores
+   into plain set-value hits (no per-property shape transition / prop-array
+   realloc). Gated so a -DCONFIG_PRESIZE_CTOR=0 oracle build is byte-for-byte
+   behavior-identical. */
+#ifndef CONFIG_PRESIZE_CTOR
+#define CONFIG_PRESIZE_CTOR 1
+#endif
+
+#if CONFIG_PRESIZE_CTOR
+/* Runtime-only (never serialized) construction pre-size hint attached to a
+   JSFunctionBytecode. 'fields' is the ordered, deduped list of own-property
+   atoms proven safe to pre-create. 'cached_shape' memoizes the final shape for
+   the constructor's current .prototype (rebuilt on a .prototype change). The
+   shape holds an owning ref that pins its proto, so it is GC-marked (see
+   mark_children) to keep cycle collection correct, and released when the
+   bytecode is freed. */
+typedef struct JSCtorPresize {
+    int field_count;
+    JSAtom *fields;          /* owned atoms, length field_count */
+    JSShape *cached_shape;   /* owned dup ref, or NULL until first build */
+} JSCtorPresize;
+#endif
+
 typedef struct JSFunctionBytecode {
     JSGCObjectHeader header; /* must come first */
     uint8_t js_mode;
@@ -731,6 +756,9 @@ typedef struct JSFunctionBytecode {
     JSValue *cpool; /* constant pool (self pointer) */
     int cpool_count;
     int closure_var_count;
+#if CONFIG_PRESIZE_CTOR
+    JSCtorPresize *ctor_presize; /* runtime-only, non-serialized; NULL if none */
+#endif
     struct {
         /* debug info, move to separate structure to save memory? */
         JSAtom filename;

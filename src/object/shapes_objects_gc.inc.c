@@ -663,6 +663,120 @@ static JSValue JS_NewObjectProtoClassAlloc(JSContext *ctx, JSValueConst proto_va
     return JS_NewObjectFromShape(ctx, sh, class_id, NULL);
 }
 
+#if CONFIG_PRESIZE_CTOR
+static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
+                                                       JSObject *p,
+                                                       JSAtom atom);
+
+/* Pre-sizing is only valid when a normal `this.<field> = v` store would create
+   an OWN writable data property for every field — i.e. the field is not
+   shadowed on the prototype chain by an accessor or a non-writable data
+   property (whose [[Set]] would invoke a setter / throw / no-op instead of
+   creating an own prop), and no chain object is exotic (Proxy etc., whose
+   [[Set]] traps could observe the half-built object). The prototype chain is
+   mutable, so this is re-checked on every construction. */
+static BOOL js_ctor_presize_proto_safe(JSObject *proto, JSCtorPresize *cp)
+{
+    int i;
+
+    for (i = 0; i < cp->field_count; i++) {
+        JSObject *p1 = proto;
+        JSAtom atom = cp->fields[i];
+        while (p1) {
+            JSShapeProperty *prs;
+            JSProperty *pr;
+            if (p1->is_exotic)
+                return FALSE;
+            prs = find_own_property(&pr, p1, atom);
+            if (prs) {
+                /* nearest definition wins; a writable plain data property is
+                   shadowed by an ordinary own-property create (same result), so
+                   only accessors / var-refs / autoinit / non-writable bail */
+                if ((prs->flags & JS_PROP_TMASK) ||
+                    !(prs->flags & JS_PROP_WRITABLE))
+                    return FALSE;
+                break;
+            }
+            p1 = p1->shape->proto;
+        }
+    }
+    return TRUE;
+}
+
+/* Build (or rebuild for a changed prototype) and cache the final shape for a
+   pre-sizing constructor. Produced by replaying the exact add_property sequence
+   a normal construction performs on a throwaway object, so the cached shape is
+   the very shape (shared via the transition tree) incremental field stores
+   reach — instances are indistinguishable. Returns a borrowed pointer owned by
+   the cache, or NULL on failure. */
+static JSShape *js_ctor_presize_build_shape(JSContext *ctx, JSCtorPresize *cp,
+                                            JSValueConst proto_val)
+{
+    JSObject *proto = get_proto_obj(proto_val);
+    JSValue tmp;
+    JSObject *tp;
+    int i;
+
+    if (cp->cached_shape && cp->cached_shape->proto == proto)
+        return cp->cached_shape;
+
+    tmp = JS_NewObjectProtoClass(ctx, proto_val, JS_CLASS_OBJECT);
+    if (JS_IsException(tmp))
+        return NULL;
+    tp = JS_VALUE_GET_OBJ(tmp);
+    for (i = 0; i < cp->field_count; i++) {
+        JSProperty *pr = add_property(ctx, tp, cp->fields[i], JS_PROP_C_W_E);
+        if (!pr) {
+            JS_FreeValue(ctx, tmp);
+            return NULL;
+        }
+        /* add_property leaves the value slot uninitialized; seed it so freeing
+           the throwaway object below does not free garbage */
+        pr->u.value = JS_UNDEFINED;
+    }
+    if (cp->cached_shape)
+        js_free_shape(ctx->rt, cp->cached_shape);
+    cp->cached_shape = js_dup_shape(tp->shape);
+    JS_FreeValue(ctx, tmp);
+    return cp->cached_shape;
+}
+
+/* Create a constructor's 'this' pre-sized at its cached final shape. On any
+   failure to build the shape, falls back to a plain empty object with the same
+   prototype (behaviorally identical to js_create_from_ctor). 'proto_val' is
+   consumed. */
+static JSValue js_ctor_presize_new_this(JSContext *ctx, JSCtorPresize *cp,
+                                        JSValue proto_val)
+{
+    JSShape *sh;
+    JSValue obj;
+    JSObject *p;
+    int i;
+
+    if (!js_ctor_presize_proto_safe(get_proto_obj(proto_val), cp))
+        sh = NULL;
+    else
+        sh = js_ctor_presize_build_shape(ctx, cp, proto_val);
+
+    if (!sh) {
+        obj = JS_NewObjectProtoClass(ctx, proto_val, JS_CLASS_OBJECT);
+        JS_FreeValue(ctx, proto_val);
+        return obj;
+    }
+    obj = JS_NewObjectFromShape(ctx, js_dup_shape(sh), JS_CLASS_OBJECT, NULL);
+    JS_FreeValue(ctx, proto_val);
+    if (JS_IsException(obj))
+        return obj;
+    /* The property slots created from the shape are uninitialized; seed them
+       with undefined so the constructor's put_field set-value stores free a
+       valid old value (and any read before assignment sees undefined). */
+    p = JS_VALUE_GET_OBJ(obj);
+    for (i = 0; i < cp->field_count; i++)
+        p->prop[i].u.value = JS_UNDEFINED;
+    return obj;
+}
+#endif /* CONFIG_PRESIZE_CTOR */
+
 #if 0
 static JSValue JS_GetObjectData(JSContext *ctx, JSValueConst obj)
 {
@@ -1502,6 +1616,11 @@ static void mark_children(JSRuntime *rt, JSGCObjectHeader *gp,
             }
             if (b->realm)
                 mark_func(rt, &b->realm->header);
+#if CONFIG_PRESIZE_CTOR
+            /* the cached shape holds an owning ref that pins .prototype */
+            if (b->ctor_presize && b->ctor_presize->cached_shape)
+                mark_func(rt, &b->ctor_presize->cached_shape->header);
+#endif
         }
         break;
     case JS_GC_OBJ_TYPE_VAR_REF:

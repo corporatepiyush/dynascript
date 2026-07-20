@@ -3336,10 +3336,14 @@ static JSContext *JS_GetFunctionRealm(JSContext *ctx, JSValueConst func_obj)
     return realm;
 }
 
-static JSValue js_create_from_ctor(JSContext *ctx, JSValueConst ctor,
-                                   int class_id)
+/* Resolve the prototype an instance built for 'ctor' should get (the same rule
+   used by js_create_from_ctor): ctor.prototype if it is an object, else the
+   realm's default prototype for class_id. Returns an owned JSValue, or
+   JS_EXCEPTION. */
+static JSValue js_resolve_ctor_proto(JSContext *ctx, JSValueConst ctor,
+                                     int class_id)
 {
-    JSValue proto, obj;
+    JSValue proto;
     JSContext *realm;
 
     if (JS_IsUndefined(ctor)) {
@@ -3356,6 +3360,17 @@ static JSValue js_create_from_ctor(JSContext *ctx, JSValueConst ctor,
             proto = JS_DupValue(ctx, realm->class_proto[class_id]);
         }
     }
+    return proto;
+}
+
+static JSValue js_create_from_ctor(JSContext *ctx, JSValueConst ctor,
+                                   int class_id)
+{
+    JSValue proto, obj;
+
+    proto = js_resolve_ctor_proto(ctx, ctor, class_id);
+    if (JS_IsException(proto))
+        return proto;
     obj = JS_NewObjectProtoClass(ctx, proto, class_id);
     JS_FreeValue(ctx, proto);
     return obj;
@@ -3406,6 +3421,14 @@ static JSValue JS_CallConstructorInternal(JSContext *ctx,
     } else {
         JSValue obj, ret;
         /* legacy constructor behavior */
+#if CONFIG_PRESIZE_CTOR
+        if (b->ctor_presize) {
+            JSValue proto = js_resolve_ctor_proto(ctx, new_target, JS_CLASS_OBJECT);
+            if (JS_IsException(proto))
+                return JS_EXCEPTION;
+            obj = js_ctor_presize_new_this(ctx, b->ctor_presize, proto);
+        } else
+#endif
         obj = js_create_from_ctor(ctx, new_target, JS_CLASS_OBJECT);
         if (JS_IsException(obj))
             return JS_EXCEPTION;
