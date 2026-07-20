@@ -1040,18 +1040,72 @@ static const dyn_route_t *dyn_route_lookup(const dyn_http_server_t *s,
     return NULL;
 }
 
+/* Case-insensitive byte compare of `n` bytes. */
+static int dyn_ci_eq(const char *a, const char *b, size_t n)
+{
+    size_t i;
+    for (i = 0; i < n; i++) {
+        char ca = a[i], cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+        if (ca != cb)
+            return 0;
+    }
+    return 1;
+}
+
+/* Find request header `name` (case-insensitive) in the header block
+ * [buf, buf+len). Every header line is preceded by CRLF (the request line is
+ * not, so it never false-matches). Returns the value with leading spaces
+ * trimmed and sets *vlen, or NULL if absent. */
+static const char *dyn_req_header(const char *buf, size_t len,
+                                  const char *name, size_t *vlen)
+{
+    size_t nlen = strlen(name), i;
+    for (i = 0; i + 2 + nlen + 1 <= len; i++) {
+        const char *v, *ve, *end;
+        if (buf[i] != '\r' || buf[i + 1] != '\n')
+            continue;
+        if (!dyn_ci_eq(buf + i + 2, name, nlen) || buf[i + 2 + nlen] != ':')
+            continue;
+        v = buf + i + 2 + nlen + 1;
+        end = buf + len;
+        while (v < end && (*v == ' ' || *v == '\t'))
+            v++;
+        ve = v;
+        while (ve < end && *ve != '\r' && *ve != '\n')
+            ve++;
+        *vlen = (size_t)(ve - v);
+        return v;
+    }
+    return NULL;
+}
+
+/* True if header value [v,v+vlen) case-insensitively contains token `tok`. */
+static int dyn_val_has_token(const char *v, size_t vlen, const char *tok)
+{
+    size_t tlen = strlen(tok), i;
+    if (!v)
+        return 0;
+    for (i = 0; i + tlen <= vlen; i++)
+        if (dyn_ci_eq(v + i, tok, tlen))
+            return 1;
+    return 0;
+}
+
 static void dyn_http_respond(int fd, int status, const char *content_type,
-                             const char *body, size_t body_len)
+                             const char *body, size_t body_len, int keep_alive)
 {
     char head[512];
     int n = snprintf(head, sizeof(head),
                      "HTTP/1.1 %d %s\r\n"
                      "Content-Type: %s\r\n"
                      "Content-Length: %zu\r\n"
-                     "Connection: close\r\n"
+                     "Connection: %s\r\n"
                      "\r\n",
                      status, dyn_reason_phrase(status),
-                     content_type ? content_type : "text/plain", body_len);
+                     content_type ? content_type : "text/plain", body_len,
+                     keep_alive ? "keep-alive" : "close");
     if (n < 0 || n >= (int)sizeof(head))
         return;
     if (dyn_send_all(fd, head, (size_t)n) < 0)
@@ -1060,43 +1114,96 @@ static void dyn_http_respond(int fd, int status, const char *content_type,
         dyn_send_all(fd, body, body_len);
 }
 
+/* Serve a connection with HTTP/1.1 keep-alive: read requests back-to-back on
+ * the same socket until the client asks to close, a request is malformed/too
+ * large, the per-connection cap is hit, or the socket idles past the recv
+ * timeout. Each request is fully consumed (header block + Content-Length body)
+ * so pipelined bytes never desync the framing of the next request. */
 static void dyn_http_handle_conn(const dyn_http_server_t *s, int fd)
 {
-    char reqbuf[8192];
+    char reqbuf[16384];
     size_t rlen = 0;
     char path[2048];
-    const dyn_route_t *route;
     struct timeval tv;
+    int nreq = 0;
+    const int max_req = 10000;
 
     tv.tv_sec = 5;
     tv.tv_usec = 0;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     for (;;) {
-        ssize_t r;
-        if (rlen >= sizeof(reqbuf) - 1)
-            break;
-        r = recv(fd, reqbuf + rlen, sizeof(reqbuf) - 1 - rlen, 0);
-        if (r <= 0) {
-            if (r < 0 && errno == EINTR)
-                continue;
-            break;
-        }
-        rlen += (size_t)r;
-        if (dyn_memfind(reqbuf, rlen, "\r\n\r\n", 4))
-            break;
-    }
+        const char *hdr_end, *cl, *conn;
+        size_t head_len, body_len = 0, req_total, clv_len = 0, connv_len = 0;
+        int http11, keep_alive;
+        const dyn_route_t *route;
 
-    if (dyn_parse_req_path(reqbuf, rlen, path, sizeof(path)) < 0) {
-        dyn_http_respond(fd, 400, "text/plain", "Bad Request", 11);
-        return;
+        /* read until the header terminator, reusing buffered (pipelined) bytes */
+        while (!(hdr_end = dyn_memfind(reqbuf, rlen, "\r\n\r\n", 4))) {
+            ssize_t r;
+            if (rlen >= sizeof(reqbuf) - 1)
+                return; /* header block too large: drop the connection */
+            r = recv(fd, reqbuf + rlen, sizeof(reqbuf) - 1 - rlen, 0);
+            if (r <= 0) {
+                if (r < 0 && errno == EINTR)
+                    continue;
+                return; /* EOF / idle timeout / error */
+            }
+            rlen += (size_t)r;
+        }
+        head_len = (size_t)(hdr_end - reqbuf) + 4;
+
+        /* keep-alive decision: HTTP/1.1 defaults to keep-alive, HTTP/1.0 to
+         * close; an explicit Connection header overrides. */
+        http11 = dyn_memfind(reqbuf, head_len, "HTTP/1.1\r\n", 10) != NULL;
+        conn = dyn_req_header(reqbuf, head_len, "connection", &connv_len);
+        keep_alive = http11;
+        if (dyn_val_has_token(conn, connv_len, "close"))
+            keep_alive = 0;
+        else if (dyn_val_has_token(conn, connv_len, "keep-alive"))
+            keep_alive = 1;
+
+        /* consume the request body (routes ignore it, but it must not desync) */
+        cl = dyn_req_header(reqbuf, head_len, "content-length", &clv_len);
+        if (cl) {
+            size_t j;
+            for (j = 0; j < clv_len && cl[j] >= '0' && cl[j] <= '9'; j++)
+                body_len = body_len * 10 + (size_t)(cl[j] - '0');
+        }
+        req_total = head_len + body_len;
+        if (req_total > sizeof(reqbuf) - 1)
+            return; /* request too large to frame for keep-alive: drop */
+        while (rlen < req_total) {
+            ssize_t r = recv(fd, reqbuf + rlen, sizeof(reqbuf) - 1 - rlen, 0);
+            if (r <= 0) {
+                if (r < 0 && errno == EINTR)
+                    continue;
+                return;
+            }
+            rlen += (size_t)r;
+        }
+
+        if (++nreq >= max_req)
+            keep_alive = 0; /* cap requests per connection */
+
+        if (dyn_parse_req_path(reqbuf, head_len, path, sizeof(path)) < 0) {
+            dyn_http_respond(fd, 400, "text/plain", "Bad Request", 11, 0);
+            return;
+        }
+        route = dyn_route_lookup(s, path);
+        if (route)
+            dyn_http_respond(fd, route->status, route->content_type,
+                             route->body, route->body_len, keep_alive);
+        else
+            dyn_http_respond(fd, 404, "text/plain", "Not Found", 9, keep_alive);
+
+        if (!keep_alive)
+            return;
+
+        /* carry pipelined bytes beyond this request to the next iteration */
+        memmove(reqbuf, reqbuf + req_total, rlen - req_total);
+        rlen -= req_total;
     }
-    route = dyn_route_lookup(s, path);
-    if (route)
-        dyn_http_respond(fd, route->status, route->content_type, route->body,
-                         route->body_len);
-    else
-        dyn_http_respond(fd, 404, "text/plain", "Not Found", 9);
 }
 
 static void *dyn_http_worker_main(void *arg)
