@@ -1,0 +1,35 @@
+# Build + test dynascript on emulated linux/amd64 (qemu-x86_64) to EXERCISE the
+# x86 SIMD kernels (SSE4.2 / AVX2) that never run on the arm64 dev host.
+#
+#   docker build --platform linux/amd64 -f docker/Dockerfile.amd64 -t dynascript:amd64 .
+#
+# QEMU_CPU=Haswell makes qemu report SSE4.2+AVX2+FMA via CPUID, so the runtime
+# dispatch installs the AVX2 kernels (AVX-512 is left off — qemu TCG emulates it
+# unreliably). The caps diagnostic proves which ISA was selected.
+FROM debian:trixie-slim
+
+ENV QEMU_CPU=Haswell
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      clang lld make libc6-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+RUN make clean || true
+# build the engine + native modules (compiles the real x86 SIMD kernels)
+RUN make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y -j"$(nproc)"
+
+# prove which ISA the runtime dispatch selected under this emulated CPU
+RUN printf '#include "dynajs-simd-kernels.h"\n#include <stdio.h>\nint main(void){simd_init();unsigned long long c=cpu_features();printf("SIMD caps=0x%%llx  SSE42=%%d AVX2=%%d AVX512=%%d NEON=%%d\\n",c,!!(c&CPU_SSE42),!!(c&CPU_AVX2),!!(c&CPU_AVX512F),!!(c&CPU_NEON));return 0;}' > /tmp/caps.c \
+ && clang -O2 -Isrc /tmp/caps.c .obj/dynajs-simd-core.o .obj/dynajs-simd-scalar.o .obj/dynajs-simd-sse42.o .obj/dynajs-simd-avx2.o .obj/dynajs-simd-avx512.o .obj/dynajs-simd-neon.o .obj/dynajs-simd-sve.o -lpthread -lm -o /tmp/caps \
+ && echo "=== x86 SIMD dispatch under qemu ===" && /tmp/caps
+
+# in-tree suite + the SIMD/module tests (exercise AVX2 dot/sum/add via the table)
+RUN make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y test
+RUN ./dynajs tests/test_simd.js
+RUN ./dynajs tests/test_random.js && ./dynajs tests/test_sort.js && ./dynajs tests/test_search.js
+
+CMD ["/tmp/caps"]

@@ -42,8 +42,16 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 #include <math.h>
 #include <float.h>
+
+/* x86 SIMD intrinsics (__m128/__m256/_mm_*): the per-ISA files and the core's
+ * hsum helper need these; the scl build pulled them via scl_ml.h, which we drop.
+ * ARM NEON's arm_neon.h is included by the neon file under its own arch gate. */
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
+#include <immintrin.h>
+#endif
 
 #ifndef unlikely
 #define unlikely(x) __builtin_expect(!!(x), 0)

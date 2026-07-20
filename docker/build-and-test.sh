@@ -8,11 +8,13 @@ set -u
 cd "$(dirname "$0")/.."   # repo root = docker build context
 
 run_one() {
-    local name=$1 dockerfile=$2
+    local name=$1 dockerfile=$2 platform=${3:-}
+    local platarg=()
+    [ -n "$platform" ] && platarg=(--platform "$platform")
     echo "=============================================================="
-    echo ">> building + testing dynascript on ${name}"
+    echo ">> building + testing dynascript on ${name}${platform:+ (${platform})}"
     echo "=============================================================="
-    if docker build -f "${dockerfile}" -t "dynascript:${name}" . ; then
+    if docker build "${platarg[@]}" -f "${dockerfile}" -t "dynascript:${name}" . ; then
         echo ">> ${name}: PASS"
         return 0
     else
@@ -24,6 +26,9 @@ run_one() {
 rc=0
 run_one glibc docker/Dockerfile.glibc || rc=1
 run_one musl  docker/Dockerfile.musl  || rc=1
+# emulated amd64 (qemu-x86_64): exercises the SSE4.2/AVX2 SIMD kernels. Slow.
+# Needs binfmt: docker run --privileged --rm tonistiigi/binfmt --install amd64
+run_one amd64 docker/Dockerfile.amd64 linux/amd64 || rc=1
 
 echo "=============================================================="
 if [ "$rc" -eq 0 ]; then
