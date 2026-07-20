@@ -49,6 +49,10 @@
 
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
+/* Fused compare+branch superinstructions (resolve_labels folds a relational
+   op immediately followed by OP_if_false into one dispatch). Gate exists so a
+   #define-off oracle build can prove the transform is output-identical. */
+#define CONFIG_FUSED_CMP 1
 #if defined(__EMSCRIPTEN__)
 #define DIRECT_DISPATCH  0
 #else

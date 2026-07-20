@@ -2525,6 +2525,60 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             OP_CMP(OP_gt, >, js_relational_slow(ctx, sp, opcode));
             OP_CMP(OP_gte, >=, js_relational_slow(ctx, sp, opcode));
 
+/* Fused compare+branch: pop 2, compare, branch to the 4-byte label when the
+   result is FALSE (the loop/if/&& exit polarity). Same fast/slow ladder as
+   OP_CMP; the slow path reuses js_relational_slow with the base opcode, which
+   leaves the boolean at sp[-2] and frees both operands. Handlers are always
+   compiled (dispatch table references them); emission is gated in
+   resolve_labels by CONFIG_FUSED_CMP. */
+#define OP_CMP_IF_FALSE(fused_op, base_op, binary_op)                   \
+            CASE(fused_op):                                             \
+                {                                                       \
+                    JSValue op1, op2;                                   \
+                    int res;                                            \
+                    op1 = sp[-2];                                       \
+                    op2 = sp[-1];                                       \
+                    pc += 4;                                            \
+                    if (likely(JS_VALUE_IS_BOTH_INT(op1, op2))) {       \
+                        res = JS_VALUE_GET_INT(op1) binary_op JS_VALUE_GET_INT(op2); \
+                        sp -= 2;                                        \
+                    } else if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op1)) || \
+                               JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op2))) { \
+                        double d1, d2;                                  \
+                        if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op1))) { \
+                            d1 = JS_VALUE_GET_FLOAT64(op1);             \
+                        } else if (JS_VALUE_GET_TAG(op1) == JS_TAG_INT) { \
+                            d1 = JS_VALUE_GET_INT(op1);                 \
+                        } else {                                        \
+                            goto fused_op ## _slow;                     \
+                        }                                               \
+                        if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op2))) { \
+                            d2 = JS_VALUE_GET_FLOAT64(op2);             \
+                        } else if (JS_VALUE_GET_TAG(op2) == JS_TAG_INT) { \
+                            d2 = JS_VALUE_GET_INT(op2);                 \
+                        } else {                                        \
+                            goto fused_op ## _slow;                     \
+                        }                                               \
+                        res = d1 binary_op d2;                          \
+                        sp -= 2;                                        \
+                    } else {                                            \
+                    fused_op ## _slow:                                  \
+                        sf->cur_pc = pc;                                \
+                        if (js_relational_slow(ctx, sp, base_op))       \
+                            goto exception;                             \
+                        res = JS_VALUE_GET_INT(sp[-2]);                 \
+                        sp -= 2;                                        \
+                    }                                                   \
+                    if (!res)                                           \
+                        pc += (int32_t)get_u32(pc - 4) - 4;            \
+                }                                                       \
+            BREAK
+
+            OP_CMP_IF_FALSE(OP_lt_if_false, OP_lt, <);
+            OP_CMP_IF_FALSE(OP_lte_if_false, OP_lte, <=);
+            OP_CMP_IF_FALSE(OP_gt_if_false, OP_gt, >);
+            OP_CMP_IF_FALSE(OP_gte_if_false, OP_gte, >=);
+
 #define OP_CMP_EQ(opcode, inv)                                          \
             CASE(opcode):                                               \
                 {                                                       \

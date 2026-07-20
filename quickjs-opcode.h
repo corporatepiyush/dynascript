@@ -256,6 +256,13 @@ DEF(             or, 1, 2, 1, none)
 DEF(is_undefined_or_null, 1, 1, 1, none)
 DEF(     private_in, 1, 2, 1, none)
 DEF(push_bigint_i32, 5, 0, 1, i32)
+/* fused compare+branch: pop 2, compare, branch to label when the result is
+   false (else fall through). Emitted by resolve_labels; same operand layout as
+   OP_if_false (4-byte label). Order must match OP_lt..OP_gte. */
+DEF(    lt_if_false, 5, 2, 0, label)
+DEF(   lte_if_false, 5, 2, 0, label)
+DEF(    gt_if_false, 5, 2, 0, label)
+DEF(   gte_if_false, 5, 2, 0, label)
 /* must be the last non short and non temporary opcode */
 DEF(            nop, 1, 0, 0, none)
 

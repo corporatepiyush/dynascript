@@ -13874,6 +13874,24 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
             goto no_change;
 #endif
 
+#if CONFIG_FUSED_CMP
+        case OP_lt:
+        case OP_lte:
+        case OP_gt:
+        case OP_gte:
+            /* Fuse `<relational> if_false(L)` into a single compare+branch op.
+               code_match refuses to skip an OP_label, so it never fuses across
+               a jump target (the if_false must be reached only via fall-through
+               from the compare). The label ref is transferred, not duplicated. */
+            if (OPTIMIZE && code_match(&cc, pos_next, OP_if_false, -1)) {
+                if (cc.line_num >= 0) line_num = cc.line_num;
+                pos_next = cc.pos;
+                label = cc.label;
+                op = OP_lt_if_false + (op - OP_lt);
+                goto has_label;
+            }
+            goto no_change;
+#endif
         default:
         no_change:
             add_pc2line_info(s, bc_out.size, line_num);
@@ -14146,6 +14164,10 @@ static __exception int compute_stack_size(JSContext *ctx,
 #endif
         case OP_if_true:
         case OP_if_false:
+        case OP_lt_if_false:
+        case OP_lte_if_false:
+        case OP_gt_if_false:
+        case OP_gte_if_false:
             diff = get_u32(bc_buf + pos + 1);
             if (ss_check(ctx, s, pos + 1 + diff, op, stack_len, catch_pos))
                 goto fail;
@@ -15804,7 +15826,7 @@ typedef enum BCTagEnum {
     BC_TAG_OBJECT_REFERENCE,
 } BCTagEnum;
 
-#define BC_VERSION 6
+#define BC_VERSION 7
 
 typedef struct BCWriterState {
     JSContext *ctx;
