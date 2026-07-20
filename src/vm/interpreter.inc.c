@@ -2590,18 +2590,176 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             OP_CMP_IF_FALSE(OP_gte_if_false, OP_gte, >=);
 
         CASE(OP_ext):
-            /* Escape into bank 2: dispatch on the next byte. Handlers below are
-               placeholders — the resolve_labels fusion that emits these ops is
-               not wired yet, so with it off no OP_ext byte is ever produced and
-               these are unreachable. This lands the 512-opcode mechanism proven
-               output-neutral before the transform goes in. Real bodies (the
-               fused two-local arithmetic) replace the placeholders then. */
+            /* Escape into bank 2: the next byte selects a quickjs-opcode2.h op.
+               The ARITH shard fuses `<get_loc|get_loc_check> A;
+               <get_loc|get_loc_check> B; <mul|add|sub>` into one op reading the
+               two locals directly (n_pop 0, n_push 1). Fast paths mirror
+               OP_mul/OP_add/OP_sub exactly so output is identical; operands are
+               BORROWED from var_buf, so the slow path DUPs them (get_loc would
+               have) before the slow helper, which consumes them.
+
+               TDZ: every operand is checked for JS_Uninitialized (matching
+               OP_get_loc_check), throwing the same ReferenceError against that
+               operand's index. A plain OP_get_loc reads a non-lexical slot that
+               is never uninitialized, so the check is a no-op there -> one set
+               of ops serves get_loc, get_loc_check and any mix, exactly. A is
+               checked before B, matching the unfused left-to-right order. */
+#define OP2_READ_LOC_LOC(v1, v2)                                              \
+                int ai = get_u16(pc), bi = get_u16(pc + 2);                   \
+                JSValue v1 = var_buf[ai], v2 = var_buf[bi];                   \
+                if (unlikely(JS_IsUninitialized(v1))) {                       \
+                    JS_ThrowReferenceErrorUninitialized2(ctx, b, ai, FALSE);  \
+                    goto exception;                                           \
+                }                                                             \
+                if (unlikely(JS_IsUninitialized(v2))) {                       \
+                    JS_ThrowReferenceErrorUninitialized2(ctx, b, bi, FALSE);  \
+                    goto exception;                                           \
+                }
             SWITCH2(*pc++) {
-            CASE2(OP2_mul_loc_loc):
             CASE2(OP2_add_loc_loc):
+                {
+                    OP2_READ_LOC_LOC(op1, op2)
+                    if (likely(JS_VALUE_IS_BOTH_INT(op1, op2))) {
+                        int64_t r = (int64_t)JS_VALUE_GET_INT(op1) + JS_VALUE_GET_INT(op2);
+                        pc += 4;
+                        if (unlikely((int)r != r))
+                            *sp++ = __JS_NewFloat64(ctx, (double)r);
+                        else
+                            *sp++ = JS_NewInt32(ctx, r);
+                    } else if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op1)) ||
+                               JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op2))) {
+                        double d1, d2;
+                        if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op1)))
+                            d1 = JS_VALUE_GET_FLOAT64(op1);
+                        else if (JS_VALUE_GET_TAG(op1) == JS_TAG_INT)
+                            d1 = JS_VALUE_GET_INT(op1);
+                        else
+                            goto add_ll_slow;
+                        if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op2)))
+                            d2 = JS_VALUE_GET_FLOAT64(op2);
+                        else if (JS_VALUE_GET_TAG(op2) == JS_TAG_INT)
+                            d2 = JS_VALUE_GET_INT(op2);
+                        else
+                            goto add_ll_slow;
+                        pc += 4;
+                        *sp++ = __JS_NewFloat64(ctx, d1 + d2);
+                    } else {
+                    add_ll_slow:
+                        pc += 4;
+                        {
+                            /* slow path needs two operand slots but the op only
+                               reserves one stack push (n_push=1) — use a local
+                               array so we never write past sp (OP_add_loc does
+                               the same). js_add_slow consumes both and stores
+                               the result in ops[0]. */
+                            JSValue ops[2];
+                            ops[0] = JS_DupValue(ctx, op1);
+                            ops[1] = JS_DupValue(ctx, op2);
+                            sf->cur_pc = pc;
+                            if (js_add_slow(ctx, ops + 2))
+                                goto exception;
+                            *sp++ = ops[0];
+                        }
+                    }
+                }
+                BREAK;
             CASE2(OP2_sub_loc_loc):
-                goto exception;
+                {
+                    OP2_READ_LOC_LOC(op1, op2)
+                    if (likely(JS_VALUE_IS_BOTH_INT(op1, op2))) {
+                        int64_t r = (int64_t)JS_VALUE_GET_INT(op1) - JS_VALUE_GET_INT(op2);
+                        pc += 4;
+                        if (unlikely((int)r != r))
+                            *sp++ = __JS_NewFloat64(ctx, (double)r);
+                        else
+                            *sp++ = JS_NewInt32(ctx, r);
+                    } else if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op1)) ||
+                               JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op2))) {
+                        double d1, d2;
+                        if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op1)))
+                            d1 = JS_VALUE_GET_FLOAT64(op1);
+                        else if (JS_VALUE_GET_TAG(op1) == JS_TAG_INT)
+                            d1 = JS_VALUE_GET_INT(op1);
+                        else
+                            goto sub_ll_slow;
+                        if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op2)))
+                            d2 = JS_VALUE_GET_FLOAT64(op2);
+                        else if (JS_VALUE_GET_TAG(op2) == JS_TAG_INT)
+                            d2 = JS_VALUE_GET_INT(op2);
+                        else
+                            goto sub_ll_slow;
+                        pc += 4;
+                        *sp++ = __JS_NewFloat64(ctx, d1 - d2);
+                    } else {
+                    sub_ll_slow:
+                        pc += 4;
+                        {
+                            JSValue ops[2];
+                            ops[0] = JS_DupValue(ctx, op1);
+                            ops[1] = JS_DupValue(ctx, op2);
+                            sf->cur_pc = pc;
+                            if (js_binary_arith_slow(ctx, ops + 2, OP_sub))
+                                goto exception;
+                            *sp++ = ops[0];
+                        }
+                    }
+                }
+                BREAK;
+            CASE2(OP2_mul_loc_loc):
+                {
+                    OP2_READ_LOC_LOC(op1, op2)
+                    double d;
+                    if (likely(JS_VALUE_IS_BOTH_INT(op1, op2))) {
+                        int32_t v1 = JS_VALUE_GET_INT(op1);
+                        int32_t v2 = JS_VALUE_GET_INT(op2);
+                        int64_t r = (int64_t)v1 * v2;
+                        if (unlikely((int)r != r)) {
+                            d = (double)r;
+                            goto mul_ll_fp;
+                        }
+                        /* need to test zero case for -0 result */
+                        if (unlikely(r == 0 && (v1 | v2) < 0)) {
+                            d = -0.0;
+                            goto mul_ll_fp;
+                        }
+                        pc += 4;
+                        *sp++ = JS_NewInt32(ctx, r);
+                    } else if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op1)) ||
+                               JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op2))) {
+                        double d1, d2;
+                        if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op1)))
+                            d1 = JS_VALUE_GET_FLOAT64(op1);
+                        else if (JS_VALUE_GET_TAG(op1) == JS_TAG_INT)
+                            d1 = JS_VALUE_GET_INT(op1);
+                        else
+                            goto mul_ll_slow;
+                        if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op2)))
+                            d2 = JS_VALUE_GET_FLOAT64(op2);
+                        else if (JS_VALUE_GET_TAG(op2) == JS_TAG_INT)
+                            d2 = JS_VALUE_GET_INT(op2);
+                        else
+                            goto mul_ll_slow;
+                        d = d1 * d2;
+                    mul_ll_fp:
+                        pc += 4;
+                        *sp++ = __JS_NewFloat64(ctx, d);
+                    } else {
+                    mul_ll_slow:
+                        pc += 4;
+                        {
+                            JSValue ops[2];
+                            ops[0] = JS_DupValue(ctx, op1);
+                            ops[1] = JS_DupValue(ctx, op2);
+                            sf->cur_pc = pc;
+                            if (js_binary_arith_slow(ctx, ops + 2, OP_mul))
+                                goto exception;
+                            *sp++ = ops[0];
+                        }
+                    }
+                }
+                BREAK;
             }
+#undef OP2_READ_LOC_LOC
             BREAK;
 
 #define OP_CMP_EQ(opcode, inv)                                          \

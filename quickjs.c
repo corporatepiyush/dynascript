@@ -53,6 +53,14 @@
    op immediately followed by OP_if_false into one dispatch). Gate exists so a
    #define-off oracle build can prove the transform is output-identical. */
 #define CONFIG_FUSED_CMP 1
+/* Fused two-local arithmetic superinstructions (resolve_labels folds
+   `get_loc A; get_loc B; <mul|add|sub>` into a single [OP_ext][op2][a][b] op
+   that reads both locals directly — 6 bytes / 1 dispatch replacing 7 bytes /
+   3 dispatches). Gate exists so a #define-off oracle build proves it output-
+   identical. Bank-2 ARITH shard; see quickjs-opcode2.h. */
+#ifndef CONFIG_FUSED_ARITH
+#define CONFIG_FUSED_ARITH 1
+#endif
 #if defined(__EMSCRIPTEN__)
 #define DIRECT_DISPATCH  0
 #else

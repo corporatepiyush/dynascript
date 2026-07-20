@@ -376,6 +376,31 @@ static int JS_ReadFunctionBytecode(BCReaderState *s, JSFunctionBytecode *b,
             b->byte_code_len = pos;
             return bc_read_error_end(s);
         }
+        if (op == OP_ext) {
+            /* bank-2 op [OP_ext][op2][operands]. The untrusted op2 byte MUST
+               be validated (< OP2_COUNT) before indexing opcode_info2[], and
+               the whole encoding must lie within bc_len — otherwise a forged
+               blob yields an OOB read of the metadata table or past the
+               bytecode allocation. Bank-2 ops carry no atoms yet, so there is
+               nothing to fix up; step over by the real size. */
+            int op2;
+            if ((uint32_t)2 > bc_len - (uint32_t)pos) {
+                b->byte_code_len = pos;
+                return bc_read_error_end(s);
+            }
+            op2 = bc_buf[pos + 1];
+            if (op2 >= OP2_COUNT) {
+                b->byte_code_len = pos;
+                return bc_read_error_end(s);
+            }
+            len = opcode_info2[op2].size;
+            if ((uint32_t)len > bc_len - (uint32_t)pos) {
+                b->byte_code_len = pos;
+                return bc_read_error_end(s);
+            }
+            pos += len;
+            continue;
+        }
         len = short_opcode_info(op).size;
         /* The opcode's whole encoding (incl. its atom/label operand read+written
            below via get_u32/put_u32 at pos+1..pos+4) must lie within bc_len.

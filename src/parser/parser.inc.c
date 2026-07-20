@@ -10427,6 +10427,19 @@ static void free_bytecode_atoms(JSRuntime *rt,
            opcode_info[] out of bounds. Valid bytecode always has op < OP_COUNT. */
         if (op >= OP_COUNT)
             break;
+        if (op == OP_ext) {
+            /* bank-2 op: real size in opcode_info2[op2]; no atom operands yet.
+               A malformed/partial buffer may hold a bad op2 -> stop the walk
+               (mirrors the op >= OP_COUNT guard). */
+            int op2;
+            if (pos + 2 > bc_len)
+                break;
+            op2 = bc_buf[pos + 1];
+            if (op2 >= OP2_COUNT)
+                break;
+            pos += opcode_info2[op2].size;
+            continue;
+        }
         if (use_short_opcodes)
             oi = &short_opcode_info(op);
         else
@@ -10632,6 +10645,27 @@ static void dump_byte_code(JSContext *ctx, int pass,
         if (op >= OP_COUNT) {
             printf("invalid opcode (0x%02x)\n", op);
             pos++;
+            continue;
+        }
+        if (op == OP_ext) {
+            /* bank-2 op: decode via opcode_info2[op2] */
+            int op2 = tab[pos + 1];
+            if (op2 >= OP2_COUNT) {
+                printf("invalid ext opcode (0x%02x)\n", op2);
+                pos += 2;
+                continue;
+            }
+            oi = &opcode_info2[op2];
+            size = oi->size;
+            if (pos + size > len) {
+                printf("truncated ext opcode (0x%02x)\n", op2);
+                break;
+            }
+            printf("%s", oi->name);
+            if (oi->fmt == OP_FMT_loc2)
+                printf(" %d, %d", get_u16(tab + pos + 2), get_u16(tab + pos + 4));
+            printf("\n");
+            pos += size;
             continue;
         }
         if (use_short_opcodes)
@@ -13694,6 +13728,32 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
             }
             goto no_change;
 
+#if CONFIG_FUSED_ARITH
+        case OP_get_loc_check:
+            /* Lexical (`let`/`const`) locals read via OP_get_loc_check are the
+               common case in modern code; fuse `A op B` here too. The fused
+               bank-2 op TDZ-checks both operands, so semantics are preserved
+               (see get_loc_try_fuse_arith and the interpreter). No compound-
+               assign peephole applies to checked locals, so fuse directly. */
+            if (OPTIMIZE) {
+                int idx = get_u16(bc_buf + pos + 1);
+                if (code_match(&cc, pos_next, M2(OP_get_loc, OP_get_loc_check), -1,
+                               M3(OP_mul, OP_add, OP_sub), -1)) {
+                    int op2 = (cc.op == OP_mul) ? OP2_mul_loc_loc :
+                              (cc.op == OP_add) ? OP2_add_loc_loc : OP2_sub_loc_loc;
+                    if (cc.line_num >= 0) line_num = cc.line_num;
+                    add_pc2line_info(s, bc_out.size, line_num);
+                    dbuf_putc(&bc_out, OP_ext);
+                    dbuf_putc(&bc_out, op2);
+                    dbuf_put_u16(&bc_out, idx);
+                    dbuf_put_u16(&bc_out, cc.idx);
+                    pos_next = cc.pos;
+                    break;
+                }
+            }
+            goto no_change;
+#endif
+
         case OP_get_loc:
             if (OPTIMIZE) {
                 /* transformation:
@@ -13704,8 +13764,13 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                  */
                 int idx;
                 idx = get_u16(bc_buf + pos + 1);
-                if (idx >= 256)
+                if (idx >= 256) {
+#if CONFIG_FUSED_ARITH
+                    goto get_loc_try_fuse_arith;
+#else
                     goto no_change;
+#endif
+                }
                 if (code_match(&cc, pos_next, M2(OP_post_dec, OP_post_inc), OP_put_loc, idx, OP_drop, -1) ||
                     code_match(&cc, pos_next, M2(OP_dec, OP_inc), OP_dup, OP_put_loc, idx, OP_drop, -1)) {
                     if (cc.line_num >= 0) line_num = cc.line_num;
@@ -13762,6 +13827,34 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
                     pos_next = cc.pos;
                     break;
                 }
+#if CONFIG_FUSED_ARITH
+            get_loc_try_fuse_arith:
+                /* Fuse `<get_loc|get_loc_check> A; <get_loc|get_loc_check> B;
+                   <mul|add|sub>` into one bank-2 op that reads both locals
+                   directly. code_match refuses to skip an OP_label, so it never
+                   fuses across a jump target (each of the three ops is reached
+                   only by fall-through). A and B are any u16 local index (loc2
+                   operand form). Attempted only after the compound-assign
+                   peepholes above, so `x += y` keeps its add_loc; a plain
+                   `z = A op B` fuses. The fused op TDZ-checks both operands, so
+                   a checked (lexical) operand keeps its ReferenceError and a
+                   plain (var) operand is unaffected — see the interpreter. */
+                if (code_match(&cc, pos_next, M2(OP_get_loc, OP_get_loc_check), -1,
+                               M3(OP_mul, OP_add, OP_sub), -1)) {
+                    int op2 = (cc.op == OP_mul) ? OP2_mul_loc_loc :
+                              (cc.op == OP_add) ? OP2_add_loc_loc : OP2_sub_loc_loc;
+                    if (cc.line_num >= 0) line_num = cc.line_num;
+                    add_pc2line_info(s, bc_out.size, line_num);
+                    dbuf_putc(&bc_out, OP_ext);
+                    dbuf_putc(&bc_out, op2);
+                    dbuf_put_u16(&bc_out, idx);
+                    dbuf_put_u16(&bc_out, cc.idx);
+                    pos_next = cc.pos;
+                    break;
+                }
+                if (idx >= 256)
+                    goto no_change;
+#endif
                 add_pc2line_info(s, bc_out.size, line_num);
                 put_short_code(&bc_out, op, idx);
                 break;
@@ -14112,6 +14205,20 @@ static __exception int compute_stack_size(JSContext *ctx,
             goto fail;
         }
         oi = &short_opcode_info(op);
+        if (op == OP_ext) {
+            /* bank-2 op: real size/pops/pushes live in opcode_info2[op2] */
+            int op2;
+            if (pos + 2 > s->bc_len) {
+                JS_ThrowInternalError(ctx, "truncated ext opcode (pc=%d)", pos);
+                goto fail;
+            }
+            op2 = bc_buf[pos + 1];
+            if (op2 >= OP2_COUNT) {
+                JS_ThrowInternalError(ctx, "invalid ext opcode (op2=%d, pc=%d)", op2, pos);
+                goto fail;
+            }
+            oi = &opcode_info2[op2];
+        }
 #if defined(DUMP_BYTECODE) && (DUMP_BYTECODE & 64)
         printf("%5d: %10s %5d %5d\n", pos, oi->name, stack_len, catch_pos);
 #endif
@@ -15838,7 +15945,8 @@ typedef enum BCTagEnum {
     BC_TAG_OBJECT_REFERENCE,
 } BCTagEnum;
 
-#define BC_VERSION 8
+/* 9: bank-2 ARITH shard (OP_ext + OP2_mul/add/sub_loc_loc) now emitted */
+#define BC_VERSION 9
 
 typedef struct BCWriterState {
     JSContext *ctx;
@@ -15997,6 +16105,26 @@ static void bc_byte_swap(uint8_t *bc_buf, int bc_len)
     pos = 0;
     while (pos < bc_len) {
         op = bc_buf[pos];
+        if (op == OP_ext) {
+            /* bank-2 op: byte-swap its operands per op2's format. This runs on
+               UNTRUSTED input (JS_ReadFunctionBytecode calls it before the
+               validating loop on big-endian hosts), so bound op2 before
+               indexing opcode_info2[] and stop on a truncated/forged OP_ext —
+               the reader's own loop then rejects the blob. */
+            int op2;
+            if (pos + 2 > bc_len)
+                break;
+            op2 = bc_buf[pos + 1];
+            if (op2 >= OP2_COUNT)
+                break;
+            if (opcode_info2[op2].fmt == OP_FMT_loc2 &&
+                pos + opcode_info2[op2].size <= bc_len) {
+                put_u16(bc_buf + pos + 2, bswap16(get_u16(bc_buf + pos + 2)));
+                put_u16(bc_buf + pos + 4, bswap16(get_u16(bc_buf + pos + 4)));
+            }
+            pos += opcode_info2[op2].size;
+            continue;
+        }
         len = short_opcode_info(op).size;
         fmt = short_opcode_info(op).fmt;
         switch(fmt) {
@@ -16066,6 +16194,11 @@ static int JS_WriteFunctionBytecode(BCWriterState *s,
     pos = 0;
     while (pos < bc_len) {
         op = bc_buf[pos];
+        if (op == OP_ext) {
+            /* bank-2 op: step by real size; no atom operands to relocate yet */
+            pos += opcode_info2[bc_buf[pos + 1]].size;
+            continue;
+        }
         len = short_opcode_info(op).size;
         switch(short_opcode_info(op).fmt) {
         case OP_FMT_atom:

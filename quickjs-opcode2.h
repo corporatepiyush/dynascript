@@ -29,8 +29,13 @@
 
 /* ═══ category ARITH — fused binary arithmetic superinstructions ═══
    Read two locals directly and push the result: replaces
-   get_loc;get_loc;<arith> (7 bytes, 3 dispatches, 4 stack ops) with one
-   6-byte op and a single dispatch. */
+   <get_loc|get_loc_check> A; <get_loc|get_loc_check> B; <arith> (7 bytes, 3
+   dispatches, 4 stack ops) with one 6-byte op and a single dispatch. Each
+   operand is TDZ-checked (JS_IsUninitialized) exactly like OP_get_loc_check
+   before the arithmetic, so the op serves lexical (`let`/`const`) and plain
+   (`var`) locals and any mix — a `var` slot is never uninitialized, so its
+   check never fires. Emitted by resolve_labels (gate CONFIG_FUSED_ARITH);
+   fast paths mirror OP_mul/OP_add/OP_sub for byte-identical output. */
 DEF2(  mul_loc_loc, 6, 0, 1, loc2)
 DEF2(  add_loc_loc, 6, 0, 1, loc2)
 DEF2(  sub_loc_loc, 6, 0, 1, loc2)
