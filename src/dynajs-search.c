@@ -37,40 +37,26 @@
 
 #if defined(CONFIG_NATIVE_MODULES) && defined(CONFIG_NATIVE_MODULE_SEARCH)
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
+
+#include "dynajs-simd-kernels.h" /* the shared multi-ISA SIMD engine */
 
 #ifndef countof
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 #endif
 
-/* Boyer-Moore-Horspool bad-character table: for each byte value, how far the
- * window may shift when that byte is aligned with the LAST pattern position.
- * Requires plen >= 1. Minimum shift is 1, so the scan always makes progress. */
-static void bmh_build(const uint8_t *pat, size_t plen, size_t shift[256])
+/* First occurrence of pat[0..plen) in text[start..tlen) via the SIMD substring
+ * kernel (first+last algorithm; scalar memchr fallback). Returns the absolute
+ * byte offset, or (size_t)-1 if none. Requires 1 <= plen <= tlen. */
+static size_t simd_substr_find(const uint8_t *text, size_t tlen,
+                               const uint8_t *pat, size_t plen, size_t start)
 {
-    size_t i;
-    for (i = 0; i < 256; i++)
-        shift[i] = plen;
-    for (i = 0; i + 1 < plen; i++)
-        shift[pat[i]] = plen - 1 - i;
-}
-
-/* First occurrence of pat in text at or after `start`, using a prebuilt table.
- * Returns the byte offset, or (size_t)-1 if none. Requires 1 <= plen <= tlen. */
-static size_t bmh_find(const uint8_t *text, size_t tlen, const uint8_t *pat,
-                       size_t plen, size_t start, const size_t shift[256])
-{
-    size_t s = start;
-    while (s + plen <= tlen) {
-        size_t j = plen;
-        while (j > 0 && text[s + j - 1] == pat[j - 1])
-            j--;
-        if (j == 0)
-            return s;
-        s += shift[text[s + plen - 1]];
-    }
-    return (size_t)-1;
+    size_t rel;
+    if (start >= tlen || plen > tlen - start)
+        return (size_t)-1;
+    rel = simd.strfind(text + start, tlen - start, pat, plen);
+    return rel == SIZE_MAX ? (size_t)-1 : start + rel;
 }
 
 /* Coerce both JS string arguments to owned C strings (UTF-8 bytes, explicit
@@ -99,7 +85,7 @@ static JSValue dyn_search_index_of(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv)
 {
     const char *text, *pat;
-    size_t tlen, plen, shift[256], pos;
+    size_t tlen, plen, pos;
     JSValue result;
 
     (void)this_val;
@@ -113,9 +99,8 @@ static JSValue dyn_search_index_of(JSContext *ctx, JSValueConst this_val,
     } else if (plen > tlen) {
         result = JS_NewInt32(ctx, -1);
     } else {
-        bmh_build((const uint8_t *)pat, plen, shift);
-        pos = bmh_find((const uint8_t *)text, tlen, (const uint8_t *)pat,
-                       plen, 0, shift);
+        pos = simd_substr_find((const uint8_t *)text, tlen,
+                               (const uint8_t *)pat, plen, 0);
         result = (pos == (size_t)-1) ? JS_NewInt32(ctx, -1)
                                      : JS_NewInt64(ctx, (int64_t)pos);
     }
@@ -131,7 +116,7 @@ static JSValue dyn_search_index_of_all(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv)
 {
     const char *text, *pat;
-    size_t tlen, plen, shift[256], pos;
+    size_t tlen, plen, pos;
     JSValue arr, result;
     uint32_t count = 0;
 
@@ -154,9 +139,8 @@ static JSValue dyn_search_index_of_all(JSContext *ctx, JSValueConst this_val,
         goto done;
     }
 
-    bmh_build((const uint8_t *)pat, plen, shift);
-    pos = bmh_find((const uint8_t *)text, tlen, (const uint8_t *)pat, plen,
-                   0, shift);
+    pos = simd_substr_find((const uint8_t *)text, tlen, (const uint8_t *)pat,
+                           plen, 0);
     while (pos != (size_t)-1) {
         if (JS_DefinePropertyValueUint32(ctx, arr, count,
                                          JS_NewInt64(ctx, (int64_t)pos),
@@ -167,8 +151,8 @@ static JSValue dyn_search_index_of_all(JSContext *ctx, JSValueConst this_val,
         }
         count++;
         /* Advance by one byte for overlapping matches. */
-        pos = bmh_find((const uint8_t *)text, tlen, (const uint8_t *)pat,
-                       plen, pos + 1, shift);
+        pos = simd_substr_find((const uint8_t *)text, tlen,
+                               (const uint8_t *)pat, plen, pos + 1);
     }
     result = arr;
 
@@ -193,7 +177,9 @@ static int dyn_search_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_search(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:search", dyn_search_init_module);
+    JSModuleDef *m;
+    simd_init(); /* idempotent (pthread_once): select the best strfind kernel */
+    m = JS_NewCModule(ctx, "scl:search", dyn_search_init_module);
     if (!m)
         return -1;
     return JS_AddModuleExportList(ctx, m, dyn_search_funcs,

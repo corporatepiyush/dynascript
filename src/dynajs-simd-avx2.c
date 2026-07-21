@@ -25,6 +25,7 @@
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #include <math.h>
+#include <string.h>
 #include "dynajs-simd-kernels.h"
 
 /* Scalar fallbacks (simd_scalar.c) installed for ops that have
@@ -1074,8 +1075,43 @@ simd_avx2_clamp(float *restrict out, const float *restrict in,
   }
 }
 
+/* Substring search, first+last algorithm over 32-byte blocks (AVX2). */
+__attribute__((target("avx2,fma"))) static size_t
+simd_avx2_strfind(const uint8_t *text, size_t n, const uint8_t *pat, size_t m) {
+  if (m == 0) return 0;
+  if (m > n) return SIZE_MAX;
+  if (m == 1) {
+    const void *r = memchr(text, pat[0], n);
+    return r ? (size_t)((const uint8_t *)r - text) : SIZE_MAX;
+  }
+  __m256i vfirst = _mm256_set1_epi8((char)pat[0]);
+  __m256i vlast = _mm256_set1_epi8((char)pat[m - 1]);
+  size_t i = 0;
+  while (i + 32 + (m - 1) <= n) {
+    __m256i bf = _mm256_loadu_si256((const __m256i *)(text + i));
+    __m256i bl = _mm256_loadu_si256((const __m256i *)(text + i + m - 1));
+    unsigned mask = (unsigned)_mm256_movemask_epi8(_mm256_and_si256(
+        _mm256_cmpeq_epi8(bf, vfirst), _mm256_cmpeq_epi8(bl, vlast)));
+    while (mask) {
+      int j = __builtin_ctz(mask);
+      if (m == 2 || memcmp(text + i + j + 1, pat + 1, m - 2) == 0)
+        return i + j;
+      mask &= mask - 1;
+    }
+    i += 32;
+  }
+  size_t limit = n - m;
+  while (i <= limit) {
+    if (text[i] == pat[0] && memcmp(text + i + 1, pat + 1, m - 1) == 0)
+      return i;
+    i++;
+  }
+  return SIZE_MAX;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_avx2(simd_t *t) {
+  t->strfind = simd_avx2_strfind;
   t->dot = simd_avx2_dot;
   t->dot_f = simd_avx2_dot_f;
   t->norm_l2_sq = simd_avx2_norm_l2_sq;

@@ -25,6 +25,7 @@
 #if defined(__x86_64__) || defined(_M_X64)
 #include <smmintrin.h>
 #include <math.h>
+#include <string.h>
 #include "dynajs-simd-kernels.h"
 #include <math.h>
 
@@ -1029,8 +1030,44 @@ simd_sse42_clamp(float *restrict out, const float *restrict in,
   }
 }
 
+/* Substring search, first+last algorithm over 16-byte blocks (SSE). */
+__attribute__((target("sse4.2"))) static size_t
+simd_sse42_strfind(const uint8_t *text, size_t n, const uint8_t *pat,
+                   size_t m) {
+  if (m == 0) return 0;
+  if (m > n) return SIZE_MAX;
+  if (m == 1) {
+    const void *r = memchr(text, pat[0], n);
+    return r ? (size_t)((const uint8_t *)r - text) : SIZE_MAX;
+  }
+  __m128i vfirst = _mm_set1_epi8((char)pat[0]);
+  __m128i vlast = _mm_set1_epi8((char)pat[m - 1]);
+  size_t i = 0;
+  while (i + 16 + (m - 1) <= n) {
+    __m128i bf = _mm_loadu_si128((const __m128i *)(text + i));
+    __m128i bl = _mm_loadu_si128((const __m128i *)(text + i + m - 1));
+    unsigned mask = (unsigned)_mm_movemask_epi8(
+        _mm_and_si128(_mm_cmpeq_epi8(bf, vfirst), _mm_cmpeq_epi8(bl, vlast)));
+    while (mask) {
+      int j = __builtin_ctz(mask);
+      if (m == 2 || memcmp(text + i + j + 1, pat + 1, m - 2) == 0)
+        return i + j;
+      mask &= mask - 1;
+    }
+    i += 16;
+  }
+  size_t limit = n - m;
+  while (i <= limit) {
+    if (text[i] == pat[0] && memcmp(text + i + 1, pat + 1, m - 1) == 0)
+      return i;
+    i++;
+  }
+  return SIZE_MAX;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_sse42(simd_t *t) {
+  t->strfind = simd_sse42_strfind;
   t->dot = simd_sse42_dot;
   t->dot_f = simd_sse42_dot_f;
   t->norm_l2_sq = simd_sse42_norm_l2_sq;

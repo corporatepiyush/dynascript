@@ -11,6 +11,7 @@
 #include <math.h>
 #include "dynajs-simd-kernels.h"
 #include <math.h>
+#include <string.h>
 
 #if defined(__aarch64__) || defined(_M_ARM64)
 #include <arm_neon.h>
@@ -1057,12 +1058,55 @@ static size_t simd_neon_find_f64(const double *restrict p, double v, size_t n) {
   return SIZE_MAX;
 }
 
+/* NEON lacks a movemask; narrow each 0x00/0xFF lane to a 4-bit nibble via
+ * vshrn, giving a 64-bit value with 4 bits per input byte. */
+static inline uint64_t simd_neon_nibble_mask(uint8x16_t v) {
+  uint8x8_t narrowed = vshrn_n_u16(vreinterpretq_u16_u8(v), 4);
+  return vget_lane_u64(vreinterpret_u64_u8(narrowed), 0);
+}
+
+/* Substring search, first+last algorithm over 16-byte blocks. */
+static size_t simd_neon_strfind(const uint8_t *text, size_t n,
+                                const uint8_t *pat, size_t m) {
+  if (m == 0) return 0;
+  if (m > n) return SIZE_MAX;
+  if (m == 1) {
+    const void *r = memchr(text, pat[0], n);
+    return r ? (size_t)((const uint8_t *)r - text) : SIZE_MAX;
+  }
+  uint8x16_t vfirst = vdupq_n_u8(pat[0]);
+  uint8x16_t vlast = vdupq_n_u8(pat[m - 1]);
+  size_t i = 0;
+  /* need text[i+m-1 .. i+m-1+15] in range: i + (m-1) + 16 <= n */
+  while (i + 16 + (m - 1) <= n) {
+    uint8x16_t bf = vld1q_u8(text + i);
+    uint8x16_t bl = vld1q_u8(text + i + m - 1);
+    uint8x16_t eq = vandq_u8(vceqq_u8(bf, vfirst), vceqq_u8(bl, vlast));
+    uint64_t mask = simd_neon_nibble_mask(eq);
+    while (mask) {
+      int j = __builtin_ctzll(mask) >> 2; /* 4 bits per lane */
+      if (m == 2 || memcmp(text + i + j + 1, pat + 1, m - 2) == 0)
+        return i + j;
+      mask &= ~((uint64_t)0xFULL << (j * 4));
+    }
+    i += 16;
+  }
+  size_t limit = n - m;
+  while (i <= limit) {
+    if (text[i] == pat[0] && memcmp(text + i + 1, pat + 1, m - 1) == 0)
+      return i;
+    i++;
+  }
+  return SIZE_MAX;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_neon(simd_t *t) {
   t->find_u16 = simd_neon_find_u16;
   t->find_u32 = simd_neon_find_u32;
   t->find_f32 = simd_neon_find_f32;
   t->find_f64 = simd_neon_find_f64;
+  t->strfind = simd_neon_strfind;
   t->dot = simd_neon_dot;
   t->dot_f = simd_neon_dot_f;
   t->norm_l2_sq = simd_neon_norm_l2_sq;

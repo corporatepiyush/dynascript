@@ -219,6 +219,14 @@ typedef struct simd {
   size_t (*find_f32)(const float *restrict p, float v, size_t n);
   size_t (*find_f64)(const double *restrict p, double v, size_t n);
 
+  /* ── SIMD substring search: first index of pat[0..m) in text[0..n), or
+   *    SIZE_MAX. The "generic SIMD" first+last algorithm (Muła): vector-compare
+   *    the pattern's first and last byte against the text, then memcmp the
+   *    interior only at candidate positions. Empty pattern => 0. Used by
+   *    scl:search and any delimiter/substring scan. ─────────────────────── */
+  size_t (*strfind)(const uint8_t *text, size_t n, const uint8_t *pat,
+                    size_t m);
+
 } simd_t;
 
 /* Global dispatch table — safe to read from any thread after init. */

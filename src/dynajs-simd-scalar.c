@@ -590,12 +590,35 @@ static size_t simd_scalar_find_f64(const double *restrict p, double v,
   return SIZE_MAX;
 }
 
+/* Scalar substring search: memchr to the first byte, then verify the rest.
+ * Also the differential oracle the SIMD variants must match byte-for-byte. */
+static size_t simd_scalar_strfind(const uint8_t *text, size_t n,
+                                  const uint8_t *pat, size_t m) {
+  if (m == 0) return 0;
+  if (m > n) return SIZE_MAX;
+  if (m == 1) {
+    const void *r = memchr(text, pat[0], n);
+    return r ? (size_t)((const uint8_t *)r - text) : SIZE_MAX;
+  }
+  size_t limit = n - m; /* last index at which a match can start */
+  size_t i = 0;
+  while (i <= limit) {
+    const uint8_t *hit = memchr(text + i, pat[0], limit - i + 1);
+    if (!hit) break;
+    size_t pos = (size_t)(hit - text);
+    if (memcmp(text + pos + 1, pat + 1, m - 1) == 0) return pos;
+    i = pos + 1;
+  }
+  return SIZE_MAX;
+}
+
 void simd_override_scalar(simd_t *t) {
   t->find_u8 = simd_scalar_find_u8;
   t->find_u16 = simd_scalar_find_u16;
   t->find_u32 = simd_scalar_find_u32;
   t->find_f32 = simd_scalar_find_f32;
   t->find_f64 = simd_scalar_find_f64;
+  t->strfind = simd_scalar_strfind;
   t->dot = simd_scalar_dot;
   t->dot_f = simd_scalar_dot_f;
   t->norm_l2_sq = simd_scalar_norm_l2_sq;
