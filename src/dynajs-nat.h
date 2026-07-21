@@ -100,6 +100,14 @@ int js_nat_init_structures3(JSContext *ctx);
 #ifdef CONFIG_NATIVE_MODULE_SIMD
 int js_nat_init_simd(JSContext *ctx);
 #endif
+#if defined(CONFIG_IO_URING) && defined(__linux__)
+int js_nat_init_uring(JSContext *ctx); /* scl:uring disk I/O (Linux only) */
+/* io_uring high-queue-depth whole-file read (0 ok, caller free()s *out). */
+int dyn_uring_read_all(const char *path, char **out, size_t *outlen);
+#endif
+#ifdef CONFIG_NATIVE_MODULE_FILE
+int js_nat_init_file(JSContext *ctx); /* scl:file buffered reader/writer */
+#endif
 
 /* Register every compiled-in native module in `ctx`. Called from the CLI. */
 int js_nat_init_all(JSContext *ctx);

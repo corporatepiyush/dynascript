@@ -249,6 +249,9 @@ endif
 ifneq ($(wildcard src/dynajs-simd.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_SIMD
 endif
+ifneq ($(wildcard src/dynajs-file.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_FILE
+endif
 endif
 ifdef CONFIG_WIN32
 LDEXPORT=
@@ -320,7 +323,7 @@ ifneq ($(wildcard src/dynajs-compress.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-compress.o
 endif
 ifneq ($(wildcard src/dynajs-http.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-http.o
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-http.o $(OBJDIR)/dynajs-evloop.o
 endif
 ifneq ($(wildcard src/dynajs-structures.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-structures.o
@@ -337,6 +340,14 @@ endif
 ifneq ($(wildcard src/dynajs-simd.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-simd.o
 endif
+ifneq ($(wildcard src/dynajs-file.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-file.o
+endif
+ifdef CONFIG_IO_URING
+ifneq ($(wildcard src/dynajs-uring.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-uring.o
+endif
+endif
 DYNAJS_OBJS+=$(NAT_MODULE_OBJS)
 endif
 
@@ -346,6 +357,14 @@ ifndef CONFIG_WIN32
 LIBS+=-ldl
 endif
 LIBS+=$(EXTRA_LIBS)
+
+# Opt-in io_uring backend for the scl:http async reactor (Linux only; needs
+# liburing-dev). Falls back to epoll when unset. No effect on non-Linux hosts.
+ifdef CONFIG_IO_URING
+CFLAGS+=-DCONFIG_IO_URING
+LIBS+=-luring
+HOST_LIBS+=-luring
+endif
 
 $(OBJDIR):
 	mkdir -p $(OBJDIR) $(OBJDIR)/examples $(OBJDIR)/tests

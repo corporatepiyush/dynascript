@@ -38,8 +38,14 @@
  * pointer ever escapes into the JS heap.
  */
 #include "dynajs-nat.h"
+#include "dynajs-evloop.h"
 
 #if defined(CONFIG_NATIVE_MODULES) && defined(CONFIG_NATIVE_MODULE_HTTP)
+
+#if defined(__linux__) && defined(CONFIG_IO_URING)
+#include <liburing.h>
+#define DYN_HTTP_HAVE_URING 1
+#endif
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -55,6 +61,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -1029,13 +1036,13 @@ static int dyn_parse_req_path(const char *buf, size_t len, char *out,
     return 0;
 }
 
-static const dyn_route_t *dyn_route_lookup(const dyn_http_server_t *s,
-                                           const char *path)
+static const dyn_route_t *dyn_route_lookup(const dyn_route_t *routes,
+                                           size_t n_routes, const char *path)
 {
     size_t i;
-    for (i = 0; i < s->n_routes; i++) {
-        if (strcmp(s->routes[i].path, path) == 0)
-            return &s->routes[i];
+    for (i = 0; i < n_routes; i++) {
+        if (strcmp(routes[i].path, path) == 0)
+            return &routes[i];
     }
     return NULL;
 }
@@ -1190,7 +1197,7 @@ static void dyn_http_handle_conn(const dyn_http_server_t *s, int fd)
             dyn_http_respond(fd, 400, "text/plain", "Bad Request", 11, 0);
             return;
         }
-        route = dyn_route_lookup(s, path);
+        route = dyn_route_lookup(s->routes, s->n_routes, path);
         if (route)
             dyn_http_respond(fd, route->status, route->content_type,
                              route->body, route->body_len, keep_alive);
@@ -1667,6 +1674,877 @@ static const JSClassDef dyn_http_server_class = {
 };
 
 /* ==================================================================== *
+ *  HttpServerAsync -- Model A: single-threaded kqueue/epoll reactor      *
+ *                                                                        *
+ *  One background reactor thread multiplexes ALL connections with non-   *
+ *  blocking sockets (no per-connection thread, no fd queue). Native      *
+ *  static-route handlers only -- the reactor thread never touches the    *
+ *  JSContext, so it is safe by construction exactly like the thread-pool *
+ *  server. Removes the worker cap and the queue-full connection drops:   *
+ *  connection count is bounded only by the fd limit. This is the C-speed *
+ *  ceiling the JS-handler path (Model B) is measured against.            *
+ * ==================================================================== */
+
+static JSClassID dyn_http_async_class_id;
+
+#define DYN_ACONN_MAX_REQ   (1 * 1024 * 1024) /* cap a single buffered request */
+#define DYN_ACONN_MAX_REQS  100000            /* keep-alive requests/connection */
+
+typedef struct dyn_http_async dyn_http_async_t;
+
+/* Per-connection non-blocking state machine. Owns its two buffers. */
+typedef struct {
+    dyn_http_async_t *srv;
+    int fd;
+    dyn_bytes_t in;   /* accumulated request bytes (may hold pipelined extras) */
+    dyn_bytes_t out;  /* queued response bytes */
+    size_t out_off;   /* bytes of `out` already sent */
+    int closing;      /* close once `out` is fully flushed */
+    int nreq;
+} dyn_aconn_t;
+
+struct dyn_http_async {
+    int listen_fd;
+    uint16_t port;
+    int backlog;
+
+    dyn_route_t *routes; /* immutable after start */
+    size_t n_routes;
+
+    dyn_evloop_t *loop;      /* created on the reactor thread (readiness path) */
+    void *uring;             /* dyn_uring_ctx* when the io_uring reactor is live */
+    pthread_t reactor;
+    int started;             /* JS-thread only */
+    atomic_int stop_flag;    /* reactor loop breaks on this */
+    atomic_int spawn_ok;     /* reactor published its loop init result */
+};
+
+static int dyn_set_nonblock(int fd)
+{
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl < 0)
+        return -1;
+    return fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+}
+
+/* Append a full HTTP/1.1 response (head + body) into `out`. Returns 0 or -1. */
+static int dyn_http_format(dyn_bytes_t *out, int status, const char *ct,
+                           const char *body, size_t body_len, int keep_alive)
+{
+    char head[512];
+    int n = snprintf(head, sizeof(head),
+                     "HTTP/1.1 %d %s\r\n"
+                     "Content-Type: %s\r\n"
+                     "Content-Length: %zu\r\n"
+                     "Connection: %s\r\n"
+                     "\r\n",
+                     status, dyn_reason_phrase(status), ct ? ct : "text/plain",
+                     body_len, keep_alive ? "keep-alive" : "close");
+    if (n < 0 || n >= (int)sizeof(head))
+        return -1;
+    if (dyn_bytes_append(out, head, (size_t)n) < 0)
+        return -1;
+    if (body_len > 0 && dyn_bytes_append(out, body, body_len) < 0)
+        return -1;
+    return 0;
+}
+
+static void dyn_aconn_free(dyn_aconn_t *c)
+{
+    free(c->in.data);
+    free(c->out.data);
+    free(c);
+}
+
+/* Drop a connection: unregister, close, free. */
+static void dyn_aconn_close(dyn_evloop_t *lp, dyn_aconn_t *c)
+{
+    dyn_evloop_del(lp, c->fd);
+    close(c->fd);
+    dyn_aconn_free(c);
+}
+
+/* Parse as many complete pipelined requests as `c->in` holds, appending a
+ * response for each to `c->out`. Returns 1 if the connection should close after
+ * the queued output drains, 0 to keep reading. */
+/* Core request pump shared by the readiness (Model A) and io_uring completion
+ * reactors: parse every complete pipelined request buffered in `in`, appending
+ * a response for each to `out`, and consume it from `in`. *pnreq counts
+ * requests served on this connection (keep-alive cap). Returns 1 if the
+ * connection should close once `out` drains, else 0. */
+static int dyn_http_pump(dyn_bytes_t *in, dyn_bytes_t *out, int *pnreq,
+                         const dyn_route_t *routes, size_t n_routes)
+{
+    char path[2048];
+
+    for (;;) {
+        const char *base = in->data;
+        size_t avail = in->len;
+        const char *hdr_end = dyn_memfind(base, avail, "\r\n\r\n", 4);
+        size_t head_len, body_len = 0, req_total, clv_len = 0, connv_len = 0;
+        const char *cl, *conn;
+        int http11, keep_alive;
+        const dyn_route_t *route;
+
+        if (!hdr_end) {
+            if (avail > DYN_ACONN_MAX_REQ)
+                return 1; /* header block too large: drop */
+            return 0;     /* need more bytes */
+        }
+        head_len = (size_t)(hdr_end - base) + 4;
+
+        cl = dyn_req_header(base, head_len, "content-length", &clv_len);
+        if (cl) {
+            size_t j;
+            for (j = 0; j < clv_len && cl[j] >= '0' && cl[j] <= '9'; j++)
+                body_len = body_len * 10 + (size_t)(cl[j] - '0');
+        }
+        req_total = head_len + body_len;
+        if (req_total > DYN_ACONN_MAX_REQ) {
+            dyn_http_format(out, 400, "text/plain", "Bad Request", 11, 0);
+            return 1;
+        }
+        if (avail < req_total)
+            return 0; /* body not fully arrived yet */
+
+        http11 = dyn_memfind(base, head_len, "HTTP/1.1\r\n", 10) != NULL;
+        conn = dyn_req_header(base, head_len, "connection", &connv_len);
+        keep_alive = http11;
+        if (dyn_val_has_token(conn, connv_len, "close"))
+            keep_alive = 0;
+        else if (dyn_val_has_token(conn, connv_len, "keep-alive"))
+            keep_alive = 1;
+        if (++(*pnreq) >= DYN_ACONN_MAX_REQS)
+            keep_alive = 0;
+
+        if (dyn_parse_req_path(base, head_len, path, sizeof(path)) < 0) {
+            dyn_http_format(out, 400, "text/plain", "Bad Request", 11, 0);
+            return 1;
+        }
+        route = dyn_route_lookup(routes, n_routes, path);
+        if (route)
+            dyn_http_format(out, route->status, route->content_type,
+                            route->body, route->body_len, keep_alive);
+        else
+            dyn_http_format(out, 404, "text/plain", "Not Found", 9, keep_alive);
+
+        /* drop the consumed request; keep any pipelined trailing bytes */
+        memmove(in->data, in->data + req_total, in->len - req_total);
+        in->len -= req_total;
+        if (!keep_alive)
+            return 1;
+    }
+}
+
+static int dyn_aconn_process(dyn_aconn_t *c)
+{
+    return dyn_http_pump(&c->in, &c->out, &c->nreq, c->srv->routes,
+                         c->srv->n_routes);
+}
+
+/* Attempt to flush `c->out`; on full drain either close or resume reading.
+ * Returns 0 if the connection lives, 1 if it was closed/freed. */
+static int dyn_aconn_flush(dyn_evloop_t *lp, dyn_aconn_t *c)
+{
+    while (c->out_off < c->out.len) {
+        ssize_t w = send(c->fd, c->out.data + c->out_off,
+                         c->out.len - c->out_off, 0);
+        if (w > 0) {
+            c->out_off += (size_t)w;
+            continue;
+        }
+        if (w < 0 && errno == EINTR)
+            continue;
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            dyn_evloop_mod(lp, c->fd, DYN_EV_WRITE); /* wait to drain */
+            return 0;
+        }
+        dyn_aconn_close(lp, c); /* peer gone / hard error */
+        return 1;
+    }
+    /* fully sent */
+    c->out.len = 0;
+    c->out_off = 0;
+    if (c->closing) {
+        dyn_aconn_close(lp, c);
+        return 1;
+    }
+    dyn_evloop_mod(lp, c->fd, DYN_EV_READ);
+    return 0;
+}
+
+static void dyn_aconn_cb(dyn_evloop_t *lp, int fd, int events, void *udata)
+{
+    dyn_aconn_t *c = (dyn_aconn_t *)udata;
+    (void)fd;
+
+    if (events & DYN_EV_WRITE) {
+        if (dyn_aconn_flush(lp, c))
+            return;
+    }
+    if (events & DYN_EV_READ) {
+        for (;;) {
+            ssize_t r;
+            if (dyn_bytes_reserve(&c->in, 16384) < 0) {
+                dyn_aconn_close(lp, c);
+                return;
+            }
+            r = recv(fd, c->in.data + c->in.len, c->in.cap - c->in.len, 0);
+            if (r > 0) {
+                c->in.len += (size_t)r;
+                if (c->in.len > DYN_ACONN_MAX_REQ) /* wildly oversized: drop */
+                    { dyn_aconn_close(lp, c); return; }
+                continue;
+            }
+            if (r < 0 && errno == EINTR)
+                continue;
+            if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                break; /* drained the socket buffer */
+            /* r == 0 (peer half/closed its write side) or a hard error: no more
+             * input will arrive. Fall through to process whatever is already
+             * buffered (a client may send a full request then shutdown(SHUT_WR)
+             * while still waiting to read the reply), flush it, then close. */
+            c->closing = 1;
+            break;
+        }
+        if (dyn_aconn_process(c))
+            c->closing = 1;
+        if (c->out.len > c->out_off) {
+            if (dyn_aconn_flush(lp, c))
+                return;
+        } else if (c->closing) {
+            dyn_aconn_close(lp, c);
+            return;
+        }
+    }
+    if (events & DYN_EV_ERROR) {
+        if (c->out_off >= c->out.len)
+            dyn_aconn_close(lp, c);
+    }
+}
+
+static void dyn_alisten_cb(dyn_evloop_t *lp, int fd, int events, void *udata)
+{
+    dyn_http_async_t *s = (dyn_http_async_t *)udata;
+    (void)events;
+    for (;;) {
+        dyn_aconn_t *c;
+        int cfd = accept(fd, NULL, NULL);
+        if (cfd < 0) {
+            if (errno == EINTR)
+                continue;
+            break; /* EAGAIN: no more pending connections */
+        }
+        if (dyn_set_nonblock(cfd) < 0) {
+            close(cfd);
+            continue;
+        }
+        c = (dyn_aconn_t *)calloc(1, sizeof(*c));
+        if (!c) {
+            close(cfd);
+            continue;
+        }
+        c->srv = s;
+        c->fd = cfd;
+        if (dyn_evloop_add(lp, cfd, DYN_EV_READ, dyn_aconn_cb, c) < 0) {
+            close(cfd);
+            dyn_aconn_free(c);
+        }
+    }
+}
+
+#ifdef DYN_HTTP_HAVE_URING
+/* ==================================================================== *
+ *  io_uring completion-model reactor (Linux, CONFIG_IO_URING)           *
+ *                                                                        *
+ *  NOT the poll-mode readiness shim in dynajs-evloop.c. This is the real *
+ *  io_uring recipe: multishot accept + multishot recv fed from a SHARED  *
+ *  provided-buffer ring (idle connections hold zero buffer memory) +     *
+ *  batched send, driven by SINGLE_ISSUER|DEFER_TASKRUN|COOP_TASKRUN so   *
+ *  the whole submit/complete cycle is one syscall. Data is delivered in  *
+ *  completions -- there is no per-fd readiness poll and no recv/accept   *
+ *  syscall per event.                                                    *
+ * ==================================================================== */
+
+#define DYN_URING_ENTRIES 8192
+#define DYN_URING_NBUFS   4096
+#define DYN_URING_BUFSZ   2048
+#define DYN_URING_BGID    1
+#define DYN_URING_ACCEPT_UD 0ULL
+
+enum { DYN_OP_ACCEPT = 0, DYN_OP_RECV = 1, DYN_OP_SEND = 2 };
+#define DYN_UD_TAG(ud)  ((int)((ud) & 7))
+#define DYN_UD_CONN(ud) ((dyn_uconn_t *)(uintptr_t)((ud) & ~(uint64_t)7))
+
+/* One connection in the completion model. `refs` are the outstanding io_uring
+ * ops that carry this pointer as user_data (a live multishot recv + an in-flight
+ * send); the object is freed only once both are gone and it is closing. */
+typedef struct dyn_uconn {
+    int fd;
+    dyn_bytes_t in;   /* accumulated request bytes (copied out of pool buffers) */
+    dyn_bytes_t out;  /* response bytes pending send (immutable while sending) */
+    size_t out_off;
+    int nreq;
+    unsigned recv_armed : 1;
+    unsigned send_inflight : 1;
+    unsigned closing : 1;
+    struct dyn_uconn *next, *prev; /* server's live-connection list */
+} dyn_uconn_t;
+
+typedef struct {
+    struct io_uring ring;
+    struct io_uring_buf_ring *br;
+    unsigned char *buf_base; /* nbufs * bufsz slab backing the provided ring */
+    int nbufs, bufsz;
+    dyn_uconn_t *live;
+} dyn_uring_ctx;
+
+/* Get an SQE, flushing the backlog and retrying once if the SQ ring is full. */
+static struct io_uring_sqe *dyn_ur_sqe(dyn_uring_ctx *u)
+{
+    struct io_uring_sqe *sqe = io_uring_get_sqe(&u->ring);
+    if (!sqe) {
+        io_uring_submit(&u->ring);
+        sqe = io_uring_get_sqe(&u->ring);
+    }
+    return sqe;
+}
+
+static int dyn_ur_arm_accept(dyn_uring_ctx *u, int listen_fd)
+{
+    struct io_uring_sqe *sqe = dyn_ur_sqe(u);
+    if (!sqe)
+        return -1;
+    io_uring_prep_multishot_accept(sqe, listen_fd, NULL, NULL, 0);
+    io_uring_sqe_set_data64(sqe, DYN_URING_ACCEPT_UD);
+    return 0;
+}
+
+static void dyn_ur_arm_recv(dyn_uring_ctx *u, dyn_uconn_t *c)
+{
+    struct io_uring_sqe *sqe = dyn_ur_sqe(u);
+    if (!sqe)
+        return;
+    io_uring_prep_recv_multishot(sqe, c->fd, NULL, 0, 0);
+    sqe->flags |= IOSQE_BUFFER_SELECT;
+    sqe->buf_group = DYN_URING_BGID;
+    io_uring_sqe_set_data64(sqe, (uint64_t)(uintptr_t)c | DYN_OP_RECV);
+    c->recv_armed = 1;
+}
+
+static void dyn_ur_submit_send(dyn_uring_ctx *u, dyn_uconn_t *c)
+{
+    struct io_uring_sqe *sqe = dyn_ur_sqe(u);
+    if (!sqe)
+        return;
+    io_uring_prep_send(sqe, c->fd, c->out.data + c->out_off,
+                       c->out.len - c->out_off, MSG_NOSIGNAL);
+    io_uring_sqe_set_data64(sqe, (uint64_t)(uintptr_t)c | DYN_OP_SEND);
+    c->send_inflight = 1;
+}
+
+static void dyn_ur_recycle(dyn_uring_ctx *u, int bid)
+{
+    io_uring_buf_ring_add(u->br, u->buf_base + (size_t)bid * u->bufsz, u->bufsz,
+                          bid, io_uring_buf_ring_mask(u->nbufs), 0);
+    io_uring_buf_ring_advance(u->br, 1);
+}
+
+static dyn_uconn_t *dyn_uconn_new(dyn_uring_ctx *u, int fd)
+{
+    dyn_uconn_t *c = (dyn_uconn_t *)calloc(1, sizeof(*c));
+    if (!c)
+        return NULL;
+    c->fd = fd;
+    c->next = u->live;
+    if (u->live)
+        u->live->prev = c;
+    u->live = c;
+    return c;
+}
+
+static void dyn_uconn_destroy(dyn_uring_ctx *u, dyn_uconn_t *c)
+{
+    if (c->prev)
+        c->prev->next = c->next;
+    else
+        u->live = c->next;
+    if (c->next)
+        c->next->prev = c->prev;
+    if (c->fd >= 0)
+        close(c->fd);
+    free(c->in.data);
+    free(c->out.data);
+    free(c);
+}
+
+/* Progress a closing connection: once no send is in flight, drop the fd (which
+ * terminates the multishot recv with a final CQE), then free when no op remains
+ * that still references this object. */
+static void dyn_uconn_close_step(dyn_uring_ctx *u, dyn_uconn_t *c)
+{
+    if (!c->closing || c->send_inflight)
+        return;
+    if (c->recv_armed) {
+        if (c->fd >= 0) {
+            close(c->fd);
+            c->fd = -1; /* terminal recv CQE will clear recv_armed */
+        }
+        return;
+    }
+    dyn_uconn_destroy(u, c);
+}
+
+static void dyn_ur_on_accept(dyn_uring_ctx *u, dyn_http_async_t *s,
+                             struct io_uring_cqe *cqe)
+{
+    int res = cqe->res;
+    if (!(cqe->flags & IORING_CQE_F_MORE)) /* multishot accept ended: re-arm */
+        dyn_ur_arm_accept(u, s->listen_fd);
+    if (res < 0)
+        return; /* transient accept error; the re-arm above keeps us listening */
+    {
+        dyn_uconn_t *c = dyn_uconn_new(u, res);
+        if (!c) {
+            close(res);
+            return;
+        }
+        dyn_ur_arm_recv(u, c);
+    }
+}
+
+static void dyn_ur_on_recv(dyn_uring_ctx *u, dyn_http_async_t *s,
+                           dyn_uconn_t *c, struct io_uring_cqe *cqe)
+{
+    int res = cqe->res;
+    int bid = (cqe->flags & IORING_CQE_F_BUFFER)
+                  ? (int)(cqe->flags >> IORING_CQE_BUFFER_SHIFT) : -1;
+
+    if (!(cqe->flags & IORING_CQE_F_MORE))
+        c->recv_armed = 0; /* multishot recv terminated */
+
+    if (res > 0) {
+        int oom = 0;
+        if (bid >= 0) {
+            if (dyn_bytes_append(&c->in,
+                                 (char *)(u->buf_base + (size_t)bid * u->bufsz),
+                                 (size_t)res) < 0)
+                oom = 1;
+            dyn_ur_recycle(u, bid);
+        }
+        if (oom || c->in.len > DYN_ACONN_MAX_REQ) {
+            c->closing = 1;
+        } else if (!c->send_inflight) {
+            /* only touch `out` when no send references it (no realloc-under-send) */
+            if (dyn_http_pump(&c->in, &c->out, &c->nreq, s->routes, s->n_routes))
+                c->closing = 1;
+            if (c->out.len > c->out_off)
+                dyn_ur_submit_send(u, c);
+        }
+        if (!c->closing && !c->recv_armed)
+            dyn_ur_arm_recv(u, c);
+    } else {
+        if (bid >= 0)
+            dyn_ur_recycle(u, bid);
+        if (res == -ENOBUFS) {
+            if (!c->closing && !c->recv_armed) /* pool momentarily drained */
+                dyn_ur_arm_recv(u, c);
+        } else { /* EOF (0) or hard error: flush what we have, then close */
+            if (!c->send_inflight) {
+                dyn_http_pump(&c->in, &c->out, &c->nreq, s->routes, s->n_routes);
+                if (c->out.len > c->out_off)
+                    dyn_ur_submit_send(u, c);
+            }
+            c->closing = 1;
+        }
+    }
+    dyn_uconn_close_step(u, c);
+}
+
+static void dyn_ur_on_send(dyn_uring_ctx *u, dyn_http_async_t *s,
+                           dyn_uconn_t *c, struct io_uring_cqe *cqe)
+{
+    int res = cqe->res;
+    c->send_inflight = 0;
+    if (res > 0) {
+        c->out_off += (size_t)res;
+        if (c->out_off < c->out.len) {
+            dyn_ur_submit_send(u, c); /* short send: ship the remainder */
+        } else {
+            c->out.len = 0;
+            c->out_off = 0;
+            if (!c->closing) {
+                /* response flushed; drain any pipelined requests buffered while
+                 * the send held `out` */
+                if (dyn_http_pump(&c->in, &c->out, &c->nreq, s->routes,
+                                  s->n_routes))
+                    c->closing = 1;
+                if (c->out.len > c->out_off)
+                    dyn_ur_submit_send(u, c);
+                else if (!c->recv_armed && !c->closing)
+                    dyn_ur_arm_recv(u, c);
+            }
+        }
+    } else {
+        c->closing = 1;
+    }
+    dyn_uconn_close_step(u, c);
+}
+
+/* Returns 1 if the io_uring reactor initialised and ran (and cleaned up); 0 if
+ * init failed (caller falls back to the readiness reactor). */
+static int dyn_http_uring_try_run(dyn_http_async_t *s)
+{
+    dyn_uring_ctx *u = (dyn_uring_ctx *)calloc(1, sizeof(*u));
+    struct io_uring_params p;
+    int ret = 0, i;
+
+    if (!u)
+        return 0;
+    u->nbufs = DYN_URING_NBUFS;
+    u->bufsz = DYN_URING_BUFSZ;
+
+    /* Prefer the modern single-issuer/deferred-taskrun setup; degrade on older
+     * kernels that reject the flags. */
+    memset(&p, 0, sizeof(p));
+    p.flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN |
+              IORING_SETUP_COOP_TASKRUN;
+    if (io_uring_queue_init_params(DYN_URING_ENTRIES, &u->ring, &p) < 0) {
+        memset(&p, 0, sizeof(p));
+        p.flags = IORING_SETUP_COOP_TASKRUN;
+        if (io_uring_queue_init_params(DYN_URING_ENTRIES, &u->ring, &p) < 0) {
+            memset(&p, 0, sizeof(p));
+            if (io_uring_queue_init_params(DYN_URING_ENTRIES, &u->ring, &p) < 0) {
+                free(u);
+                return 0;
+            }
+        }
+    }
+
+    u->buf_base = (unsigned char *)malloc((size_t)u->nbufs * u->bufsz);
+    if (!u->buf_base) {
+        io_uring_queue_exit(&u->ring);
+        free(u);
+        return 0;
+    }
+    u->br = io_uring_setup_buf_ring(&u->ring, u->nbufs, DYN_URING_BGID, 0, &ret);
+    if (!u->br) {
+        free(u->buf_base);
+        io_uring_queue_exit(&u->ring);
+        free(u);
+        return 0;
+    }
+    for (i = 0; i < u->nbufs; i++)
+        io_uring_buf_ring_add(u->br, u->buf_base + (size_t)i * u->bufsz, u->bufsz,
+                              i, io_uring_buf_ring_mask(u->nbufs), i);
+    io_uring_buf_ring_advance(u->br, u->nbufs);
+
+    if (dyn_ur_arm_accept(u, s->listen_fd) < 0) {
+        io_uring_free_buf_ring(&u->ring, u->br, u->nbufs, DYN_URING_BGID);
+        free(u->buf_base);
+        io_uring_queue_exit(&u->ring);
+        free(u);
+        return 0;
+    }
+    io_uring_submit(&u->ring);
+
+    s->uring = u;
+    atomic_store_explicit(&s->spawn_ok, 1, memory_order_release);
+
+    while (!atomic_load_explicit(&s->stop_flag, memory_order_relaxed)) {
+        struct __kernel_timespec ts = {.tv_sec = 0, .tv_nsec = 200000000L};
+        struct io_uring_cqe *cqe;
+        unsigned head, count = 0;
+
+        ret = io_uring_submit_and_wait_timeout(&u->ring, &cqe, 1, &ts, NULL);
+        if (ret < 0 && ret != -ETIME && ret != -EINTR && ret != -ETIMEDOUT)
+            break;
+        io_uring_for_each_cqe(&u->ring, head, cqe) {
+            uint64_t ud = io_uring_cqe_get_data64(cqe);
+            count++;
+            if (ud == DYN_URING_ACCEPT_UD) {
+                dyn_ur_on_accept(u, s, cqe);
+            } else {
+                dyn_uconn_t *c = DYN_UD_CONN(ud);
+                if (DYN_UD_TAG(ud) == DYN_OP_RECV)
+                    dyn_ur_on_recv(u, s, c, cqe);
+                else if (DYN_UD_TAG(ud) == DYN_OP_SEND)
+                    dyn_ur_on_send(u, s, c, cqe);
+            }
+        }
+        io_uring_cq_advance(&u->ring, count);
+    }
+
+    while (u->live)
+        dyn_uconn_destroy(u, u->live);
+    io_uring_free_buf_ring(&u->ring, u->br, u->nbufs, DYN_URING_BGID);
+    free(u->buf_base);
+    io_uring_queue_exit(&u->ring);
+    free(u);
+    s->uring = NULL;
+    return 1;
+}
+#endif /* DYN_HTTP_HAVE_URING */
+
+static void *dyn_http_async_reactor(void *arg)
+{
+    dyn_http_async_t *s = (dyn_http_async_t *)arg;
+
+#ifdef DYN_HTTP_HAVE_URING
+    if (dyn_http_uring_try_run(s))
+        return NULL; /* the io_uring reactor ran to shutdown and cleaned up */
+    /* io_uring init failed on this kernel: fall back to the readiness reactor */
+#endif
+
+    s->loop = dyn_evloop_new();
+    if (!s->loop ||
+        dyn_evloop_add(s->loop, s->listen_fd, DYN_EV_READ, dyn_alisten_cb, s) < 0) {
+        atomic_store_explicit(&s->spawn_ok, -1, memory_order_release);
+        return NULL;
+    }
+    atomic_store_explicit(&s->spawn_ok, 1, memory_order_release);
+
+    while (!atomic_load_explicit(&s->stop_flag, memory_order_relaxed)) {
+        if (dyn_evloop_poll(s->loop, 200) < 0) /* tick to observe stop_flag */
+            break;
+    }
+    return NULL;
+}
+
+static void dyn_http_async_stop_internal(dyn_http_async_t *s)
+{
+    if (!s->started)
+        return;
+    atomic_store_explicit(&s->stop_flag, 1, memory_order_relaxed);
+    pthread_join(s->reactor, NULL);
+    if (s->loop) {
+        dyn_evloop_free(s->loop); /* reactor is joined: sole owner now */
+        s->loop = NULL;
+    }
+    s->started = 0;
+}
+
+static void dyn_http_async_dispose(void *native)
+{
+    dyn_http_async_t *s = (dyn_http_async_t *)native;
+    size_t i;
+
+    dyn_http_async_stop_internal(s);
+    if (s->listen_fd >= 0)
+        close(s->listen_fd);
+    if (s->routes) {
+        for (i = 0; i < s->n_routes; i++) {
+            free(s->routes[i].path);
+            free(s->routes[i].content_type);
+            free(s->routes[i].body);
+        }
+        free(s->routes);
+    }
+    free(s);
+}
+
+static JSValue dyn_http_async_ctor(JSContext *ctx, JSValueConst new_target,
+                                   int argc, JSValueConst *argv)
+{
+    dyn_http_async_t *s;
+    JSValue opts, routes_val = JS_UNDEFINED;
+    const char *host_c = NULL;
+    char *host_dup = NULL;
+    int32_t port = 0, backlog = 0;
+    JSPropertyEnum *tab = NULL;
+    uint32_t n_routes = 0, i;
+    int listen_fd = -1;
+    uint16_t bound_port;
+
+    (void)new_target;
+    opts = (argc > 0) ? argv[0] : JS_UNDEFINED;
+
+    if (JS_IsObject(opts)) {
+        JSValue v;
+        v = JS_GetPropertyStr(ctx, opts, "port");
+        if (!JS_IsUndefined(v) && !JS_IsNull(v) && JS_ToInt32(ctx, &port, v)) {
+            JS_FreeValue(ctx, v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, v);
+        v = JS_GetPropertyStr(ctx, opts, "backlog");
+        if (!JS_IsUndefined(v) && !JS_IsNull(v) &&
+            JS_ToInt32(ctx, &backlog, v)) {
+            JS_FreeValue(ctx, v);
+            return JS_EXCEPTION;
+        }
+        JS_FreeValue(ctx, v);
+        v = JS_GetPropertyStr(ctx, opts, "host");
+        if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+            host_c = JS_ToCString(ctx, v);
+            if (!host_c) {
+                JS_FreeValue(ctx, v);
+                return JS_EXCEPTION;
+            }
+            host_dup = strdup(host_c);
+            JS_FreeCString(ctx, host_c);
+        }
+        JS_FreeValue(ctx, v);
+        routes_val = JS_GetPropertyStr(ctx, opts, "routes");
+        if (JS_IsException(routes_val)) {
+            free(host_dup);
+            return JS_EXCEPTION;
+        }
+    }
+
+    if (port < 0 || port > 65535) {
+        free(host_dup);
+        JS_FreeValue(ctx, routes_val);
+        return JS_ThrowRangeError(ctx, "port must be in [0, 65535]");
+    }
+    if (backlog <= 0)
+        backlog = SOMAXCONN;
+
+    s = (dyn_http_async_t *)calloc(1, sizeof(*s));
+    if (!s) {
+        free(host_dup);
+        JS_FreeValue(ctx, routes_val);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    s->listen_fd = -1;
+    s->backlog = backlog;
+    atomic_init(&s->stop_flag, 0);
+    atomic_init(&s->spawn_ok, 0);
+
+    if (JS_IsObject(routes_val)) {
+        if (JS_GetOwnPropertyNames(ctx, &tab, &n_routes, routes_val,
+                                   JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) < 0)
+            goto fail_pending;
+        if (n_routes > 0) {
+            s->routes = (dyn_route_t *)calloc(n_routes, sizeof(dyn_route_t));
+            if (!s->routes)
+                goto oom_enum;
+        }
+        for (i = 0; i < n_routes; i++) {
+            const char *path = JS_AtomToCString(ctx, tab[i].atom);
+            JSValue rv;
+            if (!path)
+                goto fail_enum;
+            rv = JS_GetProperty(ctx, routes_val, tab[i].atom);
+            if (JS_IsException(rv)) {
+                JS_FreeCString(ctx, path);
+                goto fail_enum;
+            }
+            if (dyn_route_copy(ctx, path, rv, &s->routes[s->n_routes]) < 0) {
+                JS_FreeCString(ctx, path);
+                JS_FreeValue(ctx, rv);
+                goto fail_enum;
+            }
+            s->n_routes++;
+            JS_FreeCString(ctx, path);
+            JS_FreeValue(ctx, rv);
+        }
+        JS_FreePropertyEnum(ctx, tab, n_routes);
+        tab = NULL;
+    }
+    JS_FreeValue(ctx, routes_val);
+    routes_val = JS_UNDEFINED;
+
+    bound_port = (uint16_t)port;
+    listen_fd = dyn_http_bind(host_dup, &bound_port, backlog);
+    free(host_dup);
+    host_dup = NULL;
+    if (listen_fd < 0) {
+        dyn_http_async_dispose(s);
+        return dyn_http_throw(ctx, DYN_HTTP_ERR_CONNECT, "bind", NULL);
+    }
+    if (dyn_set_nonblock(listen_fd) < 0) {
+        close(listen_fd);
+        dyn_http_async_dispose(s);
+        return dyn_http_throw(ctx, DYN_HTTP_ERR_CONNECT, "bind", NULL);
+    }
+    s->listen_fd = listen_fd;
+    s->port = bound_port;
+
+    return dyn_res_wrap(ctx, dyn_http_async_class_id, s,
+                        dyn_http_async_dispose);
+
+ oom_enum:
+    JS_FreePropertyEnum(ctx, tab, n_routes);
+    tab = NULL;
+    free(host_dup);
+    JS_FreeValue(ctx, routes_val);
+    dyn_http_async_dispose(s);
+    return JS_ThrowOutOfMemory(ctx);
+
+ fail_enum:
+    JS_FreePropertyEnum(ctx, tab, n_routes);
+    tab = NULL;
+ fail_pending:
+    free(host_dup);
+    JS_FreeValue(ctx, routes_val);
+    dyn_http_async_dispose(s);
+    return JS_EXCEPTION;
+}
+
+static JSValue dyn_http_async_start(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    dyn_http_async_t *s = (dyn_http_async_t *)dyn_res_native(
+        ctx, this_val, dyn_http_async_class_id);
+    (void)argc; (void)argv;
+    if (!s)
+        return JS_EXCEPTION;
+    if (s->started)
+        return JS_UNDEFINED;
+    atomic_store_explicit(&s->stop_flag, 0, memory_order_relaxed);
+    atomic_store_explicit(&s->spawn_ok, 0, memory_order_relaxed);
+    if (pthread_create(&s->reactor, NULL, dyn_http_async_reactor, s) != 0)
+        return JS_ThrowInternalError(ctx, "failed to start reactor thread");
+    /* wait for the reactor to publish loop-init success/failure */
+    for (;;) {
+        int ok = atomic_load_explicit(&s->spawn_ok, memory_order_acquire);
+        if (ok != 0) {
+            if (ok < 0) {
+                pthread_join(s->reactor, NULL);
+                return JS_ThrowInternalError(ctx, "reactor failed to init loop");
+            }
+            break;
+        }
+        sched_yield();
+    }
+    s->started = 1;
+    return JS_UNDEFINED;
+}
+
+static JSValue dyn_http_async_stop(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    dyn_http_async_t *s = (dyn_http_async_t *)dyn_res_native(
+        ctx, this_val, dyn_http_async_class_id);
+    (void)argc; (void)argv;
+    if (!s)
+        return JS_EXCEPTION;
+    dyn_http_async_stop_internal(s);
+    return JS_UNDEFINED;
+}
+
+static JSValue dyn_http_async_get_port(JSContext *ctx, JSValueConst this_val)
+{
+    dyn_http_async_t *s = (dyn_http_async_t *)dyn_res_native(
+        ctx, this_val, dyn_http_async_class_id);
+    if (!s)
+        return JS_EXCEPTION;
+    return JS_NewInt32(ctx, s->port);
+}
+
+static const JSCFunctionListEntry dyn_http_async_proto[] = {
+    JS_CFUNC_DEF("start", 0, dyn_http_async_start),
+    JS_CFUNC_DEF("stop", 0, dyn_http_async_stop),
+    JS_CGETSET_DEF("port", dyn_http_async_get_port, NULL),
+};
+
+static const JSClassDef dyn_http_async_class = {
+    "HttpServerAsync",
+    .finalizer = dyn_res_finalizer,
+};
+
+/* ==================================================================== *
  *  module registration                                                  *
  * ==================================================================== */
 
@@ -1682,6 +2560,11 @@ static int dyn_http_init_module(JSContext *ctx, JSModuleDef *m)
                            countof(dyn_http_server_proto),
                            dyn_http_server_ctor, "HttpServer") < 0)
         return -1;
+    if (dyn_register_class(ctx, m, &dyn_http_async_class_id,
+                           &dyn_http_async_class, dyn_http_async_proto,
+                           countof(dyn_http_async_proto),
+                           dyn_http_async_ctor, "HttpServerAsync") < 0)
+        return -1;
     return 0;
 }
 
@@ -1692,6 +2575,7 @@ int js_nat_init_http(JSContext *ctx)
         return -1;
     JS_AddModuleExport(ctx, m, "HttpClient");
     JS_AddModuleExport(ctx, m, "HttpServer");
+    JS_AddModuleExport(ctx, m, "HttpServerAsync");
     return 0;
 }
 

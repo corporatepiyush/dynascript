@@ -1,0 +1,32 @@
+# Build the scl:http async reactor with BOTH backends on the same Linux kernel
+# and compare them: epoll (default on Linux) vs io_uring (CONFIG_IO_URING=y,
+# liburing). io_uring is Linux-only and cannot be built/run on the macOS dev
+# host, so this image is how the backend is exercised.
+#
+#   docker build -f docker/Dockerfile.uring -t dynascript:uring .
+#   # io_uring syscalls are blocked by Docker's default seccomp profile, so the
+#   # RUN-time test needs an unconfined profile:
+#   docker run --rm --security-opt seccomp=unconfined dynascript:uring
+FROM debian:trixie-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      clang lld make libc6-dev liburing-dev apache2-utils procps ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+# epoll variant (baseline Linux backend)
+RUN make clean || true \
+ && make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y -j"$(nproc)" dynajs \
+ && cp dynajs /usr/local/bin/dynajs-epoll
+
+# io_uring variant
+RUN make clean || true \
+ && make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y CONFIG_IO_URING=y -j"$(nproc)" dynajs \
+ && cp dynajs /usr/local/bin/dynajs-uring
+
+COPY docker/uring-bench.sh /usr/local/bin/uring-bench.sh
+RUN chmod +x /usr/local/bin/uring-bench.sh
+CMD ["/usr/local/bin/uring-bench.sh"]
