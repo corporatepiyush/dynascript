@@ -561,7 +561,7 @@ try {
 }
 
 // Cluster 2-D points into k groups.
-const km = new KMeans({ k: 2 });
+const km = new KMeans(2);
 try {
   km.fit([[0, 0], [0.1, 0], [10, 10], [10.1, 10]]);
   print(km.predict([[0.05, 0], [10, 10]]));  // [clusterA, clusterB]

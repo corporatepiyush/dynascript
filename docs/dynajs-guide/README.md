@@ -54,6 +54,7 @@ extracted from the source and the test suites, not invented.
 6. [For AI Agents](06-for-ai-agents.md) — a precise, machine-oriented reference and working rules.
 7. [Roadmap & Philosophy](07-roadmap-and-philosophy.md) — no Node compatibility, the top-50-npm
    standard-library plan, and the curation bar every module must clear.
+- [**API Reference**](API.md) — every module, every function: complete signatures + behavior.
 
 ---
 

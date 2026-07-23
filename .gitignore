@@ -32,9 +32,11 @@ libwinpthread*.dll
 
 # local analysis / planning docs (not for commit)
 *.md
-# ...but DO commit the user-facing guide under docs/ (overrides the *.md ignore above)
+# ...but DO commit the user-facing guide under docs/ and the root README
+# (overrides the *.md ignore above)
 !docs/
 !docs/**
+!/README.md
 bench/
 
 # local tooling (agent worktrees, settings)
