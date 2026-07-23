@@ -43,7 +43,73 @@
 #define DYN_KMEANS_MAX_ITER 300     /* Lloyd iterations cap */
 #define DYN_RIDGE           1e-9    /* diagonal load for OLS conditioning */
 
-/* ---------- JS <-> C marshalling (all copies; nothing native escapes) ------- */
+/* ---------- JS <-> C marshalling -------------------------------------------
+ *
+ * Two ingest paths for the training matrix X and vector y:
+ *
+ *   1. Array (of Array | of Float64Array):  each row is COPIED into a fresh,
+ *      contiguous row-major double buffer (owned = free after use). A
+ *      Float64Array row is bulk-memcpy'd from its backing buffer; a plain Array
+ *      row is read cell-by-cell. Nothing native escapes.
+ *
+ *   2. Flat Float64Array + explicit (rows, cols):  the backing double buffer is
+ *      aliased ZERO-COPY (owned = 0, never freed here) -- no per-cell JS crossing
+ *      at all. Valid only for the synchronous span in which no JS runs, so the
+ *      alias is taken as the LAST JS-touching step and the math runs with no JS
+ *      call before the buffer is done being read (see the fit/predict methods).
+ *
+ * y is ALWAYS copied into an owned buffer (from a Float64Array it is a memcpy),
+ * so it never leaves a dangling alias while a later arg's JS reads run. Reentrancy
+ * rule still holds: all arg coercion precedes resolving the native handle.
+ *
+ * Detection: a Float64Array is any typed array with an 8-byte element (bpe == 8);
+ * a BigInt64Array/BigUint64Array shares that width and would be misread (still
+ * memory-safe, bounded by the buffer) -- callers must pass a Float64Array. This
+ * mirrors dynajs-simd.c, which treats any 4-byte typed array as Float32Array. */
+
+typedef struct {
+    double *data;   /* rows*cols row-major doubles */
+    size_t rows, cols;
+    int owned;      /* 1: malloc'd (free); 0: aliases a JS ArrayBuffer */
+} dyn_matrix_t;
+
+static void dyn_matrix_free(dyn_matrix_t *mx)
+{
+    if (mx->owned)
+        free(mx->data);
+    mx->data = NULL;
+}
+
+/* Resolve a Float64Array to its backing double* and element count. Returns 0, or
+ * -1 (throwing) for a non-typed-array, a non-8-byte element type, a detached
+ * buffer, or an out-of-bounds view. The pointer aliases the JS buffer and is
+ * valid only while no JS runs. */
+static int dyn_ml_get_f64(JSContext *ctx, JSValueConst v, double **pp, size_t *pn)
+{
+    JSValue buf;
+    uint8_t *base;
+    size_t off, len, bpe, ab;
+
+    buf = JS_GetTypedArrayBuffer(ctx, v, &off, &len, &bpe);
+    if (JS_IsException(buf))
+        return -1;
+    if (bpe != 8) {
+        JS_FreeValue(ctx, buf);
+        JS_ThrowTypeError(ctx, "expected a Float64Array");
+        return -1;
+    }
+    base = JS_GetArrayBuffer(ctx, &ab, buf);
+    JS_FreeValue(ctx, buf);
+    if (!base) /* detached */
+        return -1;
+    if (off > ab || len > ab - off) {
+        JS_ThrowRangeError(ctx, "typed array out of bounds");
+        return -1;
+    }
+    *pp = (double *)(base + off);
+    *pn = len / 8;
+    return 0;
+}
 
 /* Length of a JS array into *out_len, or -1 (throws TypeError) if not an array. */
 static int dyn_ml_len(JSContext *ctx, JSValueConst v, size_t *out_len)
@@ -87,11 +153,53 @@ static int dyn_ml_read_row(JSContext *ctx, JSValueConst arr, double *out,
     return 0;
 }
 
-/* Copy JS matrix X (Array of Array of number) into a fresh row-major malloc'd
- * buffer (tightly packed). Sets *pdata (caller frees), *prows, *pcols. On error
- * frees nothing it did not allocate and returns -1 (having thrown). */
-static int dyn_ml_read_matrix(JSContext *ctx, JSValueConst x, double **pdata,
-                              size_t *prows, size_t *pcols)
+/* Element count of one X row (a plain Array or a Float64Array) into *out, or -1
+ * (throwing). A Float64Array is not a JS Array, so JS_IsArray disambiguates. */
+static int dyn_ml_row_len(JSContext *ctx, JSValueConst row, size_t *out)
+{
+    if (JS_IsArray(ctx, row))
+        return dyn_ml_len(ctx, row, out);
+    {
+        double *rp;
+        return dyn_ml_get_f64(ctx, row, &rp, out);
+    }
+}
+
+/* Copy `cols` numbers of one X row into dst. A Float64Array row is a bulk memcpy
+ * from its backing buffer (used and released with no JS in between); a plain
+ * Array row is read cell-by-cell. Returns 0, or -1 (throwing). */
+static int dyn_ml_read_row_generic(JSContext *ctx, JSValueConst row, double *dst,
+                                    size_t cols)
+{
+    if (JS_IsArray(ctx, row)) {
+        size_t rlen;
+        if (dyn_ml_len(ctx, row, &rlen))
+            return -1;
+        if (rlen != cols) {
+            JS_ThrowTypeError(ctx,
+                "every row of X must have the same length");
+            return -1;
+        }
+        return dyn_ml_read_row(ctx, row, dst, cols);
+    }
+    {
+        double *rp;
+        size_t rn;
+        if (dyn_ml_get_f64(ctx, row, &rp, &rn))
+            return -1;
+        if (rn != cols) {
+            JS_ThrowTypeError(ctx, "every row of X must have the same length");
+            return -1;
+        }
+        memcpy(dst, rp, cols * sizeof(double));
+        return 0;
+    }
+}
+
+/* Ingest an Array-of-(Array|Float64Array) X into a fresh owned row-major buffer.
+ * Sets mx->{data,rows,cols}, owned=1. -1 (throwing) on error. */
+static int dyn_ml_ingest_matrix_array(JSContext *ctx, JSValueConst x,
+                                      dyn_matrix_t *mx)
 {
     size_t rows, cols, count, i;
     double *data;
@@ -107,7 +215,7 @@ static int dyn_ml_read_matrix(JSContext *ctx, JSValueConst x, double **pdata,
     row0 = JS_GetPropertyUint32(ctx, x, 0);
     if (JS_IsException(row0))
         return -1;
-    err = dyn_ml_len(ctx, row0, &cols);
+    err = dyn_ml_row_len(ctx, row0, &cols);
     JS_FreeValue(ctx, row0);
     if (err)
         return -1;
@@ -126,61 +234,166 @@ static int dyn_ml_read_matrix(JSContext *ctx, JSValueConst x, double **pdata,
         return -1;
     }
     for (i = 0; i < rows; i++) {
-        size_t rlen;
         JSValue row = JS_GetPropertyUint32(ctx, x, (uint32_t)i);
         if (JS_IsException(row)) {
             free(data);
             return -1;
         }
-        if (dyn_ml_len(ctx, row, &rlen)) {
-            JS_FreeValue(ctx, row);
-            free(data);
-            return -1;
-        }
-        if (rlen != cols) {
-            JS_FreeValue(ctx, row);
-            free(data);
-            JS_ThrowTypeError(ctx, "every row of X must have the same length");
-            return -1;
-        }
-        err = dyn_ml_read_row(ctx, row, data + i * cols, cols);
+        err = dyn_ml_read_row_generic(ctx, row, data + i * cols, cols);
         JS_FreeValue(ctx, row);
         if (err) {
             free(data);
             return -1;
         }
     }
-    *pdata = data;
-    *prows = rows;
-    *pcols = cols;
+    mx->data = data;
+    mx->rows = rows;
+    mx->cols = cols;
+    mx->owned = 1;
     return 0;
 }
 
-/* Copy JS vector y (Array of number) of exactly `expect` entries into a fresh
- * malloc'd buffer. Sets *pout (caller frees). -1 throws. */
-static int dyn_ml_read_vector(JSContext *ctx, JSValueConst y, size_t expect,
-                              double **pout)
+/* Ingest a flat Float64Array X as a ZERO-COPY alias with explicit (rows, cols).
+ * Sets mx->{data,rows,cols}, owned=0. The alias must be the last JS-touching
+ * step before the math (no JS may run while it is held). -1 (throwing) on error. */
+static int dyn_ml_ingest_matrix_flat(JSContext *ctx, JSValueConst x,
+                                     size_t rows, size_t cols, dyn_matrix_t *mx)
+{
+    double *data;
+    size_t total;
+
+    if (rows == 0 || cols == 0) {
+        JS_ThrowTypeError(ctx,
+            "a flat Float64Array X requires positive (rows, cols)");
+        return -1;
+    }
+    if (rows > SIZE_MAX / cols) {
+        JS_ThrowRangeError(ctx, "X is too large");
+        return -1;
+    }
+    if (dyn_ml_get_f64(ctx, x, &data, &total)) /* throws if not Float64Array */
+        return -1;
+    if (total != rows * cols) {
+        JS_ThrowTypeError(ctx,
+            "flat Float64Array length must equal rows*cols");
+        return -1;
+    }
+    mx->data = data;
+    mx->rows = rows;
+    mx->cols = cols;
+    mx->owned = 0;
+    return 0;
+}
+
+/* Ingest y (an Array or a Float64Array) of exactly `expect` entries into a fresh
+ * OWNED buffer (from a Float64Array: a memcpy). Sets *pout (caller frees). y is
+ * never aliased, so no dangling view survives a later arg's JS reads. -1 throws. */
+static int dyn_ml_ingest_vector(JSContext *ctx, JSValueConst y, size_t expect,
+                                double **pout)
 {
     size_t n;
     double *out;
 
-    if (dyn_ml_len(ctx, y, &n))
-        return -1;
-    if (n != expect) {
-        JS_ThrowTypeError(ctx, "y length must equal the number of rows in X");
-        return -1;
-    }
-    out = (double *)malloc((n ? n : 1) * sizeof(double));
-    if (!out) {
-        JS_ThrowOutOfMemory(ctx);
-        return -1;
-    }
-    if (dyn_ml_read_row(ctx, y, out, n)) {
-        free(out);
-        return -1;
+    if (JS_IsArray(ctx, y)) {
+        if (dyn_ml_len(ctx, y, &n))
+            return -1;
+        if (n != expect) {
+            JS_ThrowTypeError(ctx,
+                "y length must equal the number of rows in X");
+            return -1;
+        }
+        out = (double *)malloc((n ? n : 1) * sizeof(double));
+        if (!out) {
+            JS_ThrowOutOfMemory(ctx);
+            return -1;
+        }
+        if (dyn_ml_read_row(ctx, y, out, n)) {
+            free(out);
+            return -1;
+        }
+    } else {
+        double *src;
+        if (dyn_ml_get_f64(ctx, y, &src, &n)) /* throws if not Float64Array */
+            return -1;
+        if (n != expect) {
+            JS_ThrowTypeError(ctx,
+                "y length must equal the number of rows in X");
+            return -1;
+        }
+        out = (double *)malloc((n ? n : 1) * sizeof(double));
+        if (!out) {
+            JS_ThrowOutOfMemory(ctx);
+            return -1;
+        }
+        memcpy(out, src, n * sizeof(double));
     }
     *pout = out;
     return 0;
+}
+
+/* Ingest X for a method that also takes a y vector (fit). Handles arg ordering so
+ * that any zero-copy alias is taken AFTER every JS-running coercion:
+ *   - Array X: read X (owned copy) FIRST, then y with expect = X.rows.
+ *   - flat Float64Array X: coerce (rows, cols) and read y FIRST, then alias X.
+ * `argv` are the method args; rc/cc are the indices of the rows/cols args used
+ * only for the flat form. Sets *mx (caller dyn_matrix_free) and *py (caller
+ * free). -1 (throwing) on error. */
+static int dyn_ml_ingest_Xy(JSContext *ctx, JSValueConst xv, JSValueConst yv,
+                            JSValueConst rows_arg, JSValueConst cols_arg,
+                            dyn_matrix_t *mx, double **py)
+{
+    if (JS_IsArray(ctx, xv)) {
+        if (dyn_ml_ingest_matrix_array(ctx, xv, mx))
+            return -1;
+        if (dyn_ml_ingest_vector(ctx, yv, mx->rows, py)) {
+            dyn_matrix_free(mx);
+            return -1;
+        }
+        return 0;
+    } else {
+        int64_t rows64, cols64;
+        if (JS_ToInt64(ctx, &rows64, rows_arg) ||
+            JS_ToInt64(ctx, &cols64, cols_arg))
+            return -1;
+        if (rows64 <= 0 || cols64 <= 0) {
+            JS_ThrowTypeError(ctx,
+                "flat Float64Array X requires positive (rows, cols) args");
+            return -1;
+        }
+        if (dyn_ml_ingest_vector(ctx, yv, (size_t)rows64, py))
+            return -1;
+        if (dyn_ml_ingest_matrix_flat(ctx, xv, (size_t)rows64,
+                                      (size_t)cols64, mx)) {
+            free(*py);
+            *py = NULL;
+            return -1;
+        }
+        return 0;
+    }
+}
+
+/* Ingest X for a method with no y (predict / kmeans.fit). For a flat
+ * Float64Array, (rows, cols) come from rows_arg/cols_arg. Sets *mx (caller
+ * dyn_matrix_free). -1 (throwing) on error. */
+static int dyn_ml_ingest_X(JSContext *ctx, JSValueConst xv,
+                           JSValueConst rows_arg, JSValueConst cols_arg,
+                           dyn_matrix_t *mx)
+{
+    if (JS_IsArray(ctx, xv))
+        return dyn_ml_ingest_matrix_array(ctx, xv, mx);
+    {
+        int64_t rows64, cols64;
+        if (JS_ToInt64(ctx, &rows64, rows_arg) ||
+            JS_ToInt64(ctx, &cols64, cols_arg))
+            return -1;
+        if (rows64 <= 0 || cols64 <= 0) {
+            JS_ThrowTypeError(ctx,
+                "flat Float64Array X requires positive (rows, cols) args");
+            return -1;
+        }
+        return dyn_ml_ingest_matrix_flat(ctx, xv, (size_t)rows64,
+                                         (size_t)cols64, mx);
+    }
 }
 
 /* Fresh JS Array copied from a native double buffer. */
@@ -356,28 +569,30 @@ static JSValue dyn_linreg_fit(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv)
 {
     dyn_linreg_t *m;
-    double *X = NULL, *y = NULL;
-    size_t rows, cols;
+    dyn_matrix_t mx = {0};
+    double *y = NULL;
+    JSValueConst rows_arg, cols_arg;
 
     if (argc < 2)
         return JS_ThrowTypeError(ctx, "fit(X, y) requires two arguments");
-    /* Coerce ALL arrays to C buffers BEFORE resolving the handle. */
-    if (dyn_ml_read_matrix(ctx, argv[0], &X, &rows, &cols))
+    /* For a flat Float64Array X, fit(X, y, rows, cols). Guard the optional
+     * shape args by argc (argv is only padded up to the declared .length). */
+    rows_arg = argc > 2 ? argv[2] : JS_UNDEFINED;
+    cols_arg = argc > 3 ? argv[3] : JS_UNDEFINED;
+    /* Coerce ALL args to C buffers BEFORE resolving the handle (any zero-copy
+     * alias is taken last, with no JS between it and the math below). */
+    if (dyn_ml_ingest_Xy(ctx, argv[0], argv[1], rows_arg, cols_arg, &mx, &y))
         return JS_EXCEPTION;
-    if (dyn_ml_read_vector(ctx, argv[1], rows, &y)) {
-        free(X);
-        return JS_EXCEPTION;
-    }
     m = (dyn_linreg_t *)dyn_res_native(ctx, this_val, dyn_linreg_class_id);
     if (!m) {
-        free(X); free(y);
+        dyn_matrix_free(&mx); free(y);
         return JS_EXCEPTION;
     }
-    if (dyn_linreg_solve(ctx, m, X, y, rows, cols)) {
-        free(X); free(y);
+    if (dyn_linreg_solve(ctx, m, mx.data, y, mx.rows, mx.cols)) {
+        dyn_matrix_free(&mx); free(y);
         return JS_EXCEPTION;
     }
-    free(X);
+    dyn_matrix_free(&mx);
     free(y);
     return JS_DupValue(ctx, this_val);
 }
@@ -386,42 +601,45 @@ static JSValue dyn_linreg_predict(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
     dyn_linreg_t *m;
-    double *X = NULL, *yout = NULL;
-    size_t rows, cols, i, j;
+    dyn_matrix_t mx = {0};
+    double *yout = NULL;
+    size_t i, j;
     JSValue result;
+    JSValueConst rows_arg, cols_arg;
 
-    (void)argc;
-    if (dyn_ml_read_matrix(ctx, argv[0], &X, &rows, &cols))
+    rows_arg = argc > 1 ? argv[1] : JS_UNDEFINED;
+    cols_arg = argc > 2 ? argv[2] : JS_UNDEFINED;
+    if (dyn_ml_ingest_X(ctx, argv[0], rows_arg, cols_arg, &mx))
         return JS_EXCEPTION;
     m = (dyn_linreg_t *)dyn_res_native(ctx, this_val, dyn_linreg_class_id);
     if (!m) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_EXCEPTION;
     }
     if (!m->fitted) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_ThrowInternalError(ctx, "predict before fit");
     }
-    if (cols != m->n_features) {
-        free(X);
+    if (mx.cols != m->n_features) {
+        dyn_matrix_free(&mx);
         return JS_ThrowTypeError(ctx,
             "X has %u features, model expects %u",
-            (unsigned)cols, (unsigned)m->n_features);
+            (unsigned)mx.cols, (unsigned)m->n_features);
     }
-    yout = (double *)malloc(rows * sizeof(double));
+    yout = (double *)malloc(mx.rows * sizeof(double));
     if (!yout) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_ThrowOutOfMemory(ctx);
     }
-    for (i = 0; i < rows; i++) {
+    for (i = 0; i < mx.rows; i++) {
         double acc = m->intercept;
-        const double *xi = X + i * cols;
-        for (j = 0; j < cols; j++)
+        const double *xi = mx.data + i * mx.cols;
+        for (j = 0; j < mx.cols; j++)
             acc += m->coef[j] * xi[j];
         yout[i] = acc;
     }
-    result = dyn_ml_doubles_to_js(ctx, yout, rows); /* copy out before free */
-    free(X);
+    dyn_matrix_free(&mx); /* done reading X (incl. any alias) before any JS */
+    result = dyn_ml_doubles_to_js(ctx, yout, mx.rows);
     free(yout);
     return result;
 }
@@ -528,72 +746,77 @@ static JSValue dyn_logreg_fit(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv)
 {
     dyn_logreg_t *m;
-    double *X = NULL, *y = NULL;
-    size_t rows, cols;
+    dyn_matrix_t mx = {0};
+    double *y = NULL;
+    JSValueConst rows_arg, cols_arg;
 
     if (argc < 2)
         return JS_ThrowTypeError(ctx, "fit(X, y) requires two arguments");
-    if (dyn_ml_read_matrix(ctx, argv[0], &X, &rows, &cols))
+    rows_arg = argc > 2 ? argv[2] : JS_UNDEFINED;
+    cols_arg = argc > 3 ? argv[3] : JS_UNDEFINED;
+    if (dyn_ml_ingest_Xy(ctx, argv[0], argv[1], rows_arg, cols_arg, &mx, &y))
         return JS_EXCEPTION;
-    if (dyn_ml_read_vector(ctx, argv[1], rows, &y)) {
-        free(X);
-        return JS_EXCEPTION;
-    }
     m = (dyn_logreg_t *)dyn_res_native(ctx, this_val, dyn_logreg_class_id);
     if (!m) {
-        free(X); free(y);
+        dyn_matrix_free(&mx); free(y);
         return JS_EXCEPTION;
     }
-    if (dyn_logreg_train(ctx, m, X, y, rows, cols)) {
-        free(X); free(y);
+    if (dyn_logreg_train(ctx, m, mx.data, y, mx.rows, mx.cols)) {
+        dyn_matrix_free(&mx); free(y);
         return JS_EXCEPTION;
     }
-    free(X);
+    dyn_matrix_free(&mx);
     free(y);
     return JS_DupValue(ctx, this_val);
 }
 
-/* Shared body: predict class labels (proba=0) or probabilities (proba=1). */
+/* Shared body: predict class labels (proba=0) or probabilities (proba=1).
+ * For a flat Float64Array X, predict(X, rows, cols). */
 static JSValue dyn_logreg_predict_impl(JSContext *ctx, JSValueConst this_val,
-                                       JSValueConst x, int proba)
+                                       int argc, JSValueConst *argv, int proba)
 {
     dyn_logreg_t *m;
-    double *X = NULL, *yout = NULL;
-    size_t rows, cols, i, j;
+    dyn_matrix_t mx = {0};
+    double *yout = NULL;
+    size_t rows, i, j;
     JSValue result;
+    JSValueConst rows_arg, cols_arg;
 
-    if (dyn_ml_read_matrix(ctx, x, &X, &rows, &cols))
+    rows_arg = argc > 1 ? argv[1] : JS_UNDEFINED;
+    cols_arg = argc > 2 ? argv[2] : JS_UNDEFINED;
+    if (dyn_ml_ingest_X(ctx, argv[0], rows_arg, cols_arg, &mx))
         return JS_EXCEPTION;
     m = (dyn_logreg_t *)dyn_res_native(ctx, this_val, dyn_logreg_class_id);
     if (!m) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_EXCEPTION;
     }
     if (!m->fitted) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_ThrowInternalError(ctx, "predict before fit");
     }
-    if (cols != m->n_features) {
-        free(X);
+    if (mx.cols != m->n_features) {
+        dyn_matrix_free(&mx);
         return JS_ThrowTypeError(ctx,
             "X has %u features, model expects %u",
-            (unsigned)cols, (unsigned)m->n_features);
+            (unsigned)mx.cols, (unsigned)m->n_features);
     }
+    rows = mx.rows;
     yout = (double *)malloc(rows * sizeof(double));
     if (!yout) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_ThrowOutOfMemory(ctx);
     }
     for (i = 0; i < rows; i++) {
         double z = m->intercept;
-        const double *xi = X + i * cols;
-        for (j = 0; j < cols; j++)
+        const double *xi = mx.data + i * mx.cols;
+        for (j = 0; j < mx.cols; j++)
             z += m->coef[j] * xi[j];
         /* sigmoid(z) > 0.5 <=> z > 0, so labels avoid a redundant exp(). */
         yout[i] = proba ? dyn_sigmoid(z) : (z > 0.0 ? 1.0 : 0.0);
     }
+    dyn_matrix_free(&mx); /* done reading X (incl. any alias) before any JS */
     result = dyn_ml_doubles_to_js(ctx, yout, rows);
-    free(X);
     free(yout);
     return result;
 }
@@ -601,15 +824,13 @@ static JSValue dyn_logreg_predict_impl(JSContext *ctx, JSValueConst this_val,
 static JSValue dyn_logreg_predict(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
-    (void)argc;
-    return dyn_logreg_predict_impl(ctx, this_val, argv[0], 0);
+    return dyn_logreg_predict_impl(ctx, this_val, argc, argv, 0);
 }
 
 static JSValue dyn_logreg_predict_proba(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv)
 {
-    (void)argc;
-    return dyn_logreg_predict_impl(ctx, this_val, argv[0], 1);
+    return dyn_logreg_predict_impl(ctx, this_val, argc, argv, 1);
 }
 
 static const JSCFunctionListEntry dyn_logreg_proto[] = {
@@ -836,22 +1057,24 @@ static JSValue dyn_kmeans_fit(JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv)
 {
     dyn_kmeans_t *m;
-    double *X = NULL;
-    size_t rows, cols;
+    dyn_matrix_t mx = {0};
+    JSValueConst rows_arg, cols_arg;
 
-    (void)argc;
-    if (dyn_ml_read_matrix(ctx, argv[0], &X, &rows, &cols))
+    /* For a flat Float64Array X, fit(X, rows, cols). */
+    rows_arg = argc > 1 ? argv[1] : JS_UNDEFINED;
+    cols_arg = argc > 2 ? argv[2] : JS_UNDEFINED;
+    if (dyn_ml_ingest_X(ctx, argv[0], rows_arg, cols_arg, &mx))
         return JS_EXCEPTION;
     m = (dyn_kmeans_t *)dyn_res_native(ctx, this_val, dyn_kmeans_class_id);
     if (!m) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_EXCEPTION;
     }
-    if (dyn_kmeans_train(ctx, m, X, rows, cols)) {
-        free(X);
+    if (dyn_kmeans_train(ctx, m, mx.data, mx.rows, mx.cols)) {
+        dyn_matrix_free(&mx);
         return JS_EXCEPTION;
     }
-    free(X);
+    dyn_matrix_free(&mx);
     return JS_DupValue(ctx, this_val);
 }
 
@@ -860,37 +1083,40 @@ static JSValue dyn_kmeans_predict(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
     dyn_kmeans_t *m;
-    double *X = NULL;
+    dyn_matrix_t mx = {0};
     int *labels = NULL;
-    size_t rows, cols;
+    size_t rows;
     JSValue result;
+    JSValueConst rows_arg, cols_arg;
 
-    (void)argc;
-    if (dyn_ml_read_matrix(ctx, argv[0], &X, &rows, &cols))
+    rows_arg = argc > 1 ? argv[1] : JS_UNDEFINED;
+    cols_arg = argc > 2 ? argv[2] : JS_UNDEFINED;
+    if (dyn_ml_ingest_X(ctx, argv[0], rows_arg, cols_arg, &mx))
         return JS_EXCEPTION;
     m = (dyn_kmeans_t *)dyn_res_native(ctx, this_val, dyn_kmeans_class_id);
     if (!m) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_EXCEPTION;
     }
     if (!m->fitted) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_ThrowInternalError(ctx, "predict before fit");
     }
-    if (cols != m->n_features) {
-        free(X);
+    if (mx.cols != m->n_features) {
+        dyn_matrix_free(&mx);
         return JS_ThrowTypeError(ctx,
             "X has %u features, model expects %u",
-            (unsigned)cols, (unsigned)m->n_features);
+            (unsigned)mx.cols, (unsigned)m->n_features);
     }
+    rows = mx.rows;
     labels = (int *)malloc(rows * sizeof(int));
     if (!labels) {
-        free(X);
+        dyn_matrix_free(&mx);
         return JS_ThrowOutOfMemory(ctx);
     }
-    dyn_km_assign(X, rows, cols, m->centroids, m->k, labels);
-    result = dyn_ml_ints_to_js(ctx, labels, rows); /* copy out before free */
-    free(X);
+    dyn_km_assign(mx.data, rows, mx.cols, m->centroids, m->k, labels);
+    dyn_matrix_free(&mx); /* done reading X (incl. any alias) before any JS */
+    result = dyn_ml_ints_to_js(ctx, labels, rows);
     free(labels);
     return result;
 }

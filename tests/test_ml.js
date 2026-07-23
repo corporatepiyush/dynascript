@@ -182,4 +182,99 @@ function approx(a, b, eps, msg) {
     m.close();
 }
 
+/* --- TypedArray ingest: flat Float64Array (X, y, rows, cols) -------------- */
+{
+    // recover y = 2x + 1 via a flat Float64Array with explicit shape
+    const R = 20, C = 1;
+    const Xf = new Float64Array(R * C), yf = new Float64Array(R);
+    for (let x = 0; x < R; x++) { Xf[x] = x; yf[x] = 2 * x + 1; }
+    const m = new LinearRegression();
+    try {
+        assert(m.fit(Xf, yf, R, C) === m, "flat fit returns this");
+        // predict via a flat Float64Array (Xp, rows, cols)
+        const Xp = new Float64Array([100, 0, -3]);
+        const p = m.predict(Xp, 3, 1);
+        approx(p[0], 201, 1e-4, "flat y(100)=201");
+        approx(p[1], 1, 1e-4, "flat y(0)=1");
+        approx(p[2], -5, 1e-4, "flat y(-3)=-5");
+    } finally { m.close(); }
+}
+
+/* --- equivalence: flat Float64Array === Array-of-Array (exact doubles) ----- */
+{
+    const R = 500, C = 6;
+    let s = 99;
+    const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff * 2 - 1; };
+    const w = []; for (let j = 0; j < C; j++) w.push(rnd());
+    const Xaoa = [], yaoa = [], Xf = new Float64Array(R * C), yf = new Float64Array(R);
+    for (let i = 0; i < R; i++) {
+        const row = []; let t = 0.7;
+        for (let j = 0; j < C; j++) { const v = rnd(); row.push(v); Xf[i * C + j] = v; t += v * w[j]; }
+        Xaoa.push(row); yaoa.push(t); yf[i] = t;
+    }
+    // Array-of-Float64Array view sharing the flat buffer
+    const Xaof = []; for (let i = 0; i < R; i++) Xaof.push(Xf.subarray(i * C, i * C + C));
+
+    const mA = new LinearRegression(), mF = new LinearRegression(), mV = new LinearRegression();
+    try {
+        mA.fit(Xaoa, yaoa);
+        mF.fit(Xf, yf, R, C);
+        mV.fit(Xaof, yaoa);
+        const q = [[1, 2, 3, 4, 5, 6], [-1, 0, 1, -2, 0, 2]];
+        const qf = new Float64Array([1, 2, 3, 4, 5, 6, -1, 0, 1, -2, 0, 2]);
+        const pA = mA.predict(q), pF = mF.predict(qf, 2, C), pV = mV.predict(Xaof.slice(0, 2).map((_, i) => Xaof[i]));
+        for (let i = 0; i < 2; i++) {
+            // same doubles + same scalar math => results are identical to 1e-9
+            approx(pF[i], pA[i], 1e-9, "flat == AoA prediction " + i);
+        }
+        // Array-of-Float64Array fit matches AoA on the training coefficients too
+        const pV2 = mV.predict(q);
+        for (let i = 0; i < 2; i++)
+            approx(pV2[i], pA[i], 1e-9, "AoF64 == AoA prediction " + i);
+    } finally { mA.close(); mF.close(); mV.close(); }
+}
+
+/* --- flat-ingest error handling ------------------------------------------- */
+{
+    const m = new LinearRegression();
+    try {
+        const Xf = new Float64Array(6);
+        let threw = false;
+        try { m.fit(Xf, new Float64Array(3)); } catch { threw = true; } // no rows/cols
+        assert(threw, "flat X without (rows,cols) throws");
+        threw = false;
+        try { m.fit(Xf, new Float64Array(3), 3, 3); } catch { threw = true; } // 3*3 != 6
+        assert(threw, "flat length != rows*cols throws");
+        threw = false;
+        try { m.fit(Xf, new Float64Array(2), 3, 2); } catch { threw = true; } // y len 2 != 3
+        assert(threw, "flat y length mismatch throws");
+    } finally { m.close(); }
+}
+
+/* --- reentrant close during (rows,cols) coercion on the flat path --------- */
+{
+    // rows arg's valueOf closes the model mid-coercion; resolve-after-coerce
+    // must catch it (throw), never a use-after-free.
+    const m = new LinearRegression();
+    const Xf = new Float64Array([1, 2, 3]);
+    let threw = false;
+    try {
+        m.fit(Xf, new Float64Array([1, 2, 3]),
+              { valueOf() { m.close(); return 3; } }, 1);
+    } catch { threw = true; }
+    assert(threw, "flat fit close-during-shape-coerce is caught (no UAF)");
+    m.close();
+}
+{
+    const m = new KMeans(2, 1);
+    m.fit([[0], [1], [10], [11]], undefined); // AoA fit to make it fitted
+    const Xf = new Float64Array([0, 10, 1]);
+    let threw = false;
+    try {
+        m.predict(Xf, { valueOf() { m.close(); return 3; } }, 1);
+    } catch { threw = true; }
+    assert(threw, "kmeans flat predict close-during-coerce is caught (no UAF)");
+    m.close();
+}
+
 print("test_ml: all tests passed (" + n + " assertions)");
