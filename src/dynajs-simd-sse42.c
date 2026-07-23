@@ -1556,6 +1556,226 @@ simd_sse42_f64_axpy(double *restrict y, double a, const double *restrict x,
   }
 }
 
+/* ── Signed 32-bit integer (i32) kernels — __m128i, 4 lanes (SSE4.1/4.2).
+ * i32_sum widens int32->int64 (exact); i32_dot converts to f64 (exact product);
+ * reductions run full 4-lane bodies then a scalar tail, and min/max guard the
+ * seed load for n < 4. Prefix scans use _mm_slli_si128 lane shifts with an
+ * identity fill (0 for sum; INT_MIN/-inf patched via move_ss/blend_ps, which are
+ * bit-pattern moves valid for int lanes too) + a scalar block carry. Every
+ * intrinsic is SSE4.2 or below. ───────────────────────────────────────────── */
+__attribute__((target("sse4.2"))) static int64_t
+simd_sse42_i32_sum(const int32_t *restrict x, size_t n) {
+  __m128i acc = _mm_setzero_si128(); /* 2 x int64 */
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    __m128i v = _mm_loadu_si128((const __m128i *)(x + i));
+    acc = _mm_add_epi64(acc, _mm_cvtepi32_epi64(v)); /* low 2 int32 -> 2 int64 */
+    acc = _mm_add_epi64(acc,
+                        _mm_cvtepi32_epi64(_mm_unpackhi_epi64(v, v))); /* high 2 */
+  }
+  int64_t result =
+      (int64_t)_mm_cvtsi128_si64(acc) + (int64_t)_mm_extract_epi64(acc, 1);
+  for (; i < n; i++)
+    result += (int64_t)x[i];
+  return result;
+}
+
+__attribute__((target("sse4.2"))) static int simd_sse42_hmin_epi32(__m128i v) {
+  v = _mm_min_epi32(v, _mm_shuffle_epi32(v, _MM_SHUFFLE(2, 3, 0, 1)));
+  v = _mm_min_epi32(v, _mm_shuffle_epi32(v, _MM_SHUFFLE(1, 0, 3, 2)));
+  return _mm_cvtsi128_si32(v);
+}
+__attribute__((target("sse4.2"))) static int simd_sse42_hmax_epi32(__m128i v) {
+  v = _mm_max_epi32(v, _mm_shuffle_epi32(v, _MM_SHUFFLE(2, 3, 0, 1)));
+  v = _mm_max_epi32(v, _mm_shuffle_epi32(v, _MM_SHUFFLE(1, 0, 3, 2)));
+  return _mm_cvtsi128_si32(v);
+}
+
+__attribute__((target("sse4.2"))) static int32_t
+simd_sse42_i32_min(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MAX;
+  int32_t result;
+  size_t i;
+  if (n >= 4) {
+    __m128i vmin = _mm_loadu_si128((const __m128i *)x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmin = _mm_min_epi32(vmin, _mm_loadu_si128((const __m128i *)(x + i)));
+    result = simd_sse42_hmin_epi32(vmin);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("sse4.2"))) static int32_t
+simd_sse42_i32_max(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MIN;
+  int32_t result;
+  size_t i;
+  if (n >= 4) {
+    __m128i vmax = _mm_loadu_si128((const __m128i *)x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmax = _mm_max_epi32(vmax, _mm_loadu_si128((const __m128i *)(x + i)));
+    result = simd_sse42_hmax_epi32(vmax);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("sse4.2"))) static double
+simd_sse42_i32_dot(const int32_t *restrict a, const int32_t *restrict b,
+                   size_t n) {
+  __m128d acc = _mm_setzero_pd();
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    __m128i va = _mm_loadu_si128((const __m128i *)(a + i));
+    __m128i vb = _mm_loadu_si128((const __m128i *)(b + i));
+    acc = _mm_add_pd(acc, _mm_mul_pd(_mm_cvtepi32_pd(va),
+                                     _mm_cvtepi32_pd(vb))); /* low 2 */
+    acc = _mm_add_pd(acc,
+                     _mm_mul_pd(_mm_cvtepi32_pd(_mm_unpackhi_epi64(va, va)),
+                                _mm_cvtepi32_pd(_mm_unpackhi_epi64(vb, vb)))); /* hi 2 */
+  }
+  double result = _mm_cvtsd_f64(_mm_add_sd(acc, _mm_unpackhi_pd(acc, acc)));
+  for (; i < n; i++)
+    result += (double)a[i] * (double)b[i];
+  return result;
+}
+
+__attribute__((target("sse4.2"))) static void
+simd_sse42_i32_add(int32_t *restrict out, const int32_t *restrict a,
+                   const int32_t *restrict b, size_t n) {
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4)
+    _mm_storeu_si128((__m128i *)(out + i),
+                     _mm_add_epi32(_mm_loadu_si128((const __m128i *)(a + i)),
+                                   _mm_loadu_si128((const __m128i *)(b + i))));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] + (uint32_t)b[i]);
+}
+
+__attribute__((target("sse4.2"))) static void
+simd_sse42_i32_mul(int32_t *restrict out, const int32_t *restrict a,
+                   const int32_t *restrict b, size_t n) {
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4)
+    _mm_storeu_si128((__m128i *)(out + i),
+                     _mm_mullo_epi32(_mm_loadu_si128((const __m128i *)(a + i)),
+                                     _mm_loadu_si128((const __m128i *)(b + i))));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] * (uint32_t)b[i]);
+}
+
+__attribute__((target("sse4.2"))) static void
+simd_sse42_i32_scale(int32_t *restrict out, const int32_t *restrict x, int32_t s,
+                     size_t n) {
+  __m128i vs = _mm_set1_epi32(s);
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4)
+    _mm_storeu_si128((__m128i *)(out + i),
+                     _mm_mullo_epi32(_mm_loadu_si128((const __m128i *)(x + i)),
+                                     vs));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)x[i] * (uint32_t)s);
+}
+
+__attribute__((target("sse4.2"))) static void
+simd_sse42_f32_cumsum(float *out, const float *x, size_t n) {
+  float carry = 0.0f;
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    __m128 v = _mm_loadu_ps(x + i);
+    v = _mm_add_ps(v, _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(v), 4)));
+    v = _mm_add_ps(v, _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(v), 8)));
+    v = _mm_add_ps(v, _mm_set1_ps(carry));
+    _mm_storeu_ps(out + i, v);
+    carry = _mm_cvtss_f32(_mm_shuffle_ps(v, v, _MM_SHUFFLE(3, 3, 3, 3)));
+  }
+  for (; i < n; i++) {
+    carry += x[i];
+    out[i] = carry;
+  }
+}
+
+__attribute__((target("sse4.2"))) static void
+simd_sse42_i32_cumsum(int32_t *out, const int32_t *x, size_t n) {
+  int32_t carry = 0;
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    __m128i v = _mm_loadu_si128((const __m128i *)(x + i));
+    v = _mm_add_epi32(v, _mm_slli_si128(v, 4));
+    v = _mm_add_epi32(v, _mm_slli_si128(v, 8));
+    v = _mm_add_epi32(v, _mm_set1_epi32(carry));
+    _mm_storeu_si128((__m128i *)(out + i), v);
+    carry = _mm_extract_epi32(v, 3);
+  }
+  for (; i < n; i++) {
+    carry = (int32_t)((uint32_t)carry + (uint32_t)x[i]);
+    out[i] = carry;
+  }
+}
+
+__attribute__((target("sse4.2"))) static void
+simd_sse42_f32_cummax(float *out, const float *x, size_t n) {
+  const __m128 ninf = _mm_set1_ps(-INFINITY);
+  float carry = -INFINITY;
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    __m128 v = _mm_loadu_ps(x + i);
+    __m128 s1 = _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(v), 4));
+    s1 = _mm_move_ss(s1, ninf); /* lane0 fill 0 -> -inf */
+    v = _mm_max_ps(v, s1);
+    __m128 s2 = _mm_castsi128_ps(_mm_slli_si128(_mm_castps_si128(v), 8));
+    s2 = _mm_blend_ps(s2, ninf, 0x3); /* lanes 0,1 fill 0 -> -inf */
+    v = _mm_max_ps(v, s2);
+    v = _mm_max_ps(v, _mm_set1_ps(carry));
+    _mm_storeu_ps(out + i, v);
+    carry = _mm_cvtss_f32(_mm_shuffle_ps(v, v, _MM_SHUFFLE(3, 3, 3, 3)));
+  }
+  for (; i < n; i++) {
+    if (x[i] > carry)
+      carry = x[i];
+    out[i] = carry;
+  }
+}
+
+__attribute__((target("sse4.2"))) static void
+simd_sse42_i32_cummax(int32_t *out, const int32_t *x, size_t n) {
+  const __m128i imin = _mm_set1_epi32(INT32_MIN);
+  int32_t carry = INT32_MIN;
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    __m128i v = _mm_loadu_si128((const __m128i *)(x + i));
+    __m128i s1 = _mm_slli_si128(v, 4);
+    s1 = _mm_castps_si128(
+        _mm_move_ss(_mm_castsi128_ps(s1), _mm_castsi128_ps(imin))); /* lane0 */
+    v = _mm_max_epi32(v, s1);
+    __m128i s2 = _mm_slli_si128(v, 8);
+    s2 = _mm_castps_si128(_mm_blend_ps(_mm_castsi128_ps(s2),
+                                       _mm_castsi128_ps(imin), 0x3)); /* lanes 0,1 */
+    v = _mm_max_epi32(v, s2);
+    v = _mm_max_epi32(v, _mm_set1_epi32(carry));
+    _mm_storeu_si128((__m128i *)(out + i), v);
+    carry = _mm_extract_epi32(v, 3);
+  }
+  for (; i < n; i++) {
+    if (x[i] > carry)
+      carry = x[i];
+    out[i] = carry;
+  }
+}
+
 void simd_override_sse42(simd_t *t) {
   t->hex_encode = simd_sse42_hex_encode;
   t->hex_decode = simd_sse42_hex_decode;
@@ -1625,6 +1845,17 @@ void simd_override_sse42(simd_t *t) {
   t->f64_max = simd_sse42_f64_max;
   t->f64_scale = simd_sse42_f64_scale;
   t->f64_axpy = simd_sse42_f64_axpy;
+  t->i32_sum = simd_sse42_i32_sum;
+  t->i32_min = simd_sse42_i32_min;
+  t->i32_max = simd_sse42_i32_max;
+  t->i32_dot = simd_sse42_i32_dot;
+  t->i32_add = simd_sse42_i32_add;
+  t->i32_mul = simd_sse42_i32_mul;
+  t->i32_scale = simd_sse42_i32_scale;
+  t->f32_cumsum = simd_sse42_f32_cumsum;
+  t->i32_cumsum = simd_sse42_i32_cumsum;
+  t->f32_cummax = simd_sse42_f32_cummax;
+  t->i32_cummax = simd_sse42_i32_cummax;
 }
 
 #else /* !x86_64 */

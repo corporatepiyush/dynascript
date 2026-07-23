@@ -229,6 +229,44 @@ typedef struct simd {
   void (*f64_axpy)(double *restrict y, double a, const double *restrict x,
                    size_t n);
 
+  /* ── Signed 32-bit integer (i32) array kernels ───────────────────────
+   * Zero-copy over Int32Array. Wrapping ops match JS two's-complement:
+   * i32_add wraps mod 2^32 like `(a+b)|0`; i32_mul/i32_scale keep the low 32
+   * bits like Math.imul. Reductions are EXACT and bit-identical to a sequential
+   * scalar loop on every ISA: i32_sum accumulates in int64 (widening, so it
+   * cannot overflow for any realistic length and integer add is associative),
+   * i32_min/i32_max are exact int32. i32_dot accumulates the (exact) int64
+   * products in a double and returns a JS Number; like every float reduction it
+   * reorders the additions, so it matches a sequential scalar dot only to a
+   * relative tolerance (bit-exact while every partial result stays <= 2^53).
+   * Every reduction early-returns a scalar loop for 0 < n < vector-width BEFORE
+   * any full-width load (no heap-OOB read). */
+  int64_t (*i32_sum)(const int32_t *restrict x, size_t n);
+  int32_t (*i32_min)(const int32_t *restrict x, size_t n);
+  int32_t (*i32_max)(const int32_t *restrict x, size_t n);
+  double (*i32_dot)(const int32_t *restrict a, const int32_t *restrict b,
+                    size_t n);
+  void (*i32_add)(int32_t *restrict out, const int32_t *restrict a,
+                  const int32_t *restrict b, size_t n);
+  void (*i32_mul)(int32_t *restrict out, const int32_t *restrict a,
+                  const int32_t *restrict b, size_t n);
+  void (*i32_scale)(int32_t *restrict out, const int32_t *restrict x, int32_t s,
+                    size_t n);
+
+  /* ── Inclusive prefix scans — cumsum: out[i]=sum(x[0..i]); cummax:
+   *    out[i]=max(x[0..i]). The pointers are deliberately NOT `restrict`: an
+   *    in-place scan (out == x) must be well-defined. The i32 scans are EXACT
+   *    (integer add wraps mod 2^32 and is associative; max is associative), so
+   *    the SIMD result is bit-identical to the sequential scalar scan.
+   *    f32_cumsum REORDERS the float additions vs a sequential left-fold, so it
+   *    matches only to a relative tolerance; f32_cummax is exact (max rounds
+   *    nothing). Scans run full vector-width blocks then a scalar tail — the
+   *    block loop guard means no load ever reads past x[n). */
+  void (*f32_cumsum)(float *out, const float *x, size_t n);
+  void (*i32_cumsum)(int32_t *out, const int32_t *x, size_t n);
+  void (*f32_cummax)(float *out, const float *x, size_t n);
+  void (*i32_cummax)(int32_t *out, const int32_t *x, size_t n);
+
   /* ── Forward value search: first index of `v` in p[0..n), or SIZE_MAX.
    *    Used by String.indexOf/includes (find_u8/u16) and TypedArray
    *    indexOf/includes (find_u8/u16/u32/f32/f64). ─────────────────── */

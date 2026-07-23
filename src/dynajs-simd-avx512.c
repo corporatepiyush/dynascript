@@ -1184,6 +1184,138 @@ simd_avx512_f64_axpy(double *restrict y, double a, const double *restrict x,
 }
 #endif /* DYNAJS_SIMD_F64_AVX512 */
 
+/* ── Signed 32-bit integer (i32) kernels — __m512i, 16 lanes (AVX-512).
+ * GATED OFF by default (DYNAJS_SIMD_INT_AVX512 undefined): this host cannot
+ * execute AVX-512, so these use the intrinsic tree reductions
+ * (_mm512_reduce_{add,min,max}) and are compile-checked but NOT runtime-proven.
+ * They stay disabled; AVX-512 hardware runs the PROVEN AVX2/SSE4.2 i32 kernels
+ * via simd_init override ordering (sse42 runs first, avx2 next, and this
+ * override leaves the slots untouched). The prefix scans (cumsum/cummax) have no
+ * clean AVX-512 primitive, so they are intentionally NOT overridden here — they
+ * fall back to the AVX2/SSE4.2 scan. Define DYNAJS_SIMD_INT_AVX512 to exercise
+ * these on real AVX-512 via tests/test_simd_int.c. */
+#ifdef DYNAJS_SIMD_INT_AVX512
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static int64_t
+simd_avx512_i32_sum(const int32_t *restrict x, size_t n) {
+  __m512i acc = _mm512_setzero_si512(); /* 8 x int64 */
+  size_t i = 0;
+  for (; i + 16 <= n; i += 16) {
+    __m512i v = _mm512_loadu_si512((const void *)(x + i));
+    acc = _mm512_add_epi64(acc,
+                           _mm512_cvtepi32_epi64(_mm512_castsi512_si256(v)));
+    acc = _mm512_add_epi64(
+        acc, _mm512_cvtepi32_epi64(_mm512_extracti64x4_epi64(v, 1)));
+  }
+  int64_t result = _mm512_reduce_add_epi64(acc);
+  for (; i < n; i++)
+    result += (int64_t)x[i];
+  return result;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static int32_t
+simd_avx512_i32_min(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MAX;
+  if (n < 16) { /* the 16-wide seed load would read past x[n) for small n */
+    int32_t m = x[0];
+    for (size_t i = 1; i < n; i++)
+      if (x[i] < m)
+        m = x[i];
+    return m;
+  }
+  __m512i vmin = _mm512_loadu_si512((const void *)x);
+  size_t i = 16;
+  for (; i + 16 <= n; i += 16)
+    vmin = _mm512_min_epi32(vmin, _mm512_loadu_si512((const void *)(x + i)));
+  int32_t result = _mm512_reduce_min_epi32(vmin);
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static int32_t
+simd_avx512_i32_max(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MIN;
+  if (n < 16) {
+    int32_t m = x[0];
+    for (size_t i = 1; i < n; i++)
+      if (x[i] > m)
+        m = x[i];
+    return m;
+  }
+  __m512i vmax = _mm512_loadu_si512((const void *)x);
+  size_t i = 16;
+  for (; i + 16 <= n; i += 16)
+    vmax = _mm512_max_epi32(vmax, _mm512_loadu_si512((const void *)(x + i)));
+  int32_t result = _mm512_reduce_max_epi32(vmax);
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static double
+simd_avx512_i32_dot(const int32_t *restrict a, const int32_t *restrict b,
+                    size_t n) {
+  __m512d acc = _mm512_setzero_pd();
+  size_t i = 0;
+  for (; i + 16 <= n; i += 16) {
+    __m512i va = _mm512_loadu_si512((const void *)(a + i));
+    __m512i vb = _mm512_loadu_si512((const void *)(b + i));
+    acc = _mm512_fmadd_pd(_mm512_cvtepi32_pd(_mm512_castsi512_si256(va)),
+                          _mm512_cvtepi32_pd(_mm512_castsi512_si256(vb)), acc);
+    acc = _mm512_fmadd_pd(_mm512_cvtepi32_pd(_mm512_extracti64x4_epi64(va, 1)),
+                          _mm512_cvtepi32_pd(_mm512_extracti64x4_epi64(vb, 1)),
+                          acc);
+  }
+  double result = _mm512_reduce_add_pd(acc);
+  for (; i < n; i++)
+    result += (double)a[i] * (double)b[i];
+  return result;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static void
+simd_avx512_i32_add(int32_t *restrict out, const int32_t *restrict a,
+                    const int32_t *restrict b, size_t n) {
+  size_t i = 0;
+  for (; i + 16 <= n; i += 16)
+    _mm512_storeu_si512(
+        (void *)(out + i),
+        _mm512_add_epi32(_mm512_loadu_si512((const void *)(a + i)),
+                         _mm512_loadu_si512((const void *)(b + i))));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] + (uint32_t)b[i]);
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static void
+simd_avx512_i32_mul(int32_t *restrict out, const int32_t *restrict a,
+                    const int32_t *restrict b, size_t n) {
+  size_t i = 0;
+  for (; i + 16 <= n; i += 16)
+    _mm512_storeu_si512(
+        (void *)(out + i),
+        _mm512_mullo_epi32(_mm512_loadu_si512((const void *)(a + i)),
+                           _mm512_loadu_si512((const void *)(b + i))));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] * (uint32_t)b[i]);
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static void
+simd_avx512_i32_scale(int32_t *restrict out, const int32_t *restrict x,
+                      int32_t s, size_t n) {
+  __m512i vs = _mm512_set1_epi32(s);
+  size_t i = 0;
+  for (; i + 16 <= n; i += 16)
+    _mm512_storeu_si512(
+        (void *)(out + i),
+        _mm512_mullo_epi32(_mm512_loadu_si512((const void *)(x + i)), vs));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)x[i] * (uint32_t)s);
+}
+#endif /* DYNAJS_SIMD_INT_AVX512 */
+
 void simd_override_avx512(simd_t *t) {
   t->dot = simd_avx512_dot;
   t->dot_f = simd_avx512_dot_f;
@@ -1245,6 +1377,18 @@ void simd_override_avx512(simd_t *t) {
   t->f64_max = simd_avx512_f64_max;
   t->f64_scale = simd_avx512_f64_scale;
   t->f64_axpy = simd_avx512_f64_axpy;
+#endif
+#ifdef DYNAJS_SIMD_INT_AVX512
+  /* Off by default — see the gate comment above. AVX-512 HW otherwise keeps the
+   * PROVEN AVX2/SSE4.2 i32 kernels. Prefix scans are deliberately left to the
+   * AVX2/SSE4.2 path (no clean AVX-512 prefix primitive). */
+  t->i32_sum = simd_avx512_i32_sum;
+  t->i32_min = simd_avx512_i32_min;
+  t->i32_max = simd_avx512_i32_max;
+  t->i32_dot = simd_avx512_i32_dot;
+  t->i32_add = simd_avx512_i32_add;
+  t->i32_mul = simd_avx512_i32_mul;
+  t->i32_scale = simd_avx512_i32_scale;
 #endif
 }
 

@@ -614,6 +614,106 @@ void simd_scalar_f64_axpy(double *restrict y, double a,
   }
 }
 
+/* ── Signed 32-bit integer (i32) array kernels ───────────────────── */
+
+/* Exact int64 accumulation: cannot overflow for any realistic length, and is
+ * the differential oracle every SIMD i32_sum must equal bit-for-bit. */
+int64_t simd_scalar_i32_sum(const int32_t *restrict x, size_t n) {
+  int64_t acc = 0;
+  for (size_t i = 0; i < n; i++)
+    acc += (int64_t)x[i];
+  return acc;
+}
+
+int32_t simd_scalar_i32_min(const int32_t *restrict x, size_t n) {
+  int32_t m = INT32_MAX;
+  for (size_t i = 0; i < n; i++)
+    if (x[i] < m)
+      m = x[i];
+  return m;
+}
+
+int32_t simd_scalar_i32_max(const int32_t *restrict x, size_t n) {
+  int32_t m = INT32_MIN;
+  for (size_t i = 0; i < n; i++)
+    if (x[i] > m)
+      m = x[i];
+  return m;
+}
+
+/* Sum of int64 products in a double (returns a JS Number). (double)a*(double)b
+ * is the correctly-rounded product, identical to (double)((int64_t)a*b). */
+double simd_scalar_i32_dot(const int32_t *restrict a, const int32_t *restrict b,
+                           size_t n) {
+  double acc = 0.0;
+  for (size_t i = 0; i < n; i++)
+    acc += (double)a[i] * (double)b[i];
+  return acc;
+}
+
+/* out[i] = a[i] + b[i], wrapping mod 2^32 like JS `(a+b)|0`. Done through
+ * unsigned to avoid signed-overflow UB; the two's-complement result is exact. */
+void simd_scalar_i32_add(int32_t *restrict out, const int32_t *restrict a,
+                         const int32_t *restrict b, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] + (uint32_t)b[i]);
+}
+
+/* out[i] = a[i] * b[i], low 32 bits, like JS Math.imul. */
+void simd_scalar_i32_mul(int32_t *restrict out, const int32_t *restrict a,
+                         const int32_t *restrict b, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] * (uint32_t)b[i]);
+}
+
+/* out[i] = x[i] * s, low 32 bits, like Math.imul(x[i], s). */
+void simd_scalar_i32_scale(int32_t *restrict out, const int32_t *restrict x,
+                           int32_t s, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    out[i] = (int32_t)((uint32_t)x[i] * (uint32_t)s);
+}
+
+/* ── Inclusive prefix scans (out may alias x for in-place) ───────── */
+
+/* out[i] = x[0]+..+x[i]. Sequential left-fold: this exact rounding order is the
+ * oracle; the SIMD f32_cumsum reorders and matches only within tolerance. */
+void simd_scalar_f32_cumsum(float *out, const float *x, size_t n) {
+  float acc = 0.0f;
+  for (size_t i = 0; i < n; i++) {
+    acc += x[i];
+    out[i] = acc;
+  }
+}
+
+/* out[i] = x[0]+..+x[i], each step wrapping mod 2^32; exact vs any SIMD order. */
+void simd_scalar_i32_cumsum(int32_t *out, const int32_t *x, size_t n) {
+  uint32_t acc = 0;
+  for (size_t i = 0; i < n; i++) {
+    acc += (uint32_t)x[i];
+    out[i] = (int32_t)acc;
+  }
+}
+
+/* out[i] = max(x[0..i]). Identity -inf; uses `>` (NaN carries the running max
+ * forward, never becoming the max itself). Exact — max rounds nothing. */
+void simd_scalar_f32_cummax(float *out, const float *x, size_t n) {
+  float acc = -INFINITY;
+  for (size_t i = 0; i < n; i++) {
+    if (x[i] > acc)
+      acc = x[i];
+    out[i] = acc;
+  }
+}
+
+void simd_scalar_i32_cummax(int32_t *out, const int32_t *x, size_t n) {
+  int32_t acc = INT32_MIN;
+  for (size_t i = 0; i < n; i++) {
+    if (x[i] > acc)
+      acc = x[i];
+    out[i] = acc;
+  }
+}
+
 /* ── Override table ──────────────────────────────────────────────── */
 
 /* ── forward value search (scalar fallback) ─────────────────────── */
@@ -1051,4 +1151,15 @@ void simd_override_scalar(simd_t *t) {
   t->f64_max = simd_scalar_f64_max;
   t->f64_scale = simd_scalar_f64_scale;
   t->f64_axpy = simd_scalar_f64_axpy;
+  t->i32_sum = simd_scalar_i32_sum;
+  t->i32_min = simd_scalar_i32_min;
+  t->i32_max = simd_scalar_i32_max;
+  t->i32_dot = simd_scalar_i32_dot;
+  t->i32_add = simd_scalar_i32_add;
+  t->i32_mul = simd_scalar_i32_mul;
+  t->i32_scale = simd_scalar_i32_scale;
+  t->f32_cumsum = simd_scalar_f32_cumsum;
+  t->i32_cumsum = simd_scalar_i32_cumsum;
+  t->f32_cummax = simd_scalar_f32_cummax;
+  t->i32_cummax = simd_scalar_i32_cummax;
 }

@@ -1196,6 +1196,111 @@ static void simd_sve_f64_axpy(double *restrict y, double a,
   }
 }
 
+/* ── Signed 32-bit integer (i32) kernels — svint32_t, svcntw() lanes.
+ * Mirror the proven NEON/scalar semantics: i32_sum reduces each block with
+ * svaddv_s32 (which accumulates in int64 — exact), min/max use svminv/svmaxv,
+ * elementwise wrap mod 2^32. Predicated full-vector bodies + scalar tail; the
+ * min/max seed load is guarded by the n < svcntw() scalar path (no OOB). SVE is
+ * compiled only under __ARM_FEATURE_SVE and is not runtime-exercisable on this
+ * host; i32_dot and the prefix scans (no clean SVE primitive) are intentionally
+ * left to fall back to the PROVEN NEON kernels via simd_init override ordering
+ * (simd_override_neon runs before simd_override_sve). */
+static inline int sve_i32_cnt(void) { return svcntw(); }
+
+static int64_t simd_sve_i32_sum(const int32_t *restrict x, size_t n) {
+  svbool_t pg = svptrue_b32();
+  int cnt = sve_i32_cnt();
+  int64_t result = 0;
+  size_t i = 0;
+  for (; i + (size_t)cnt <= n; i += cnt)
+    result += svaddv_s32(pg, svld1_s32(pg, &x[i])); /* block sum widened to i64 */
+  for (; i < n; i++)
+    result += (int64_t)x[i];
+  return result;
+}
+
+static int32_t simd_sve_i32_min(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MAX;
+  int cnt = sve_i32_cnt();
+  if (n < (size_t)cnt) {
+    int32_t m = x[0];
+    for (size_t i = 1; i < n; i++)
+      if (x[i] < m)
+        m = x[i];
+    return m;
+  }
+  svbool_t pg = svptrue_b32();
+  svint32_t vmin = svld1_s32(pg, x);
+  size_t i = (size_t)cnt;
+  for (; i + (size_t)cnt <= n; i += cnt)
+    vmin = svmin_s32_z(pg, vmin, svld1_s32(pg, &x[i]));
+  int32_t result = svminv_s32(pg, vmin);
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+static int32_t simd_sve_i32_max(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MIN;
+  int cnt = sve_i32_cnt();
+  if (n < (size_t)cnt) {
+    int32_t m = x[0];
+    for (size_t i = 1; i < n; i++)
+      if (x[i] > m)
+        m = x[i];
+    return m;
+  }
+  svbool_t pg = svptrue_b32();
+  svint32_t vmax = svld1_s32(pg, x);
+  size_t i = (size_t)cnt;
+  for (; i + (size_t)cnt <= n; i += cnt)
+    vmax = svmax_s32_z(pg, vmax, svld1_s32(pg, &x[i]));
+  int32_t result = svmaxv_s32(pg, vmax);
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+static void simd_sve_i32_add(int32_t *restrict out, const int32_t *restrict a,
+                             const int32_t *restrict b, size_t n) {
+  svbool_t pg = svptrue_b32();
+  int cnt = sve_i32_cnt();
+  size_t i = 0;
+  for (; i + (size_t)cnt <= n; i += cnt)
+    svst1_s32(pg, &out[i],
+              svadd_s32_z(pg, svld1_s32(pg, &a[i]), svld1_s32(pg, &b[i])));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] + (uint32_t)b[i]);
+}
+
+static void simd_sve_i32_mul(int32_t *restrict out, const int32_t *restrict a,
+                             const int32_t *restrict b, size_t n) {
+  svbool_t pg = svptrue_b32();
+  int cnt = sve_i32_cnt();
+  size_t i = 0;
+  for (; i + (size_t)cnt <= n; i += cnt)
+    svst1_s32(pg, &out[i],
+              svmul_s32_z(pg, svld1_s32(pg, &a[i]), svld1_s32(pg, &b[i])));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] * (uint32_t)b[i]);
+}
+
+static void simd_sve_i32_scale(int32_t *restrict out, const int32_t *restrict x,
+                               int32_t s, size_t n) {
+  svbool_t pg = svptrue_b32();
+  svint32_t vs = svdup_s32(s);
+  int cnt = sve_i32_cnt();
+  size_t i = 0;
+  for (; i + (size_t)cnt <= n; i += cnt)
+    svst1_s32(pg, &out[i], svmul_s32_z(pg, svld1_s32(pg, &x[i]), vs));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)x[i] * (uint32_t)s);
+}
+
 void simd_override_sve(simd_t *t) {
   t->dot = simd_sve_dot;
   t->dot_f = simd_sve_dot_f;
@@ -1254,6 +1359,14 @@ void simd_override_sve(simd_t *t) {
   t->f64_max = simd_sve_f64_max;
   t->f64_scale = simd_sve_f64_scale;
   t->f64_axpy = simd_sve_f64_axpy;
+  /* i32_dot and the prefix scans keep the NEON kernels (set earlier by
+   * simd_override_neon) — see the gate comment above. */
+  t->i32_sum = simd_sve_i32_sum;
+  t->i32_min = simd_sve_i32_min;
+  t->i32_max = simd_sve_i32_max;
+  t->i32_add = simd_sve_i32_add;
+  t->i32_mul = simd_sve_i32_mul;
+  t->i32_scale = simd_sve_i32_scale;
 }
 
 #else  /* !__ARM_FEATURE_SVE */

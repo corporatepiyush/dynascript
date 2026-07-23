@@ -1137,6 +1137,186 @@ static void simd_neon_f64_axpy(double *restrict y, double a,
   }
 }
 
+/* ── Signed 32-bit integer (i32) kernels — int32x4_t (4 lanes), widening to
+ * int64x2_t / float64x2_t for the exact sum/dot. Reductions run full 4-lane
+ * bodies then a scalar tail; min/max seed a 4-wide vector only when >=4
+ * elements exist (n<4 takes the scalar path, no OOB). ──────────────────── */
+static int64_t simd_neon_i32_sum(const int32_t *restrict x, size_t n) {
+  int64x2_t acc = vdupq_n_s64(0);
+  size_t i = 0;
+  /* vpadalq_s32: acc += [ x0+x1, x2+x3 ] widened to int64 — exact, associative */
+  for (; i + 4 <= n; i += 4)
+    acc = vpadalq_s32(acc, vld1q_s32(&x[i]));
+  int64_t result = vgetq_lane_s64(acc, 0) + vgetq_lane_s64(acc, 1);
+  for (; i < n; i++)
+    result += (int64_t)x[i];
+  return result;
+}
+
+static int32_t simd_neon_i32_min(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MAX;
+  int32_t result;
+  size_t i;
+  if (n >= 4) {
+    int32x4_t vmin = vld1q_s32(x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmin = vminq_s32(vmin, vld1q_s32(&x[i]));
+    result = vminvq_s32(vmin);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+static int32_t simd_neon_i32_max(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MIN;
+  int32_t result;
+  size_t i;
+  if (n >= 4) {
+    int32x4_t vmax = vld1q_s32(x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmax = vmaxq_s32(vmax, vld1q_s32(&x[i]));
+    result = vmaxvq_s32(vmax);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+static double simd_neon_i32_dot(const int32_t *restrict a,
+                                const int32_t *restrict b, size_t n) {
+  float64x2_t acc = vdupq_n_f64(0.0);
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    int32x4_t va = vld1q_s32(&a[i]);
+    int32x4_t vb = vld1q_s32(&b[i]);
+    /* widen int32 -> int64 -> f64 (exact), FMA into the f64 accumulator */
+    acc = vfmaq_f64(acc, vcvtq_f64_s64(vmovl_s32(vget_low_s32(va))),
+                    vcvtq_f64_s64(vmovl_s32(vget_low_s32(vb))));
+    acc = vfmaq_f64(acc, vcvtq_f64_s64(vmovl_s32(vget_high_s32(va))),
+                    vcvtq_f64_s64(vmovl_s32(vget_high_s32(vb))));
+  }
+  double result = vaddvq_f64(acc);
+  for (; i < n; i++)
+    result += (double)a[i] * (double)b[i];
+  return result;
+}
+
+static void simd_neon_i32_add(int32_t *restrict out, const int32_t *restrict a,
+                              const int32_t *restrict b, size_t n) {
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4)
+    vst1q_s32(&out[i], vaddq_s32(vld1q_s32(&a[i]), vld1q_s32(&b[i])));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] + (uint32_t)b[i]);
+}
+
+static void simd_neon_i32_mul(int32_t *restrict out, const int32_t *restrict a,
+                              const int32_t *restrict b, size_t n) {
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4)
+    vst1q_s32(&out[i], vmulq_s32(vld1q_s32(&a[i]), vld1q_s32(&b[i])));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] * (uint32_t)b[i]);
+}
+
+static void simd_neon_i32_scale(int32_t *restrict out, const int32_t *restrict x,
+                                int32_t s, size_t n) {
+  int32x4_t vs = vdupq_n_s32(s);
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4)
+    vst1q_s32(&out[i], vmulq_s32(vld1q_s32(&x[i]), vs));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)x[i] * (uint32_t)s);
+}
+
+/* ── Inclusive prefix scans — 4-lane in-block Hillis-Steele (vextq shifts a
+ * lane up, filling the identity: 0 for sum, -inf/INT_MIN for max) + a running
+ * scalar block carry. Full 4-lane blocks then a scalar tail; out may alias x. */
+static void simd_neon_f32_cumsum(float *out, const float *x, size_t n) {
+  const float32x4_t zero = vdupq_n_f32(0.0f);
+  float carry = 0.0f;
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    float32x4_t v = vld1q_f32(&x[i]);
+    v = vaddq_f32(v, vextq_f32(zero, v, 3)); /* lane k += lane k-1 */
+    v = vaddq_f32(v, vextq_f32(zero, v, 2)); /* lane k += lane k-2 */
+    v = vaddq_f32(v, vdupq_n_f32(carry));
+    vst1q_f32(&out[i], v);
+    carry = vgetq_lane_f32(v, 3);
+  }
+  for (; i < n; i++) {
+    carry += x[i];
+    out[i] = carry;
+  }
+}
+
+static void simd_neon_i32_cumsum(int32_t *out, const int32_t *x, size_t n) {
+  const int32x4_t zero = vdupq_n_s32(0);
+  int32_t carry = 0;
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    int32x4_t v = vld1q_s32(&x[i]);
+    v = vaddq_s32(v, vextq_s32(zero, v, 3));
+    v = vaddq_s32(v, vextq_s32(zero, v, 2));
+    v = vaddq_s32(v, vdupq_n_s32(carry));
+    vst1q_s32(&out[i], v);
+    carry = vgetq_lane_s32(v, 3);
+  }
+  for (; i < n; i++) {
+    carry = (int32_t)((uint32_t)carry + (uint32_t)x[i]);
+    out[i] = carry;
+  }
+}
+
+static void simd_neon_f32_cummax(float *out, const float *x, size_t n) {
+  const float32x4_t ninf = vdupq_n_f32(-INFINITY);
+  float carry = -INFINITY;
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    float32x4_t v = vld1q_f32(&x[i]);
+    v = vmaxq_f32(v, vextq_f32(ninf, v, 3)); /* fill -inf so lane0 keeps its own */
+    v = vmaxq_f32(v, vextq_f32(ninf, v, 2));
+    v = vmaxq_f32(v, vdupq_n_f32(carry));
+    vst1q_f32(&out[i], v);
+    carry = vgetq_lane_f32(v, 3);
+  }
+  for (; i < n; i++) {
+    if (x[i] > carry)
+      carry = x[i];
+    out[i] = carry;
+  }
+}
+
+static void simd_neon_i32_cummax(int32_t *out, const int32_t *x, size_t n) {
+  const int32x4_t imin = vdupq_n_s32(INT32_MIN);
+  int32_t carry = INT32_MIN;
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    int32x4_t v = vld1q_s32(&x[i]);
+    v = vmaxq_s32(v, vextq_s32(imin, v, 3));
+    v = vmaxq_s32(v, vextq_s32(imin, v, 2));
+    v = vmaxq_s32(v, vdupq_n_s32(carry));
+    vst1q_s32(&out[i], v);
+    carry = vgetq_lane_s32(v, 3);
+  }
+  for (; i < n; i++) {
+    if (x[i] > carry)
+      carry = x[i];
+    out[i] = carry;
+  }
+}
+
 /* ── forward value search (NEON: compare a lane-block, then locate the
  *    first hit scalar within the block; scalar tail). find_u8 stays memchr
  *    (already SIMD in libc), set by the scalar override. ─────────────── */
@@ -1668,6 +1848,17 @@ void simd_override_neon(simd_t *t) {
   t->f64_max = simd_neon_f64_max;
   t->f64_scale = simd_neon_f64_scale;
   t->f64_axpy = simd_neon_f64_axpy;
+  t->i32_sum = simd_neon_i32_sum;
+  t->i32_min = simd_neon_i32_min;
+  t->i32_max = simd_neon_i32_max;
+  t->i32_dot = simd_neon_i32_dot;
+  t->i32_add = simd_neon_i32_add;
+  t->i32_mul = simd_neon_i32_mul;
+  t->i32_scale = simd_neon_i32_scale;
+  t->f32_cumsum = simd_neon_f32_cumsum;
+  t->i32_cumsum = simd_neon_i32_cumsum;
+  t->f32_cummax = simd_neon_f32_cummax;
+  t->i32_cummax = simd_neon_i32_cummax;
 }
 
 #else  /* !ARM64 */

@@ -1566,6 +1566,256 @@ simd_avx2_f64_axpy(double *restrict y, double a, const double *restrict x,
   }
 }
 
+/* ── Signed 32-bit integer (i32) + prefix-scan kernels — __m256i, 8 lanes.
+ * GATED OFF by default (DYNAJS_SIMD_INT_AVX2 undefined): this host's qemu/
+ * Rosetta amd64 emulation cannot execute AVX2 reliably, so these mirror the
+ * proven SSE4.2 logic (widened to 8 lanes, with a cross-128-lane carry for the
+ * prefix scans) and are COMPILE-checked but NOT runtime-proven under the
+ * differential harness. Per the repo's "do not ship unproven x86 SIMD" rule they
+ * stay disabled; AVX2 hardware therefore runs the PROVEN SSE4.2 i32 kernels
+ * (simd_override_sse42 installs them first and this override leaves the slots
+ * untouched). Define DYNAJS_SIMD_INT_AVX2 to exercise them on real AVX2 via
+ * tests/test_simd_int.c. */
+#ifdef DYNAJS_SIMD_INT_AVX2
+__attribute__((target("avx2,fma"))) static int64_t
+simd_avx2_i32_sum(const int32_t *restrict x, size_t n) {
+  __m256i acc = _mm256_setzero_si256(); /* 4 x int64 */
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    __m256i v = _mm256_loadu_si256((const __m256i *)(x + i));
+    acc = _mm256_add_epi64(acc,
+                           _mm256_cvtepi32_epi64(_mm256_castsi256_si128(v)));
+    acc = _mm256_add_epi64(
+        acc, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(v, 1)));
+  }
+  __m128i s = _mm_add_epi64(_mm256_castsi256_si128(acc),
+                            _mm256_extracti128_si256(acc, 1));
+  int64_t result =
+      (int64_t)_mm_cvtsi128_si64(s) + (int64_t)_mm_extract_epi64(s, 1);
+  for (; i < n; i++)
+    result += (int64_t)x[i];
+  return result;
+}
+
+__attribute__((target("avx2,fma"))) static int simd_avx2_hmin_epi32(__m256i v) {
+  __m128i r = _mm_min_epi32(_mm256_castsi256_si128(v),
+                            _mm256_extracti128_si256(v, 1));
+  r = _mm_min_epi32(r, _mm_shuffle_epi32(r, _MM_SHUFFLE(2, 3, 0, 1)));
+  r = _mm_min_epi32(r, _mm_shuffle_epi32(r, _MM_SHUFFLE(1, 0, 3, 2)));
+  return _mm_cvtsi128_si32(r);
+}
+__attribute__((target("avx2,fma"))) static int simd_avx2_hmax_epi32(__m256i v) {
+  __m128i r = _mm_max_epi32(_mm256_castsi256_si128(v),
+                            _mm256_extracti128_si256(v, 1));
+  r = _mm_max_epi32(r, _mm_shuffle_epi32(r, _MM_SHUFFLE(2, 3, 0, 1)));
+  r = _mm_max_epi32(r, _mm_shuffle_epi32(r, _MM_SHUFFLE(1, 0, 3, 2)));
+  return _mm_cvtsi128_si32(r);
+}
+
+__attribute__((target("avx2,fma"))) static int32_t
+simd_avx2_i32_min(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MAX;
+  int32_t result;
+  size_t i;
+  if (n >= 8) {
+    __m256i vmin = _mm256_loadu_si256((const __m256i *)x);
+    for (i = 8; i + 8 <= n; i += 8)
+      vmin = _mm256_min_epi32(vmin, _mm256_loadu_si256((const __m256i *)(x + i)));
+    result = simd_avx2_hmin_epi32(vmin);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("avx2,fma"))) static int32_t
+simd_avx2_i32_max(const int32_t *restrict x, size_t n) {
+  if (n == 0)
+    return INT32_MIN;
+  int32_t result;
+  size_t i;
+  if (n >= 8) {
+    __m256i vmax = _mm256_loadu_si256((const __m256i *)x);
+    for (i = 8; i + 8 <= n; i += 8)
+      vmax = _mm256_max_epi32(vmax, _mm256_loadu_si256((const __m256i *)(x + i)));
+    result = simd_avx2_hmax_epi32(vmax);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("avx2,fma"))) static double
+simd_avx2_i32_dot(const int32_t *restrict a, const int32_t *restrict b,
+                  size_t n) {
+  __m256d acc = _mm256_setzero_pd();
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    __m256i va = _mm256_loadu_si256((const __m256i *)(a + i));
+    __m256i vb = _mm256_loadu_si256((const __m256i *)(b + i));
+    acc = _mm256_fmadd_pd(_mm256_cvtepi32_pd(_mm256_castsi256_si128(va)),
+                          _mm256_cvtepi32_pd(_mm256_castsi256_si128(vb)), acc);
+    acc = _mm256_fmadd_pd(_mm256_cvtepi32_pd(_mm256_extracti128_si256(va, 1)),
+                          _mm256_cvtepi32_pd(_mm256_extracti128_si256(vb, 1)),
+                          acc);
+  }
+  double result = hsum256_pd(acc);
+  for (; i < n; i++)
+    result += (double)a[i] * (double)b[i];
+  return result;
+}
+
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_i32_add(int32_t *restrict out, const int32_t *restrict a,
+                  const int32_t *restrict b, size_t n) {
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8)
+    _mm256_storeu_si256(
+        (__m256i *)(out + i),
+        _mm256_add_epi32(_mm256_loadu_si256((const __m256i *)(a + i)),
+                         _mm256_loadu_si256((const __m256i *)(b + i))));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] + (uint32_t)b[i]);
+}
+
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_i32_mul(int32_t *restrict out, const int32_t *restrict a,
+                  const int32_t *restrict b, size_t n) {
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8)
+    _mm256_storeu_si256(
+        (__m256i *)(out + i),
+        _mm256_mullo_epi32(_mm256_loadu_si256((const __m256i *)(a + i)),
+                           _mm256_loadu_si256((const __m256i *)(b + i))));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)a[i] * (uint32_t)b[i]);
+}
+
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_i32_scale(int32_t *restrict out, const int32_t *restrict x, int32_t s,
+                    size_t n) {
+  __m256i vs = _mm256_set1_epi32(s);
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8)
+    _mm256_storeu_si256(
+        (__m256i *)(out + i),
+        _mm256_mullo_epi32(_mm256_loadu_si256((const __m256i *)(x + i)), vs));
+  for (; i < n; i++)
+    out[i] = (int32_t)((uint32_t)x[i] * (uint32_t)s);
+}
+
+/* Prefix scans: _mm256_slli_si256 prefixes each 128-bit half independently, then
+ * the low half's running total (lane 3) is folded into the high 4 lanes. */
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_f32_cumsum(float *out, const float *x, size_t n) {
+  float carry = 0.0f;
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    __m256 v = _mm256_loadu_ps(x + i);
+    v = _mm256_add_ps(
+        v, _mm256_castsi256_ps(_mm256_slli_si256(_mm256_castps_si256(v), 4)));
+    v = _mm256_add_ps(
+        v, _mm256_castsi256_ps(_mm256_slli_si256(_mm256_castps_si256(v), 8)));
+    __m128 lo3 = _mm_shuffle_ps(_mm256_castps256_ps128(v),
+                                _mm256_castps256_ps128(v), _MM_SHUFFLE(3, 3, 3, 3));
+    v = _mm256_add_ps(v, _mm256_insertf128_ps(_mm256_setzero_ps(), lo3, 1));
+    v = _mm256_add_ps(v, _mm256_set1_ps(carry));
+    _mm256_storeu_ps(out + i, v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    carry = _mm_cvtss_f32(_mm_shuffle_ps(hi, hi, _MM_SHUFFLE(3, 3, 3, 3)));
+  }
+  for (; i < n; i++) {
+    carry += x[i];
+    out[i] = carry;
+  }
+}
+
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_i32_cumsum(int32_t *out, const int32_t *x, size_t n) {
+  int32_t carry = 0;
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    __m256i v = _mm256_loadu_si256((const __m256i *)(x + i));
+    v = _mm256_add_epi32(v, _mm256_slli_si256(v, 4));
+    v = _mm256_add_epi32(v, _mm256_slli_si256(v, 8));
+    __m128i lo3 = _mm_shuffle_epi32(_mm256_castsi256_si128(v),
+                                    _MM_SHUFFLE(3, 3, 3, 3));
+    v = _mm256_add_epi32(
+        v, _mm256_inserti128_si256(_mm256_setzero_si256(), lo3, 1));
+    v = _mm256_add_epi32(v, _mm256_set1_epi32(carry));
+    _mm256_storeu_si256((__m256i *)(out + i), v);
+    carry = _mm_extract_epi32(_mm256_extracti128_si256(v, 1), 3);
+  }
+  for (; i < n; i++) {
+    carry = (int32_t)((uint32_t)carry + (uint32_t)x[i]);
+    out[i] = carry;
+  }
+}
+
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_f32_cummax(float *out, const float *x, size_t n) {
+  const __m256 ninf = _mm256_set1_ps(-INFINITY);
+  float carry = -INFINITY;
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    __m256 v = _mm256_loadu_ps(x + i);
+    /* fill the two per-128 low lanes (0,4 then 0,1,4,5) with -inf, not 0 */
+    __m256 s1 =
+        _mm256_castsi256_ps(_mm256_slli_si256(_mm256_castps_si256(v), 4));
+    v = _mm256_max_ps(v, _mm256_blend_ps(s1, ninf, 0x11));
+    __m256 s2 =
+        _mm256_castsi256_ps(_mm256_slli_si256(_mm256_castps_si256(v), 8));
+    v = _mm256_max_ps(v, _mm256_blend_ps(s2, ninf, 0x33));
+    __m128 lo3 = _mm_shuffle_ps(_mm256_castps256_ps128(v),
+                                _mm256_castps256_ps128(v), _MM_SHUFFLE(3, 3, 3, 3));
+    v = _mm256_max_ps(v, _mm256_insertf128_ps(ninf, lo3, 1));
+    v = _mm256_max_ps(v, _mm256_set1_ps(carry));
+    _mm256_storeu_ps(out + i, v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    carry = _mm_cvtss_f32(_mm_shuffle_ps(hi, hi, _MM_SHUFFLE(3, 3, 3, 3)));
+  }
+  for (; i < n; i++) {
+    if (x[i] > carry)
+      carry = x[i];
+    out[i] = carry;
+  }
+}
+
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_i32_cummax(int32_t *out, const int32_t *x, size_t n) {
+  const __m256i imin = _mm256_set1_epi32(INT32_MIN);
+  int32_t carry = INT32_MIN;
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    __m256i v = _mm256_loadu_si256((const __m256i *)(x + i));
+    v = _mm256_max_epi32(v, _mm256_blend_epi32(_mm256_slli_si256(v, 4), imin,
+                                               0x11));
+    v = _mm256_max_epi32(v, _mm256_blend_epi32(_mm256_slli_si256(v, 8), imin,
+                                               0x33));
+    __m128i lo3 = _mm_shuffle_epi32(_mm256_castsi256_si128(v),
+                                    _MM_SHUFFLE(3, 3, 3, 3));
+    v = _mm256_max_epi32(v, _mm256_inserti128_si256(imin, lo3, 1));
+    v = _mm256_max_epi32(v, _mm256_set1_epi32(carry));
+    _mm256_storeu_si256((__m256i *)(out + i), v);
+    carry = _mm_extract_epi32(_mm256_extracti128_si256(v, 1), 3);
+  }
+  for (; i < n; i++) {
+    if (x[i] > carry)
+      carry = x[i];
+    out[i] = carry;
+  }
+}
+#endif /* DYNAJS_SIMD_INT_AVX2 */
+
 void simd_override_avx2(simd_t *t) {
   t->hex_encode = simd_avx2_hex_encode;
   t->hex_decode = simd_avx2_hex_decode;
@@ -1637,6 +1887,21 @@ void simd_override_avx2(simd_t *t) {
   t->f64_max = simd_avx2_f64_max;
   t->f64_scale = simd_avx2_f64_scale;
   t->f64_axpy = simd_avx2_f64_axpy;
+#ifdef DYNAJS_SIMD_INT_AVX2
+  /* Off by default — see the gate comment above. AVX2 HW otherwise keeps the
+   * PROVEN SSE4.2 i32/scan kernels installed by simd_override_sse42. */
+  t->i32_sum = simd_avx2_i32_sum;
+  t->i32_min = simd_avx2_i32_min;
+  t->i32_max = simd_avx2_i32_max;
+  t->i32_dot = simd_avx2_i32_dot;
+  t->i32_add = simd_avx2_i32_add;
+  t->i32_mul = simd_avx2_i32_mul;
+  t->i32_scale = simd_avx2_i32_scale;
+  t->f32_cumsum = simd_avx2_f32_cumsum;
+  t->i32_cumsum = simd_avx2_i32_cumsum;
+  t->f32_cummax = simd_avx2_f32_cummax;
+  t->i32_cummax = simd_avx2_i32_cummax;
+#endif
 }
 
 #else /* !x86_64 */

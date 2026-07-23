@@ -47,6 +47,14 @@
  * scalar otherwise. This is the same facility the engine core uses. */
 #include "dynajs-simd-kernels.h"
 
+/* Built-in typed-array class ids for Int32Array / Float32Array, captured once
+ * from sample instances at module init (built-in ids are process-global
+ * constants). Used to distinguish the two 4-byte element types for cumsum/cummax
+ * and to strictly type the i32* methods. _Atomic because a Worker's runtime
+ * inits this module on its own thread (all inits store the same constant). */
+static _Atomic JSClassID simd_cid_int32;
+static _Atomic JSClassID simd_cid_float32;
+
 /* ---------- JS <-> float32 backing buffer at the boundary ---------- */
 
 /* Resolve a Float32Array argument to its backing float* and element count.
@@ -108,6 +116,38 @@ static int simd_get_f64(JSContext *ctx, JSValueConst v, double **pp, size_t *pn)
     }
     *pp = (double *)(base + off);
     *pn = len / 8;
+    return 0;
+}
+
+/* Resolve an Int32Array to its backing int32* and element count. STRICT: rejects
+ * any typed array that is not an Int32Array (a Float32Array/Uint32Array shares
+ * the 4-byte stride but a different element meaning — never reinterpret its
+ * bits). The class-id read runs no user JS, so it is safe before/after resolve. */
+static int simd_get_i32(JSContext *ctx, JSValueConst v, int32_t **pp, size_t *pn)
+{
+    JSValue buf;
+    uint8_t *base;
+    size_t off, len, bpe, ab;
+    JSClassID cid;
+
+    JS_GetAnyOpaque(v, &cid);
+    if (cid != (JSClassID)simd_cid_int32) {
+        JS_ThrowTypeError(ctx, "expected an Int32Array");
+        return -1;
+    }
+    buf = JS_GetTypedArrayBuffer(ctx, v, &off, &len, &bpe);
+    if (JS_IsException(buf))
+        return -1;
+    base = JS_GetArrayBuffer(ctx, &ab, buf);
+    JS_FreeValue(ctx, buf);
+    if (!base) /* detached */
+        return -1;
+    if (off > ab || len > ab - off) {
+        JS_ThrowRangeError(ctx, "typed array out of bounds");
+        return -1;
+    }
+    *pp = (int32_t *)(base + off);
+    *pn = len / 4;
     return 0;
 }
 
@@ -973,6 +1013,169 @@ static JSValue js_simd_f64_axpy(JSContext *ctx, JSValueConst this_val,
     return JS_DupValue(ctx, argv[0]);
 }
 
+/* ---------- i32 (signed 32-bit integer) kernels over Int32Array ----------
+ * Zero-copy over an Int32Array's backing store (element type verified by class
+ * id, so a same-stride Float32Array/Uint32Array is rejected, never bit-
+ * reinterpreted). i32Sum returns an exact JS Number for |sum| <= 2^53 (the
+ * kernel accumulates in int64); i32Dot returns a Number (sum of double
+ * products). i32Add/i32Mul write into a separate `out` (like `add`); i32Scale
+ * is in-place. Reentrancy: i32Scale's scalar `s` is coerced to a C local (which
+ * may run user valueOf) BEFORE any buffer is resolved. */
+
+static JSValue js_simd_i32_sum(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    int32_t *a;
+    size_t n;
+    (void)this_val; (void)argc;
+    if (simd_get_i32(ctx, argv[0], &a, &n))
+        return JS_EXCEPTION;
+    return JS_NewInt64(ctx, simd.i32_sum(a, n));
+}
+
+static JSValue js_simd_i32_min(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    int32_t *a;
+    size_t n;
+    (void)this_val; (void)argc;
+    if (simd_get_i32(ctx, argv[0], &a, &n))
+        return JS_EXCEPTION;
+    if (n == 0)
+        return JS_ThrowRangeError(ctx, "i32Min: empty array");
+    return JS_NewInt32(ctx, simd.i32_min(a, n));
+}
+
+static JSValue js_simd_i32_max(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    int32_t *a;
+    size_t n;
+    (void)this_val; (void)argc;
+    if (simd_get_i32(ctx, argv[0], &a, &n))
+        return JS_EXCEPTION;
+    if (n == 0)
+        return JS_ThrowRangeError(ctx, "i32Max: empty array");
+    return JS_NewInt32(ctx, simd.i32_max(a, n));
+}
+
+static JSValue js_simd_i32_dot(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    int32_t *a, *b;
+    size_t na, nb;
+    (void)this_val; (void)argc;
+    if (simd_get_i32(ctx, argv[0], &a, &na) || simd_get_i32(ctx, argv[1], &b, &nb))
+        return JS_EXCEPTION;
+    if (na != nb)
+        return JS_ThrowRangeError(ctx, "i32Dot: length mismatch");
+    return JS_NewFloat64(ctx, simd.i32_dot(a, b, na));
+}
+
+/* i32Add(out, a, b): out[i] = a[i] + b[i] (mod 2^32); returns out. */
+static JSValue js_simd_i32_add(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    int32_t *o, *a, *b;
+    size_t no, na, nb;
+    (void)this_val; (void)argc;
+    if (simd_get_i32(ctx, argv[0], &o, &no) ||
+        simd_get_i32(ctx, argv[1], &a, &na) ||
+        simd_get_i32(ctx, argv[2], &b, &nb))
+        return JS_EXCEPTION;
+    if (no != na || na != nb)
+        return JS_ThrowRangeError(ctx, "i32Add: length mismatch");
+    simd.i32_add(o, a, b, no);
+    return JS_DupValue(ctx, argv[0]);
+}
+
+/* i32Mul(out, a, b): out[i] = a[i] * b[i] low 32 bits (Math.imul); returns out. */
+static JSValue js_simd_i32_mul(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    int32_t *o, *a, *b;
+    size_t no, na, nb;
+    (void)this_val; (void)argc;
+    if (simd_get_i32(ctx, argv[0], &o, &no) ||
+        simd_get_i32(ctx, argv[1], &a, &na) ||
+        simd_get_i32(ctx, argv[2], &b, &nb))
+        return JS_EXCEPTION;
+    if (no != na || na != nb)
+        return JS_ThrowRangeError(ctx, "i32Mul: length mismatch");
+    simd.i32_mul(o, a, b, no);
+    return JS_DupValue(ctx, argv[0]);
+}
+
+/* i32Scale(x, s): x[i] = x[i] * s low 32 bits, in-place; returns x. */
+static JSValue js_simd_i32_scale(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    int32_t *a;
+    size_t n;
+    int32_t s;
+    (void)this_val; (void)argc;
+    if (JS_ToInt32(ctx, &s, argv[1]))
+        return JS_EXCEPTION;
+    if (simd_get_i32(ctx, argv[0], &a, &n))
+        return JS_EXCEPTION;
+    simd.i32_scale(a, a, s, n);
+    return JS_DupValue(ctx, argv[0]);
+}
+
+/* ---------- Inclusive prefix scans over Int32Array OR Float32Array ----------
+ * Both element types share a 4-byte stride, so the typed-array class id (not
+ * bytes-per-element) selects the kernel. In place; returns the same array. */
+
+static JSValue js_simd_cumsum(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv)
+{
+    JSClassID cid;
+    (void)this_val; (void)argc;
+    JS_GetAnyOpaque(argv[0], &cid);
+    if (cid == (JSClassID)simd_cid_int32) {
+        int32_t *a;
+        size_t n;
+        if (simd_get_i32(ctx, argv[0], &a, &n))
+            return JS_EXCEPTION;
+        simd.i32_cumsum(a, a, n);
+        return JS_DupValue(ctx, argv[0]);
+    }
+    if (cid == (JSClassID)simd_cid_float32) {
+        float *a;
+        size_t n;
+        if (simd_get_f32(ctx, argv[0], &a, &n))
+            return JS_EXCEPTION;
+        simd.f32_cumsum(a, a, n);
+        return JS_DupValue(ctx, argv[0]);
+    }
+    return JS_ThrowTypeError(ctx, "cumsum: expected an Int32Array or Float32Array");
+}
+
+static JSValue js_simd_cummax(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv)
+{
+    JSClassID cid;
+    (void)this_val; (void)argc;
+    JS_GetAnyOpaque(argv[0], &cid);
+    if (cid == (JSClassID)simd_cid_int32) {
+        int32_t *a;
+        size_t n;
+        if (simd_get_i32(ctx, argv[0], &a, &n))
+            return JS_EXCEPTION;
+        simd.i32_cummax(a, a, n);
+        return JS_DupValue(ctx, argv[0]);
+    }
+    if (cid == (JSClassID)simd_cid_float32) {
+        float *a;
+        size_t n;
+        if (simd_get_f32(ctx, argv[0], &a, &n))
+            return JS_EXCEPTION;
+        simd.f32_cummax(a, a, n);
+        return JS_DupValue(ctx, argv[0]);
+    }
+    return JS_ThrowTypeError(ctx, "cummax: expected an Int32Array or Float32Array");
+}
+
 static const JSCFunctionListEntry js_simd_funcs[] = {
     JS_CFUNC_DEF("dot", 2, js_simd_dot),
     JS_CFUNC_DEF("sum", 1, js_simd_sum),
@@ -1043,11 +1246,40 @@ static const JSCFunctionListEntry js_simd_funcs[] = {
     JS_CFUNC_DEF("f64Min", 1, js_simd_f64_min),
     JS_CFUNC_DEF("f64Scale", 2, js_simd_f64_scale),
     JS_CFUNC_DEF("f64Axpy", 3, js_simd_f64_axpy),
+
+    /* i32 (signed 32-bit integer) over Int32Array */
+    JS_CFUNC_DEF("i32Sum", 1, js_simd_i32_sum),
+    JS_CFUNC_DEF("i32Min", 1, js_simd_i32_min),
+    JS_CFUNC_DEF("i32Max", 1, js_simd_i32_max),
+    JS_CFUNC_DEF("i32Dot", 2, js_simd_i32_dot),
+    JS_CFUNC_DEF("i32Add", 3, js_simd_i32_add),
+    JS_CFUNC_DEF("i32Mul", 3, js_simd_i32_mul),
+    JS_CFUNC_DEF("i32Scale", 2, js_simd_i32_scale),
+
+    /* inclusive prefix scans over Int32Array OR Float32Array */
+    JS_CFUNC_DEF("cumsum", 1, js_simd_cumsum),
+    JS_CFUNC_DEF("cummax", 1, js_simd_cummax),
 };
 
 static int js_simd_init_module(JSContext *ctx, JSModuleDef *m)
 {
     return JS_SetModuleExportList(ctx, m, js_simd_funcs, countof(js_simd_funcs));
+}
+
+/* Class id of a fresh typed array of `type` (0 on failure). Reads the id off a
+ * sample instance — built-in ids are process-global constants, so caching the
+ * result once is valid for every context in the process. */
+static JSClassID simd_capture_cid(JSContext *ctx, JSTypedArrayEnum type)
+{
+    JSValueConst args[1];
+    JSValue ta;
+    JSClassID cid = 0;
+    args[0] = JS_NewInt32(ctx, 0); /* immediate: new <Type>Array(0) */
+    ta = JS_NewTypedArray(ctx, 1, args, type);
+    if (!JS_IsException(ta))
+        cid = JS_GetClassID(ta);
+    JS_FreeValue(ctx, ta);
+    return cid;
 }
 
 int js_nat_init_simd(JSContext *ctx)
@@ -1057,6 +1289,10 @@ int js_nat_init_simd(JSContext *ctx)
      * `simd` globals are NULL unless another SIMD module (search/text/http/
      * docparse) happened to init first -- a fragile cross-module dependency. */
     simd_init();
+    /* Cache the Int32Array / Float32Array class ids used to route cumsum/cummax
+     * and to strictly type the i32* methods (both element types are 4 bytes). */
+    simd_cid_int32 = simd_capture_cid(ctx, JS_TYPED_ARRAY_INT32);
+    simd_cid_float32 = simd_capture_cid(ctx, JS_TYPED_ARRAY_FLOAT32);
     m = JS_NewCModule(ctx, "dynajs:simd", js_simd_init_module);
     if (!m)
         return -1;
