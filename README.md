@@ -99,6 +99,7 @@ library** — one `import` each, no dependencies:
 | `dynajs:ml` | Native `LinearRegression`, `LogisticRegression`, and `KMeans` |
 | `dynajs:compress` | `gzip` / `gunzip` (a real DEFLATE implementation) |
 | `dynajs:docparse` | Fast native JSON and CSV (RFC 4180) parsing |
+| `dynajs:csv` | File-oriented CSV CRUD (create / read / edit rows & columns), RFC 4180, mmap + atomic writes |
 | `dynajs:sort` | Sorting and binary search |
 | `dynajs:search` | SIMD substring search, including overlapping matches |
 

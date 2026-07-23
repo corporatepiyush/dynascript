@@ -49,6 +49,7 @@ Import strings are always `dynajs:<name>`.
 | `ml` | classes `LinearRegression LogisticRegression KMeans` |
 | `compress` | `gzip gunzip` |
 | `docparse` | `parseJson parseCsv` |
+| `csv` | `create read addRow updateCell removeRow addColumn removeColumn renameColumn readColumnValuesRange readRowRange selectColumnRange` (each takes one options object) |
 | `sort` | `sort binarySearch` |
 | `search` | `indexOf indexOfAll` |
 

@@ -1553,6 +1553,142 @@ parseJson('{"x":[1,2,3]}').x[2];   // 3
 
 ---
 
+# csv
+
+`import * as csv from "dynajs:csv";`
+
+File-oriented CSV create/read/update/delete, RFC 4180 (quoted fields, embedded commas/newlines/quotes,
+`""` escaping). Each function takes a single **options object**. Mutations are load-modify-store and
+write **atomically** (temp file + fsync + rename); reads mmap the file; the structural scan is
+SIMD-accelerated. **Row indices are 0-based over data rows** — row `0` is the first row after the
+header. Errors throw `Error`/`TypeError`/`RangeError`.
+
+### `create(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | Destination. Parent directories are created automatically. |
+| `headers` | `string[]` | Column names (≥ 1). |
+| `rows` | `string[][]?` | Initial rows; each must have exactly `headers.length` values. |
+| `overwrite` | `boolean?` | If `false` (default), **throws** when `path` exists. |
+
+**Returns** `{ path, rows }` (`rows` = data rows written). **Throws** if the file exists without `overwrite`, `headers` is empty, or a row's width ≠ `headers.length`.
+
+### `read(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `offset` | `number?` | Data rows to skip (default `0`). |
+| `limit` | `number?` | Max rows returned (default: all). |
+| `columns` | `string[]?` | Column names to include, in order (default: all). |
+
+**Returns** `{ headers: string[], rows: string[][], totalRows: number }` — `totalRows` is the full count regardless of pagination. **Throws** on a missing file or unknown column.
+
+### `addRow(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `rows` | `(string[] \| object)[]` | Each row is a positional `string[]` (column order) **or** an object `{ column: value }` (missing columns → `""`, extra keys ignored). |
+
+**Returns** `{ added: number, totalRows: number }`.
+
+### `updateCell(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `row` | `number` | 0-based data-row index. |
+| `column` | `string?` | Column by name (mutually exclusive with `columnIndex`). |
+| `columnIndex` | `number?` | Column by 0-based index. |
+| `value` | `string` | New value (`""` clears the cell). |
+
+**Returns** `{ row, column, value }`. **Throws** `RangeError` on an out-of-range row/index; `TypeError` on an unknown column or if no column selector is given.
+
+### `removeRow(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `row` | `number` | 0-based data-row index. Remaining rows shift up. |
+
+**Returns** `{ removed: number, totalRows: number }`. **Throws** `RangeError` if out of range.
+
+### `addColumn(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `column` | `string` | New column name (must not exist). |
+| `defaultValue` | `string?` | Fill for existing rows (default `""`). |
+
+**Returns** `{ column, totalColumns }`. **Throws** if the column already exists.
+
+### `removeColumn(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `column` | `string?` | By name (mutually exclusive with `columnIndex`). |
+| `columnIndex` | `number?` | By 0-based index. |
+
+**Returns** `{ removedIndex, totalColumns }`.
+
+### `renameColumn(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `oldName` | `string` | Existing column (must exist). |
+| `newName` | `string` | New name (must not exist unless equal to `oldName` → no-op). |
+
+**Returns** `{ oldName, newName }`.
+
+### `readColumnValuesRange(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `column` | `string` | Column name. |
+| `start` | `number?` | First data row (inclusive, default `0`). |
+| `end` | `number?` | End row (exclusive, default: all). Max **requested** window (`end - start`) is **1000**. |
+
+**Returns** `string[]`.
+
+### `readRowRange(options)`
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `start` | `number?` | First data row (inclusive, default `0`). |
+| `end` | `number?` | End row (exclusive, default `start + 1`). Max window **100**. |
+
+**Returns** `{ headers: string[], rows: string[][] }`.
+
+### `selectColumnRange(options)`
+
+Project specific columns over a range (like `SELECT col…` with no `WHERE`).
+
+| Option | Type | Description |
+|---|---|---|
+| `path` | `string` | The CSV file. |
+| `columns` | `string[]` | Column names, in output order (non-empty; all must exist). |
+| `start` | `number?` | First data row (inclusive, default `0`). |
+| `end` | `number?` | End row (exclusive, default: all). Max window **100**. |
+
+**Returns** `{ columns: string[], rows: string[][] }`.
+
+```js
+csv.create({ path: "/tmp/u.csv", headers: ["Name","Age"], rows: [["Alice","30"]], overwrite: true });
+csv.addRow({ path: "/tmp/u.csv", rows: [{ Name: "Bob", Age: "25" }] });
+csv.updateCell({ path: "/tmp/u.csv", row: 0, column: "Age", value: "31" });
+csv.read({ path: "/tmp/u.csv" });
+// { headers:["Name","Age"], rows:[["Alice","31"],["Bob","25"]], totalRows:2 }
+```
+
+---
+
 # sort
 
 `import { sort, binarySearch } from "dynajs:sort";`

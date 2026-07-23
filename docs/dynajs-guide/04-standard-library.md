@@ -605,6 +605,33 @@ print(obj.x[2], obj.y);                             // 3 true
 `parseCsv` handles RFC-4180 quoting/embedded newlines; both are native and fast — the module the
 data-ingestion path uses.
 
+### `dynajs:csv` — CSV files as a mini database
+
+Where `docparse.parseCsv` parses a CSV *string*, `dynajs:csv` treats a CSV *file* as an editable
+dataset — create it, page through it, mutate rows and columns — with RFC-4180 quoting, a
+SIMD-accelerated parse, and **atomic writes** (a crash mid-write never corrupts the file). Every
+function takes an options object; row indices are 0-based over data rows.
+
+```js
+import * as csv from "dynajs:csv";
+
+csv.create({ path: "/tmp/people.csv", headers: ["Name", "Age", "City"],
+             rows: [["Alice", "30", "NYC"]], overwrite: true });
+csv.addRow({ path: "/tmp/people.csv", rows: [{ Name: "Bob", Age: "25", City: "LA" }] });
+csv.updateCell({ path: "/tmp/people.csv", row: 0, column: "City", value: "Brooklyn" });
+csv.addColumn({ path: "/tmp/people.csv", column: "Active", defaultValue: "yes" });
+
+const page = csv.read({ path: "/tmp/people.csv", offset: 0, limit: 50, columns: ["Name", "City"] });
+print(page.headers, page.rows, "of", page.totalRows);
+// ["Name","City"] [["Alice","Brooklyn"],["Bob","LA"]] of 2
+```
+
+The eleven operations — `create`, `read`, `addRow`, `updateCell`, `removeRow`, `addColumn`,
+`removeColumn`, `renameColumn`, `readColumnValuesRange`, `readRowRange`, `selectColumnRange` — are
+each a single-options-object call (easy to expose as an MCP tool). Reads mmap the file; a 100k-row
+file creates and reads back in a few milliseconds each. See the [API Reference](API.md#csv) for
+every option.
+
 ### `dynajs:sort` — sorting & binary search
 
 ```js
@@ -718,6 +745,7 @@ prerelease at the same `major.minor.patch`).
 | `ml` | (Python/Node ML) | native regression/kmeans |
 | `compress` | Node `zlib` | real DEFLATE gzip |
 | `docparse` | (fast parsers) | native JSON/CSV |
+| `csv` | CSV editor libs | file CRUD, RFC 4180, mmap + atomic |
 | `sort` | (sort libs) | sort + binary search |
 | `search` | (search libs) | SIMD substring, overlapping matches |
 
