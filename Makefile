@@ -625,28 +625,6 @@ examples/point.so: $(OBJDIR)/examples/point.pic.o
 	$(CC) $(LDFLAGS) -shared -o $@ $^
 
 ###############################################################################
-# documentation
-
-DOCS=doc/dynajs.pdf doc/dynajs.html
-
-build_doc: $(DOCS)
-
-clean_doc:
-	rm -f $(DOCS)
-
-doc/version.texi: VERSION
-	@echo "@set VERSION `cat $<`" > $@
-
-doc/%.pdf: doc/%.texi doc/version.texi
-	texi2pdf --clean -o $@ -q $<
-
-doc/%.html.pre: doc/%.texi doc/version.texi
-	makeinfo --html --no-headers --no-split --number-sections -o $@ $<
-
-doc/%.html: doc/%.html.pre
-	sed -e 's|</style>|</style>\n<meta name="viewport" content="width=device-width, initial-scale=1.0">|' < $< > $@
-
-###############################################################################
 # tests
 
 ifdef CONFIG_SHARED_LIBS
