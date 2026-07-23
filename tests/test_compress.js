@@ -59,11 +59,17 @@ function u8(...vals) { return new Uint8Array(vals); }
 
 /* --- test corpora --- */
 const enc = new TextEncoder();
+const englishText =
+    "The quick brown fox jumps over the lazy dog. Pack my box with five " +
+    "dozen liquor jugs. How vexingly quick daft zebras jump! Sphinx of " +
+    "black quartz, judge my vow. The five boxing wizards jump quickly. ";
 const corpora = {
     empty: new Uint8Array(0),
+    oneByte: enc.encode("Z"),
     small: enc.encode("hello, gzip world!"),
     repeated: enc.encode("abcdefgh".repeat(4000)),      /* highly compressible */
     newlines: enc.encode("line\n".repeat(1000)),
+    english: enc.encode(englishText.repeat(80)),        /* natural-language text */
 };
 /* pseudo-random (LCG) — incompressible, exercises stored-block fallback path */
 {
@@ -74,6 +80,13 @@ const corpora = {
         r[i] = (x >>> 16) & 0xff;
     }
     corpora.random = r;
+}
+/* binary data with embedded NULs — must survive round-trip byte-for-byte */
+{
+    const b = new Uint8Array(3000);
+    for (let i = 0; i < b.length; i++)
+        b[i] = (i % 7 === 0) ? 0x00 : ((i * 31 + (i >> 3)) & 0xff);
+    corpora.binaryNul = b;
 }
 
 /* --- 1. round-trip: gunzip(gzip(x)) === x --- */
@@ -86,6 +99,39 @@ for (const [name, data] of Object.entries(corpora)) {
     const back = gunzip(packed);
     assert(back instanceof Uint8Array, "gunzip returns Uint8Array (" + name + ")");
     assert(bytesEqual(back, data), "round-trip preserves bytes (" + name + ")");
+}
+
+/* --- 1b. real compression ratio: text + repetitive data must shrink --- */
+{
+    function ratio(name) {
+        const data = corpora[name];
+        const packed = gzip(data);
+        const r = packed.length / data.length;
+        print("  ratio[" + name + "]: " + data.length + " -> " +
+              packed.length + " bytes (" + r.toFixed(4) + ")");
+        return r;
+    }
+    assert(ratio("repeated") < 0.2, "repeated data compresses hard (<0.2)");
+    assert(ratio("newlines") < 0.2, "newline runs compress hard (<0.2)");
+    assert(ratio("english") < 0.6, "English text actually shrinks (<0.6)");
+    /* incompressible input must not expand meaningfully (stored fallback). */
+    const rr = ratio("random");
+    assert(rr < 1.02, "random data does not blow up (stored fallback)");
+}
+
+/* --- 1c. throughput: report MB/s of gzip() (real deflate) --- */
+{
+    const data = corpora.english;      /* representative text workload */
+    const mb = data.length / (1024 * 1024);
+    let iters = 40, best = Infinity;
+    for (let pass = 0; pass < 5; pass++) {
+        const t0 = performance.now();
+        for (let i = 0; i < iters; i++) gzip(data);
+        const dt = (performance.now() - t0) / iters;
+        if (dt < best) best = dt;
+    }
+    print("  gzip throughput: " + (mb / (best / 1000)).toFixed(1) +
+          " MB/s (" + best.toFixed(3) + " ms / " + data.length + " bytes)");
 }
 
 /* --- 2. gzip accepts string and ArrayBuffer inputs; asString decode --- */
@@ -101,19 +147,22 @@ for (const [name, data] of Object.entries(corpora)) {
     assert(packedAb === text, "ArrayBuffer input round-trips");
 }
 
-/* --- 3. cross-tool (a): my gzip() output decodes with system gunzip --- */
-{
-    const data = corpora.repeated;
+/* --- 3. cross-tool (a): my gzip() output decodes with system gzip -dc --- */
+/* Covers real fixed-Huffman output (repeated/english/binaryNul) + stored
+ * fallback (random): the SYSTEM tool must reproduce the exact input. */
+for (const name of ["repeated", "english", "binaryNul", "random", "small"]) {
+    const data = corpora[name];
     const packed = gzip(data);
     const gzPath = "tmp_compress_a.gz";
     const outPath = "tmp_compress_a.out";
     writeFileBytes(gzPath, packed);
-    /* -f: force even if not the usual suffix owner; decode to a plain file */
-    const rc = os.exec(["/bin/sh", "-c", "gunzip -c " + gzPath + " > " + outPath],
+    const rc = os.exec(["/bin/sh", "-c", "gzip -dc " + gzPath + " > " + outPath],
                        { usePath: false });
-    assert(rc === 0, "system gunzip decoded our gzip output (rc=" + rc + ")");
+    assert(rc === 0, "system gzip -dc decoded our output (" + name + ", rc=" +
+           rc + ")");
     const sysOut = readFileBytes(outPath);
-    assert(bytesEqual(sysOut, data), "system gunzip bytes match original");
+    assert(bytesEqual(sysOut, data),
+           "system gzip bytes match original (" + name + ")");
     os.remove(gzPath);
     os.remove(outPath);
 }

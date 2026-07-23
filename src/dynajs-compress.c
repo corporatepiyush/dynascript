@@ -15,9 +15,11 @@
  *
  * Codec:
  *   - gzip():   RFC 1952 framing (magic 1f 8b, method 8, mtime=0, OS=ff) around a
- *               DEFLATE stream of *stored* (uncompressed) blocks -- always valid
- *               DEFLATE that any standard decoder accepts -- plus the CRC-32 +
- *               ISIZE trailer.
+ *               real fixed-Huffman DEFLATE stream (LZ77 hash-chain match finding
+ *               + RFC 1951 §3.2.6 fixed codes), falling back to *stored*
+ *               (uncompressed) blocks when that would not shrink the input so the
+ *               output never expands -- always valid DEFLATE that any standard
+ *               decoder accepts -- plus the CRC-32 + ISIZE trailer.
  *   - gunzip(): a full RFC 1951 inflate (stored / fixed-Huffman / dynamic-Huffman
  *               blocks) so it decodes the output of the system gzip/zlib, with
  *               RFC 1952 header parsing and CRC-32 + ISIZE trailer validation.
@@ -396,25 +398,338 @@ static int dyn_inflate(const uint8_t *src, size_t src_len, dyn_outbuf_t *o)
     return 0;
 }
 
+/* ---------- DEFLATE encoder (RFC 1951, fixed-Huffman) ---------------------- */
+
+/* LSB-first bit writer appending into a growable libc buffer. Huffman codes are
+ * pre-reversed (see dyn_rev_bits) so that emitting them LSB-first reproduces the
+ * RFC's MSB-first code packing; extra bits are written LSB-first directly. */
+typedef struct {
+    dyn_outbuf_t *o;
+    uint32_t bitbuf;   /* pending bits, LSB = next to emit */
+    int bitcnt;        /* number of valid bits in bitbuf (0..7 between calls) */
+    int error;
+} dyn_bitwriter_t;
+
+/* Append `nbits` (0..16) of `value` LSB-first. Drains whole bytes as they fill.
+ * bitcnt stays < 8 on entry, so bitbuf holds at most 7 + 16 = 23 bits. */
+static int dyn_wbits(dyn_bitwriter_t *w, unsigned value, int nbits)
+{
+    w->bitbuf |= (value & (((unsigned)1 << nbits) - 1u)) << w->bitcnt;
+    w->bitcnt += nbits;
+    while (w->bitcnt >= 8) {
+        if (dyn_ob_ensure(w->o, 1)) {
+            w->error = 1;
+            return -1;
+        }
+        w->o->buf[w->o->len++] = (uint8_t)(w->bitbuf & 0xffu);
+        w->bitbuf >>= 8;
+        w->bitcnt -= 8;
+    }
+    return 0;
+}
+
+/* Flush the final partial byte (zero-padded) to a byte boundary. */
+static int dyn_wflush(dyn_bitwriter_t *w)
+{
+    if (w->bitcnt > 0) {
+        if (dyn_ob_ensure(w->o, 1)) {
+            w->error = 1;
+            return -1;
+        }
+        w->o->buf[w->o->len++] = (uint8_t)(w->bitbuf & 0xffu);
+        w->bitbuf = 0;
+        w->bitcnt = 0;
+    }
+    return 0;
+}
+
+/* Reverse the low `len` bits of `code` (MSB-first code -> LSB-first stream). */
+static unsigned dyn_rev_bits(unsigned code, int len)
+{
+    unsigned r = 0;
+    while (len-- > 0) {
+        r = (r << 1) | (code & 1u);
+        code >>= 1;
+    }
+    return r;
+}
+
+/* Emit one fixed-Huffman literal/length symbol (0..287). The code assignments
+ * below are exactly the canonical fixed codes RFC 1951 §3.2.6 (and match the
+ * decoder's dyn_inflate_fixed table). */
+static int dyn_emit_ll(dyn_bitwriter_t *w, int sym)
+{
+    unsigned code;
+    int len;
+
+    if (sym < 144) {
+        len = 8;
+        code = 0x30u + (unsigned)sym;            /* 00110000..10111111 */
+    } else if (sym < 256) {
+        len = 9;
+        code = 0x190u + (unsigned)(sym - 144);   /* 110010000..111111111 */
+    } else if (sym < 280) {
+        len = 7;
+        code = (unsigned)(sym - 256);            /* 0000000..0010111 */
+    } else {
+        len = 8;
+        code = 0xc0u + (unsigned)(sym - 280);    /* 11000000..11000111 */
+    }
+    return dyn_wbits(w, dyn_rev_bits(code, len), len);
+}
+
+/* Map a match length (3..258) to its length-code index [0,28] and a distance
+ * (1..32768) to its distance-code index [0,29], reusing the decoder tables. */
+static int dyn_len_index(int length)
+{
+    int i;
+    for (i = 28; i > 0; i--)
+        if (length >= dyn_lens[i])
+            return i;
+    return 0;
+}
+static int dyn_dist_index(int dist)
+{
+    int j;
+    for (j = 29; j > 0; j--)
+        if (dist >= dyn_dists[j])
+            return j;
+    return 0;
+}
+
+/* Emit a back-reference: length symbol (+extra) then 5-bit distance code (+extra). */
+static int dyn_emit_match(dyn_bitwriter_t *w, int length, int dist)
+{
+    int i = dyn_len_index(length);
+    int j = dyn_dist_index(dist);
+
+    if (dyn_emit_ll(w, 257 + i))
+        return -1;
+    if (dyn_lext[i] &&
+        dyn_wbits(w, (unsigned)(length - dyn_lens[i]), dyn_lext[i]))
+        return -1;
+    /* Fixed-Huffman distance codes are 5-bit, value == symbol index. */
+    if (dyn_wbits(w, dyn_rev_bits((unsigned)j, 5), 5))
+        return -1;
+    if (dyn_dext[j] &&
+        dyn_wbits(w, (unsigned)(dist - dyn_dists[j]), dyn_dext[j]))
+        return -1;
+    return 0;
+}
+
+/* ---------- LZ77 match finder (hash-chain, greedy) ------------------------- */
+
+#define DYN_MIN_MATCH  3
+#define DYN_MAX_MATCH  258
+#define DYN_WSIZE      ((size_t)32768)  /* max back-reference distance */
+#define DYN_HASH_BITS  15
+#define DYN_HASH_SIZE  ((size_t)1 << DYN_HASH_BITS)
+#define DYN_MAX_CHAIN  256              /* chain-walk cap: bounds encode time */
+
+static uint32_t dyn_hash3(const uint8_t *p)
+{
+    return (((uint32_t)p[0] << 10) ^ ((uint32_t)p[1] << 5) ^ (uint32_t)p[2]) &
+           (uint32_t)(DYN_HASH_SIZE - 1);
+}
+
+/* Encode `src` as a single final fixed-Huffman DEFLATE block into `o`. Returns
+ * 0, or -1 on OOM / an input too large to index (caller falls back to stored). */
+static int dyn_deflate_fixed(const uint8_t *src, size_t len, dyn_outbuf_t *o)
+{
+    dyn_bitwriter_t w;
+    int32_t *head = NULL, *prev = NULL;
+    size_t i;
+
+    w.o = o;
+    w.bitbuf = 0;
+    w.bitcnt = 0;
+    w.error = 0;
+
+    /* BFINAL=1, BTYPE=01 (fixed Huffman): the 3 LSB-first bits are 0b011 = 3. */
+    if (dyn_wbits(&w, 3, 3))
+        return -1;
+
+    if (len == 0) {
+        if (dyn_emit_ll(&w, 256))
+            return -1;
+        return dyn_wflush(&w);
+    }
+    if (len > (size_t)INT32_MAX)
+        return -1; /* positions must fit int32 chain slots */
+
+    head = (int32_t *)malloc(sizeof(int32_t) * DYN_HASH_SIZE);
+    prev = (int32_t *)malloc(sizeof(int32_t) * len);
+    if (!head || !prev) {
+        free(head);
+        free(prev);
+        return -1;
+    }
+    for (i = 0; i < DYN_HASH_SIZE; i++)
+        head[i] = -1;
+
+    i = 0;
+    while (i < len) {
+        int best_len = 0, best_dist = 0;
+
+        if (i + DYN_MIN_MATCH <= len) {
+            uint32_t h = dyn_hash3(src + i);
+            int32_t j = head[h];
+            int chain = DYN_MAX_CHAIN;
+            size_t max_len = len - i;
+            const uint8_t *a = src + i;
+
+            if (max_len > DYN_MAX_MATCH)
+                max_len = DYN_MAX_MATCH;
+            while (j >= 0 && chain-- > 0) {
+                size_t dist = i - (size_t)j;
+                const uint8_t *b;
+                size_t ml;
+
+                if (dist > DYN_WSIZE)
+                    break; /* chain is position-descending: all older are farther */
+                b = src + (size_t)j;
+                /* Skip work unless we can beat the current best. */
+                if (best_len == 0 || (size_t)best_len >= max_len ||
+                    a[best_len] == b[best_len]) {
+                    ml = 0;
+                    while (ml < max_len && a[ml] == b[ml])
+                        ml++;
+                    if ((int)ml > best_len) {
+                        best_len = (int)ml;
+                        best_dist = (int)dist;
+                        if (ml >= max_len)
+                            break; /* longest possible here */
+                    }
+                }
+                j = prev[(size_t)j];
+            }
+            prev[i] = head[h];
+            head[h] = (int32_t)i;
+        }
+
+        if (best_len >= DYN_MIN_MATCH) {
+            size_t end = i + (size_t)best_len;
+            size_t k;
+
+            if (dyn_emit_match(&w, best_len, best_dist)) {
+                free(head);
+                free(prev);
+                return -1;
+            }
+            /* Insert hash entries for the positions the match covered. */
+            for (k = i + 1; k < end; k++) {
+                if (k + DYN_MIN_MATCH <= len) {
+                    uint32_t hh = dyn_hash3(src + k);
+                    prev[k] = head[hh];
+                    head[hh] = (int32_t)k;
+                }
+            }
+            i = end;
+        } else {
+            if (dyn_emit_ll(&w, src[i])) {
+                free(head);
+                free(prev);
+                return -1;
+            }
+            i++;
+        }
+    }
+
+    free(head);
+    free(prev);
+    if (dyn_emit_ll(&w, 256)) /* end-of-block */
+        return -1;
+    return dyn_wflush(&w);
+}
+
+/* Encode `src` as DEFLATE stored (uncompressed) blocks into `o` -- the fallback
+ * when real compression would expand the data or the chain tables can't alloc. */
+static int dyn_deflate_stored(const uint8_t *src, size_t len, dyn_outbuf_t *o)
+{
+    size_t off;
+
+    if (len == 0) {
+        if (dyn_ob_ensure(o, 5))
+            return -1;
+        o->buf[o->len++] = 0x01; /* BFINAL=1, BTYPE=00 */
+        o->buf[o->len++] = 0x00;
+        o->buf[o->len++] = 0x00; /* LEN = 0 */
+        o->buf[o->len++] = 0xff;
+        o->buf[o->len++] = 0xff; /* NLEN = ~0 */
+        return 0;
+    }
+    off = 0;
+    while (off < len) {
+        size_t chunk = len - off;
+        unsigned l, nl;
+        if (chunk > DYN_STORED_MAX)
+            chunk = DYN_STORED_MAX;
+        l = (unsigned)chunk;
+        nl = (~l) & 0xffffu;
+        if (dyn_ob_ensure(o, 5 + chunk))
+            return -1;
+        o->buf[o->len++] = (off + chunk == len) ? 0x01 : 0x00; /* BFINAL on last */
+        o->buf[o->len++] = (uint8_t)(l & 0xff);
+        o->buf[o->len++] = (uint8_t)((l >> 8) & 0xff);
+        o->buf[o->len++] = (uint8_t)(nl & 0xff);
+        o->buf[o->len++] = (uint8_t)((nl >> 8) & 0xff);
+        memcpy(o->buf + o->len, src + off, chunk);
+        o->len += chunk;
+        off += chunk;
+    }
+    return 0;
+}
+
 /* ---------- gzip framing --------------------------------------------------- */
 
-/* Build a gzip member around `src` using DEFLATE stored blocks. Returns a fresh
- * libc buffer via pout / pout_len (caller frees), or -1 (OOM). */
+/* Build a gzip member around `src`: RFC 1952 header, a real fixed-Huffman
+ * DEFLATE body (falling back to stored blocks if that would not shrink the
+ * data), then the CRC-32 + ISIZE trailer. Returns a fresh libc buffer via
+ * pout / pout_len (caller frees), or -1 (OOM). */
 static int dyn_gzip_build(const uint8_t *src, size_t src_len,
                           uint8_t **pout, size_t *pout_len)
 {
-    size_t nblocks, total, off;
+    dyn_outbuf_t body = { NULL, 0, 0 };
+    size_t nblocks, stored_sz, total;
     uint32_t crc, isize;
     uint8_t *out, *p;
 
     nblocks = src_len ? (src_len + DYN_STORED_MAX - 1) / DYN_STORED_MAX : 1;
-    /* 10 header + (5 per stored block header) + payload + 8 trailer. */
-    if (src_len > SIZE_MAX - 18 - nblocks * 5)
+    stored_sz = src_len ? nblocks * 5 + src_len : 5;
+
+    if (dyn_deflate_fixed(src, src_len, &body) < 0) {
+        /* No compression possible (OOM/oversize) -- emit stored blocks. */
+        free(body.buf);
+        body.buf = NULL;
+        body.len = 0;
+        body.cap = 0;
+        if (dyn_deflate_stored(src, src_len, &body) < 0) {
+            free(body.buf);
+            return -1;
+        }
+    } else if (body.len >= stored_sz) {
+        /* Fixed-Huffman did not shrink it (e.g. incompressible input): prefer
+         * stored so the output never expands past the stored representation. */
+        dyn_outbuf_t sb = { NULL, 0, 0 };
+        if (dyn_deflate_stored(src, src_len, &sb) == 0 && sb.len < body.len) {
+            free(body.buf);
+            body = sb;
+        } else {
+            free(sb.buf);
+        }
+    }
+
+    /* 10 header + body + 8 trailer. */
+    if (body.len > SIZE_MAX - 18) {
+        free(body.buf);
         return -1;
-    total = 10 + nblocks * 5 + src_len + 8;
+    }
+    total = 10 + body.len + 8;
     out = (uint8_t *)malloc(total);
-    if (!out)
+    if (!out) {
+        free(body.buf);
         return -1;
+    }
     p = out;
 
     /* RFC 1952 header: magic, CM=deflate, no FLG, MTIME=0, XFL=0, OS=255. */
@@ -429,32 +744,10 @@ static int dyn_gzip_build(const uint8_t *src, size_t src_len,
     *p++ = 0x00;
     *p++ = 0xff;
 
-    /* DEFLATE stored blocks. */
-    if (src_len == 0) {
-        *p++ = 0x01; /* BFINAL=1, BTYPE=00 */
-        *p++ = 0x00;
-        *p++ = 0x00; /* LEN = 0 */
-        *p++ = 0xff;
-        *p++ = 0xff; /* NLEN = ~0 */
-    } else {
-        off = 0;
-        while (off < src_len) {
-            size_t chunk = src_len - off;
-            unsigned len, nlen;
-            if (chunk > DYN_STORED_MAX)
-                chunk = DYN_STORED_MAX;
-            len = (unsigned)chunk;
-            nlen = (~len) & 0xffffu;
-            *p++ = (off + chunk == src_len) ? 0x01 : 0x00; /* BFINAL on last */
-            *p++ = (uint8_t)(len & 0xff);
-            *p++ = (uint8_t)((len >> 8) & 0xff);
-            *p++ = (uint8_t)(nlen & 0xff);
-            *p++ = (uint8_t)((nlen >> 8) & 0xff);
-            memcpy(p, src + off, chunk);
-            p += chunk;
-            off += chunk;
-        }
-    }
+    if (body.len)
+        memcpy(p, body.buf, body.len);
+    p += body.len;
+    free(body.buf);
 
     /* RFC 1952 trailer: CRC-32 then ISIZE (mod 2^32), both little-endian. */
     crc = dyn_crc32(src, src_len);
@@ -635,7 +928,7 @@ static JSValue dyn_gzip(JSContext *ctx, JSValueConst this_val, int argc,
 
     (void)this_val;
 
-    /* Accept an optional level for signature compatibility; the stored-block
+    /* Accept an optional level for signature compatibility; the fixed-Huffman
      * encoder ignores it. Coerce it FIRST (a throwing valueOf strands nothing). */
     if (argc > 1 && JS_IsNumber(argv[1])) {
         int32_t lv;
