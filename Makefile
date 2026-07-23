@@ -174,7 +174,7 @@ CFLAGS+=$(DEFINES)
 # src/<x>.c for a flat $(OBJDIR)/<x>.o (generated repl.c etc. stay in the root,
 # which make searches before VPATH).
 CFLAGS+=-I. -Isrc
-VPATH=src
+VPATH=src:tools
 CFLAGS_DEBUG=$(CFLAGS) -O0
 CFLAGS_SMALL=$(CFLAGS) -Os
 CFLAGS_OPT=$(CFLAGS) -O2
