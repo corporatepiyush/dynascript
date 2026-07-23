@@ -53,6 +53,9 @@ static int dyn_text_bytes(JSContext *ctx, JSValueConst v, const uint8_t **data,
             *data = ab;
             return 0;
         }
+        /* not an ArrayBuffer: clear the TypeError it raised before falling
+         * back to string coercion (else a stale exception leaks). */
+        JS_FreeValue(ctx, JS_GetException(ctx));
     }
     /* fall back to string coercion for other types (numbers, etc.) */
     {
