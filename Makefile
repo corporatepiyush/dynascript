@@ -261,6 +261,9 @@ endif
 ifneq ($(wildcard src/dynajs-path.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_PATH
 endif
+ifneq ($(wildcard src/dynajs-netip.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_NETIP
+endif
 ifneq ($(wildcard src/dynajs-strings.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_STRINGS
 endif
@@ -384,6 +387,9 @@ NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-text.o
 endif
 ifneq ($(wildcard src/dynajs-path.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-path.o
+endif
+ifneq ($(wildcard src/dynajs-netip.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-netip.o
 endif
 ifneq ($(wildcard src/dynajs-strings.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-strings.o

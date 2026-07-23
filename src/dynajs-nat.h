@@ -117,6 +117,9 @@ int js_nat_init_text(JSContext *ctx); /* dynajs:text SIMD byte/text utilities */
 #ifdef CONFIG_NATIVE_MODULE_PATH
 int js_nat_init_path(JSContext *ctx); /* dynajs:path POSIX path utilities */
 #endif
+#ifdef CONFIG_NATIVE_MODULE_NETIP
+int js_nat_init_netip(JSContext *ctx); /* dynajs:netip IP/CIDR (Go net/netip) */
+#endif
 #ifdef CONFIG_NATIVE_MODULE_STRINGS
 int js_nat_init_strings(JSContext *ctx); /* dynajs:strings Go+JS string utilities */
 #endif

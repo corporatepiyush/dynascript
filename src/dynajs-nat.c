@@ -213,6 +213,10 @@ int js_nat_init_all(JSContext *ctx)
     if (js_nat_init_path(ctx))
         return -1;
 #endif
+#ifdef CONFIG_NATIVE_MODULE_NETIP
+    if (js_nat_init_netip(ctx))
+        return -1;
+#endif
 #ifdef CONFIG_NATIVE_MODULE_STRINGS
     if (js_nat_init_strings(ctx))
         return -1;
