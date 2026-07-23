@@ -279,6 +279,9 @@ endif
 ifneq ($(wildcard src/dynajs-mathx.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_MATHX
 endif
+ifneq ($(wildcard src/dynajs-uuid.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_UUID
+endif
 endif
 ifdef CONFIG_WIN32
 LDEXPORT=
@@ -396,6 +399,9 @@ NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-time.o
 endif
 ifneq ($(wildcard src/dynajs-mathx.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-mathx.o
+endif
+ifneq ($(wildcard src/dynajs-uuid.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-uuid.o
 endif
 ifdef CONFIG_IO_URING
 ifneq ($(wildcard src/dynajs-uring.c),)
