@@ -1133,8 +1133,179 @@ simd_avx2_strfind(const uint8_t *text, size_t n, const uint8_t *pat, size_t m) {
   return SIZE_MAX;
 }
 
+/* ── hex / latin1 / utf8 byte kernels (AVX2) ─────────────────────── */
+
+static const char simd_avx2_hexc[] = "0123456789abcdef";
+
+static inline int simd_avx2_hexval(uint8_t c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+/* Encode 32 bytes -> 64 hex chars. PSHUFB is per-128-lane, so the 16-byte LUT
+ * is broadcast into both lanes; unpack interleaves within lanes and
+ * permute2x128 stitches the four half-lanes into linear order. */
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_hex_encode(const uint8_t *restrict src, size_t n,
+                     char *restrict dst) {
+  const __m128i lut128 = _mm_setr_epi8('0', '1', '2', '3', '4', '5', '6', '7',
+                                       '8', '9', 'a', 'b', 'c', 'd', 'e', 'f');
+  const __m256i lut = _mm256_broadcastsi128_si256(lut128);
+  const __m256i lomask = _mm256_set1_epi8(0x0F);
+  size_t i = 0, o = 0;
+  for (; i + 32 <= n; i += 32) {
+    __m256i v = _mm256_loadu_si256((const __m256i *)(src + i));
+    __m256i hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), lomask);
+    __m256i lo = _mm256_and_si256(v, lomask);
+    __m256i hc = _mm256_shuffle_epi8(lut, hi);
+    __m256i lc = _mm256_shuffle_epi8(lut, lo);
+    __m256i a = _mm256_unpacklo_epi8(hc, lc); /* lanes: [0..7][16..23] */
+    __m256i b = _mm256_unpackhi_epi8(hc, lc); /* lanes: [8..15][24..31] */
+    __m256i o0 = _mm256_permute2x128_si256(a, b, 0x20); /* out[0:32]  */
+    __m256i o1 = _mm256_permute2x128_si256(a, b, 0x31); /* out[32:64] */
+    _mm256_storeu_si256((__m256i *)(dst + o), o0);
+    _mm256_storeu_si256((__m256i *)(dst + o + 32), o1);
+    o += 64;
+  }
+  for (; i < n; i++) {
+    dst[o++] = simd_avx2_hexc[src[i] >> 4];
+    dst[o++] = simd_avx2_hexc[src[i] & 0x0F];
+  }
+}
+
+__attribute__((target("avx2,fma"))) static inline __m256i
+simd_avx2_in_range(__m256i c, __m256i lo, __m256i hi) {
+  return _mm256_cmpeq_epi8(_mm256_max_epu8(_mm256_min_epu8(c, hi), lo), c);
+}
+
+/* Decode 32 chars -> 16 bytes: validate, arithmetic nibble select, pack
+ * adjacent pairs, then permute the packus qwords back into linear order. */
+__attribute__((target("avx2,fma"))) static size_t
+simd_avx2_hex_decode(const char *restrict src, size_t n,
+                     uint8_t *restrict dst) {
+  const __m256i v0 = _mm256_set1_epi8('0'), v9 = _mm256_set1_epi8('9');
+  const __m256i va = _mm256_set1_epi8('a'), vf = _mm256_set1_epi8('f');
+  const __m256i vA = _mm256_set1_epi8('A'), vF = _mm256_set1_epi8('F');
+  const __m256i sd = _mm256_set1_epi8('0');
+  const __m256i sl = _mm256_set1_epi8((char)('a' - 10));
+  const __m256i su = _mm256_set1_epi8((char)('A' - 10));
+  size_t i = 0, o = 0;
+  if (n & 1) return SIZE_MAX;
+  for (; i + 32 <= n; i += 32) {
+    __m256i c = _mm256_loadu_si256((const __m256i *)(src + i));
+    __m256i isd = simd_avx2_in_range(c, v0, v9);
+    __m256i isl = simd_avx2_in_range(c, va, vf);
+    __m256i isu = simd_avx2_in_range(c, vA, vF);
+    __m256i valid = _mm256_or_si256(isd, _mm256_or_si256(isl, isu));
+    __m256i nib, lonib, combined, packed, perm;
+    if ((unsigned)_mm256_movemask_epi8(valid) != 0xFFFFFFFFu) return SIZE_MAX;
+    nib = _mm256_or_si256(
+        _mm256_and_si256(_mm256_sub_epi8(c, sd), isd),
+        _mm256_or_si256(_mm256_and_si256(_mm256_sub_epi8(c, sl), isl),
+                        _mm256_and_si256(_mm256_sub_epi8(c, su), isu)));
+    lonib = _mm256_and_si256(nib, _mm256_set1_epi16(0x00FF));
+    combined = _mm256_or_si256(_mm256_slli_epi16(lonib, 4),
+                               _mm256_srli_epi16(nib, 8));
+    /* packus is per-128-lane: result qwords q0=out[0:8], q2=out[8:16] */
+    packed = _mm256_packus_epi16(combined, _mm256_setzero_si256());
+    perm = _mm256_permute4x64_epi64(packed, _MM_SHUFFLE(3, 1, 2, 0));
+    _mm_storeu_si128((__m128i *)(dst + o), _mm256_castsi256_si128(perm));
+    o += 16;
+  }
+  for (; i < n; i += 2) {
+    int hi = simd_avx2_hexval((uint8_t)src[i]);
+    int lo = simd_avx2_hexval((uint8_t)src[i + 1]);
+    if (hi < 0 || lo < 0) return SIZE_MAX;
+    dst[o++] = (uint8_t)((hi << 4) | lo);
+  }
+  return o;
+}
+
+__attribute__((target("avx2,fma"))) static size_t
+simd_avx2_latin1_to_utf8(const uint8_t *restrict src, size_t n,
+                         uint8_t *restrict dst) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    if (i + 32 <= n) {
+      __m256i blk = _mm256_loadu_si256((const __m256i *)(src + i));
+      if (_mm256_movemask_epi8(blk) == 0) { /* all ASCII */
+        _mm256_storeu_si256((__m256i *)(dst + o), blk);
+        i += 32; o += 32;
+        continue;
+      }
+    }
+    {
+      uint8_t c = src[i++];
+      if (c < 0x80) {
+        dst[o++] = c;
+      } else {
+        dst[o++] = (uint8_t)(0xC0 | (c >> 6));
+        dst[o++] = (uint8_t)(0x80 | (c & 0x3F));
+      }
+    }
+  }
+  return o;
+}
+
+__attribute__((target("avx2,fma"))) static int
+simd_avx2_utf8_to_latin1(const uint8_t *restrict src, size_t n,
+                         uint8_t *restrict dst, size_t *out_len) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    if (i + 32 <= n) {
+      __m256i blk = _mm256_loadu_si256((const __m256i *)(src + i));
+      if (_mm256_movemask_epi8(blk) == 0) {
+        _mm256_storeu_si256((__m256i *)(dst + o), blk);
+        i += 32; o += 32;
+        continue;
+      }
+    }
+    {
+      uint8_t c = src[i];
+      if (c < 0x80) { dst[o++] = c; i++; continue; }
+      if ((c & 0xE0) == 0xC0) {
+        uint8_t c1;
+        uint32_t cp;
+        if (i + 1 >= n) return -1;
+        c1 = src[i + 1];
+        if ((c1 & 0xC0) != 0x80) return -1;
+        cp = ((uint32_t)(c & 0x1F) << 6) | (c1 & 0x3F);
+        if (cp < 0x80 || cp > 0xFF) return -1;
+        dst[o++] = (uint8_t)cp;
+        i += 2;
+        continue;
+      }
+      return -1;
+    }
+  }
+  *out_len = o;
+  return 0;
+}
+
+__attribute__((target("avx2,fma"))) static size_t
+simd_avx2_count_utf8(const uint8_t *restrict p, size_t n) {
+  const __m256i c0 = _mm256_set1_epi8((char)0xC0);
+  const __m256i c80 = _mm256_set1_epi8((char)0x80);
+  size_t i = 0, total = 0;
+  for (; i + 32 <= n; i += 32) {
+    __m256i blk = _mm256_loadu_si256((const __m256i *)(p + i));
+    __m256i iscont = _mm256_cmpeq_epi8(_mm256_and_si256(blk, c0), c80);
+    total += 32 - (size_t)__builtin_popcount((unsigned)_mm256_movemask_epi8(iscont));
+  }
+  for (; i < n; i++)
+    if ((p[i] & 0xC0) != 0x80) total++;
+  return total;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_avx2(simd_t *t) {
+  t->hex_encode = simd_avx2_hex_encode;
+  t->hex_decode = simd_avx2_hex_decode;
+  t->latin1_to_utf8 = simd_avx2_latin1_to_utf8;
+  t->utf8_to_latin1 = simd_avx2_utf8_to_latin1;
+  t->count_utf8 = simd_avx2_count_utf8;
   t->strfind = simd_avx2_strfind;
   t->dot = simd_avx2_dot;
   t->dot_f = simd_avx2_dot_f;

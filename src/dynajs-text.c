@@ -68,6 +68,28 @@ static int dyn_text_bytes(JSContext *ctx, JSValueConst v, const uint8_t **data,
     }
 }
 
+/* Build a fresh Uint8Array copying `len` bytes from `data` (never aliases a
+ * native pointer into JS). `data` may be NULL only when len==0. */
+static JSValue dyn_text_new_u8array(JSContext *ctx, const uint8_t *data,
+                                    size_t len)
+{
+    static const uint8_t zero_stub = 0;
+    JSValue ab, out;
+    JSValueConst ta_args[3];
+
+    if (len == 0)
+        data = &zero_stub; /* never pass NULL into JS_NewArrayBufferCopy */
+    ab = JS_NewArrayBufferCopy(ctx, data, len);
+    if (JS_IsException(ab))
+        return ab;
+    ta_args[0] = ab;
+    ta_args[1] = JS_UNDEFINED;
+    ta_args[2] = JS_UNDEFINED;
+    out = JS_NewTypedArray(ctx, 3, ta_args, JS_TYPED_ARRAY_UINT8);
+    JS_FreeValue(ctx, ab);
+    return out;
+}
+
 /* count(text, ch) -> occurrences of byte `ch` in text. `ch` is a string (its
  * first byte) or a number (low 8 bits). */
 static JSValue dyn_text_count(JSContext *ctx, JSValueConst this_val, int argc,
@@ -210,12 +232,165 @@ static JSValue dyn_text_base64_decode(JSContext *ctx, JSValueConst this_val,
     return result;
 }
 
+/* hexEncode(data) -> lowercase hex string of the input bytes. */
+static JSValue dyn_text_hex_encode(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    const uint8_t *data;
+    size_t len;
+    const char *owned;
+    char *out;
+    JSValue result;
+    (void)this_val;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "hexEncode(data)");
+    if (dyn_text_bytes(ctx, argv[0], &data, &len, &owned))
+        return JS_EXCEPTION;
+    out = (char *)malloc(len ? len * 2 : 1);
+    if (!out) {
+        if (owned)
+            JS_FreeCString(ctx, owned);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    simd.hex_encode(data, len, out);
+    if (owned)
+        JS_FreeCString(ctx, owned);
+    result = JS_NewStringLen(ctx, out, len * 2);
+    free(out);
+    return result;
+}
+
+/* hexDecode(str) -> Uint8Array of the decoded bytes; throws on odd length or a
+ * non-hex character. `str` is coerced to a string first (its UTF-8 bytes). */
+static JSValue dyn_text_hex_decode(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    const char *src;
+    size_t n, dec_len;
+    uint8_t *out;
+    JSValue result;
+    (void)this_val;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "hexDecode(str)");
+    src = JS_ToCStringLen(ctx, &n, argv[0]); /* coerce first */
+    if (!src)
+        return JS_EXCEPTION;
+    out = (uint8_t *)malloc(n / 2 ? n / 2 : 1);
+    if (!out) {
+        JS_FreeCString(ctx, src);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    dec_len = simd.hex_decode(src, n, out);
+    JS_FreeCString(ctx, src);
+    if (dec_len == SIZE_MAX) {
+        free(out);
+        return JS_ThrowTypeError(ctx, "hexDecode: invalid hex input");
+    }
+    result = dyn_text_new_u8array(ctx, out, dec_len);
+    free(out);
+    return result;
+}
+
+/* latin1ToUtf8(bytes) -> Uint8Array; each byte is a latin1 code point re-encoded
+ * as UTF-8 (bytes <0x80 copy, 0x80..0xFF expand to two bytes). */
+static JSValue dyn_text_latin1_to_utf8(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    const uint8_t *data;
+    size_t len, out_len;
+    const char *owned;
+    uint8_t *out;
+    JSValue result;
+    (void)this_val;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "latin1ToUtf8(bytes)");
+    if (dyn_text_bytes(ctx, argv[0], &data, &len, &owned))
+        return JS_EXCEPTION;
+    out = (uint8_t *)malloc(len ? len * 2 : 1);
+    if (!out) {
+        if (owned)
+            JS_FreeCString(ctx, owned);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    out_len = simd.latin1_to_utf8(data, len, out);
+    if (owned)
+        JS_FreeCString(ctx, owned);
+    result = dyn_text_new_u8array(ctx, out, out_len);
+    free(out);
+    return result;
+}
+
+/* utf8ToLatin1(bytes) -> Uint8Array; throws RangeError if the input is invalid
+ * UTF-8 or contains any code point > 0xFF (not representable in latin1). */
+static JSValue dyn_text_utf8_to_latin1(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    const uint8_t *data;
+    size_t len, out_len = 0;
+    const char *owned;
+    uint8_t *out;
+    JSValue result;
+    int rc;
+    (void)this_val;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "utf8ToLatin1(bytes)");
+    if (dyn_text_bytes(ctx, argv[0], &data, &len, &owned))
+        return JS_EXCEPTION;
+    out = (uint8_t *)malloc(len ? len : 1);
+    if (!out) {
+        if (owned)
+            JS_FreeCString(ctx, owned);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    rc = simd.utf8_to_latin1(data, len, out, &out_len);
+    if (owned)
+        JS_FreeCString(ctx, owned);
+    if (rc != 0) {
+        free(out);
+        return JS_ThrowRangeError(
+            ctx, "utf8ToLatin1: invalid UTF-8 or code point > 0xFF");
+    }
+    result = dyn_text_new_u8array(ctx, out, out_len);
+    free(out);
+    return result;
+}
+
+/* countUtf8(data) -> number of UTF-8 code points (assumes valid UTF-8). */
+static JSValue dyn_text_count_utf8(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    const uint8_t *data;
+    size_t len;
+    const char *owned;
+    (void)this_val;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "countUtf8(data)");
+    if (dyn_text_bytes(ctx, argv[0], &data, &len, &owned))
+        return JS_EXCEPTION;
+    {
+        size_t c = simd.count_utf8(data, len);
+        if (owned)
+            JS_FreeCString(ctx, owned);
+        return JS_NewInt64(ctx, (int64_t)c);
+    }
+}
+
 static const JSCFunctionListEntry dyn_text_funcs[] = {
     JS_CFUNC_DEF("count", 2, dyn_text_count),
     JS_CFUNC_DEF("indexOfAny", 2, dyn_text_index_of_any),
     JS_CFUNC_DEF("isValidUtf8", 1, dyn_text_is_valid_utf8),
     JS_CFUNC_DEF("base64Encode", 1, dyn_text_base64_encode),
     JS_CFUNC_DEF("base64Decode", 1, dyn_text_base64_decode),
+    JS_CFUNC_DEF("hexEncode", 1, dyn_text_hex_encode),
+    JS_CFUNC_DEF("hexDecode", 1, dyn_text_hex_decode),
+    JS_CFUNC_DEF("latin1ToUtf8", 1, dyn_text_latin1_to_utf8),
+    JS_CFUNC_DEF("utf8ToLatin1", 1, dyn_text_utf8_to_latin1),
+    JS_CFUNC_DEF("countUtf8", 1, dyn_text_count_utf8),
 };
 
 static int dyn_text_init_module(JSContext *ctx, JSModuleDef *m)

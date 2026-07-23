@@ -1152,8 +1152,172 @@ simd_sse42_validate_utf8(const uint8_t *restrict p, size_t n) {
   return n;
 }
 
+/* ── hex / latin1 / utf8 byte kernels (SSE4.2 / SSSE3) ───────────── */
+
+static const char simd_sse_hexc[] = "0123456789abcdef";
+
+static inline int simd_sse_hexval(uint8_t c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+/* Encode 16 bytes: PSHUFB nibble->char lookup, then unpack-interleave to
+ * h0 l0 h1 l1 ... across two 16-byte stores. */
+__attribute__((target("sse4.2"))) static void
+simd_sse42_hex_encode(const uint8_t *restrict src, size_t n,
+                      char *restrict dst) {
+  const __m128i lut = _mm_setr_epi8('0', '1', '2', '3', '4', '5', '6', '7',
+                                    '8', '9', 'a', 'b', 'c', 'd', 'e', 'f');
+  const __m128i lomask = _mm_set1_epi8(0x0F);
+  size_t i = 0, o = 0;
+  for (; i + 16 <= n; i += 16) {
+    __m128i v = _mm_loadu_si128((const __m128i *)(src + i));
+    __m128i hi = _mm_and_si128(_mm_srli_epi16(v, 4), lomask);
+    __m128i lo = _mm_and_si128(v, lomask);
+    __m128i hc = _mm_shuffle_epi8(lut, hi);
+    __m128i lc = _mm_shuffle_epi8(lut, lo);
+    _mm_storeu_si128((__m128i *)(dst + o), _mm_unpacklo_epi8(hc, lc));
+    _mm_storeu_si128((__m128i *)(dst + o + 16), _mm_unpackhi_epi8(hc, lc));
+    o += 32;
+  }
+  for (; i < n; i++) {
+    dst[o++] = simd_sse_hexc[src[i] >> 4];
+    dst[o++] = simd_sse_hexc[src[i] & 0x0F];
+  }
+}
+
+/* Unsigned in-range test [lo,hi] via saturating min/max + cmpeq (SSE lacks an
+ * unsigned byte compare). */
+__attribute__((target("sse4.2"))) static inline __m128i
+simd_sse_in_range(__m128i c, __m128i lo, __m128i hi) {
+  return _mm_cmpeq_epi8(_mm_max_epu8(_mm_min_epu8(c, hi), lo), c);
+}
+
+/* Decode 16 chars -> 8 bytes: validate all lanes, arithmetic nibble select,
+ * then pack adjacent nibble pairs (hi<<4)|lo via 16-bit-lane shifts. */
+__attribute__((target("sse4.2"))) static size_t
+simd_sse42_hex_decode(const char *restrict src, size_t n,
+                      uint8_t *restrict dst) {
+  const __m128i v0 = _mm_set1_epi8('0'), v9 = _mm_set1_epi8('9');
+  const __m128i va = _mm_set1_epi8('a'), vf = _mm_set1_epi8('f');
+  const __m128i vA = _mm_set1_epi8('A'), vF = _mm_set1_epi8('F');
+  const __m128i sd = _mm_set1_epi8('0');
+  const __m128i sl = _mm_set1_epi8((char)('a' - 10));
+  const __m128i su = _mm_set1_epi8((char)('A' - 10));
+  size_t i = 0, o = 0;
+  if (n & 1) return SIZE_MAX;
+  for (; i + 16 <= n; i += 16) {
+    __m128i c = _mm_loadu_si128((const __m128i *)(src + i));
+    __m128i isd = simd_sse_in_range(c, v0, v9);
+    __m128i isl = simd_sse_in_range(c, va, vf);
+    __m128i isu = simd_sse_in_range(c, vA, vF);
+    __m128i valid = _mm_or_si128(isd, _mm_or_si128(isl, isu));
+    __m128i nib, lonib, combined, packed;
+    if ((unsigned)_mm_movemask_epi8(valid) != 0xFFFFu) return SIZE_MAX;
+    nib = _mm_or_si128(
+        _mm_and_si128(_mm_sub_epi8(c, sd), isd),
+        _mm_or_si128(_mm_and_si128(_mm_sub_epi8(c, sl), isl),
+                     _mm_and_si128(_mm_sub_epi8(c, su), isu)));
+    /* 16-bit lane j = nib[2j] | nib[2j+1]<<8; want low byte = nib[2j]<<4|nib[2j+1] */
+    lonib = _mm_and_si128(nib, _mm_set1_epi16(0x00FF));
+    combined = _mm_or_si128(_mm_slli_epi16(lonib, 4), _mm_srli_epi16(nib, 8));
+    packed = _mm_packus_epi16(combined, _mm_setzero_si128());
+    _mm_storel_epi64((__m128i *)(dst + o), packed);
+    o += 8;
+  }
+  for (; i < n; i += 2) {
+    int hi = simd_sse_hexval((uint8_t)src[i]);
+    int lo = simd_sse_hexval((uint8_t)src[i + 1]);
+    if (hi < 0 || lo < 0) return SIZE_MAX;
+    dst[o++] = (uint8_t)((hi << 4) | lo);
+  }
+  return o;
+}
+
+__attribute__((target("sse4.2"))) static size_t
+simd_sse42_latin1_to_utf8(const uint8_t *restrict src, size_t n,
+                          uint8_t *restrict dst) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    if (i + 16 <= n) {
+      __m128i blk = _mm_loadu_si128((const __m128i *)(src + i));
+      if (_mm_movemask_epi8(blk) == 0) { /* all ASCII */
+        _mm_storeu_si128((__m128i *)(dst + o), blk);
+        i += 16; o += 16;
+        continue;
+      }
+    }
+    {
+      uint8_t c = src[i++];
+      if (c < 0x80) {
+        dst[o++] = c;
+      } else {
+        dst[o++] = (uint8_t)(0xC0 | (c >> 6));
+        dst[o++] = (uint8_t)(0x80 | (c & 0x3F));
+      }
+    }
+  }
+  return o;
+}
+
+__attribute__((target("sse4.2"))) static int
+simd_sse42_utf8_to_latin1(const uint8_t *restrict src, size_t n,
+                          uint8_t *restrict dst, size_t *out_len) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    if (i + 16 <= n) {
+      __m128i blk = _mm_loadu_si128((const __m128i *)(src + i));
+      if (_mm_movemask_epi8(blk) == 0) {
+        _mm_storeu_si128((__m128i *)(dst + o), blk);
+        i += 16; o += 16;
+        continue;
+      }
+    }
+    {
+      uint8_t c = src[i];
+      if (c < 0x80) { dst[o++] = c; i++; continue; }
+      if ((c & 0xE0) == 0xC0) {
+        uint8_t c1;
+        uint32_t cp;
+        if (i + 1 >= n) return -1;
+        c1 = src[i + 1];
+        if ((c1 & 0xC0) != 0x80) return -1;
+        cp = ((uint32_t)(c & 0x1F) << 6) | (c1 & 0x3F);
+        if (cp < 0x80 || cp > 0xFF) return -1;
+        dst[o++] = (uint8_t)cp;
+        i += 2;
+        continue;
+      }
+      return -1;
+    }
+  }
+  *out_len = o;
+  return 0;
+}
+
+__attribute__((target("sse4.2"))) static size_t
+simd_sse42_count_utf8(const uint8_t *restrict p, size_t n) {
+  const __m128i c0 = _mm_set1_epi8((char)0xC0), c80 = _mm_set1_epi8((char)0x80);
+  size_t i = 0, total = 0;
+  for (; i + 16 <= n; i += 16) {
+    __m128i blk = _mm_loadu_si128((const __m128i *)(p + i));
+    __m128i iscont = _mm_cmpeq_epi8(_mm_and_si128(blk, c0), c80);
+    total += 16 - (size_t)__builtin_popcount((unsigned)_mm_movemask_epi8(iscont));
+  }
+  for (; i < n; i++)
+    if ((p[i] & 0xC0) != 0x80) total++;
+  return total;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_sse42(simd_t *t) {
+  t->hex_encode = simd_sse42_hex_encode;
+  t->hex_decode = simd_sse42_hex_decode;
+  t->latin1_to_utf8 = simd_sse42_latin1_to_utf8;
+  t->utf8_to_latin1 = simd_sse42_utf8_to_latin1;
+  t->count_utf8 = simd_sse42_count_utf8;
   t->strfind = simd_sse42_strfind;
   t->count_u8 = simd_sse42_count_u8;
   t->find_first_of = simd_sse42_find_first_of;

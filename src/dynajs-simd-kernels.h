@@ -249,6 +249,28 @@ typedef struct simd {
   size_t (*base64_decode)(const char *restrict src, size_t n,
                           uint8_t *restrict dst);
 
+  /* ── hex (base16, lowercase output; RFC 4648). ──────────────────────── */
+  /* Encode n bytes into 2n lowercase hex chars in dst. */
+  void (*hex_encode)(const uint8_t *restrict src, size_t n,
+                     char *restrict dst);
+  /* Decode n hex chars (upper- or lower-case) into dst (n/2 bytes); returns
+   * bytes written, or SIZE_MAX on an odd length or a non-hex character. */
+  size_t (*hex_decode)(const char *restrict src, size_t n,
+                       uint8_t *restrict dst);
+
+  /* ── latin1 (ISO-8859-1) <-> UTF-8. ─────────────────────────────────── */
+  /* Expand n latin1 bytes to UTF-8 in dst (needs up to 2n bytes); returns the
+   * bytes written. Bytes <0x80 copy; 0x80..0xFF become a 2-byte sequence. */
+  size_t (*latin1_to_utf8)(const uint8_t *restrict src, size_t n,
+                           uint8_t *restrict dst);
+  /* Narrow UTF-8 to latin1 in dst (needs up to n bytes); on success sets
+   * *out_len to the bytes written and returns 0. Returns -1 (leaving *out_len
+   * untouched) if the input is malformed UTF-8 or has any code point > 0xFF. */
+  int (*utf8_to_latin1)(const uint8_t *restrict src, size_t n,
+                        uint8_t *restrict dst, size_t *out_len);
+  /* Count code points in valid UTF-8: bytes whose top two bits are not 10. */
+  size_t (*count_utf8)(const uint8_t *restrict p, size_t n);
+
 } simd_t;
 
 /* Global dispatch table — safe to read from any thread after init. */

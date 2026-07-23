@@ -1212,8 +1212,160 @@ static size_t simd_neon_validate_utf8(const uint8_t *restrict p, size_t n) {
   return n;
 }
 
+/* ── hex / latin1 / utf8 byte kernels (NEON) ─────────────────────── */
+
+static const char simd_neon_hexc[] = "0123456789abcdef";
+
+static inline int simd_neon_hexval(uint8_t c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+/* Encode: split each byte into nibbles, TBL-lookup the hex chars, then
+ * vst2q interleaves the high/low char streams to h0 l0 h1 l1 ... */
+static void simd_neon_hex_encode(const uint8_t *restrict src, size_t n,
+                                 char *restrict dst) {
+  uint8x16_t lut = vld1q_u8((const uint8_t *)simd_neon_hexc);
+  uint8x16_t lomask = vdupq_n_u8(0x0F);
+  size_t i = 0, o = 0;
+  for (; i + 16 <= n; i += 16) {
+    uint8x16_t v = vld1q_u8(src + i);
+    uint8x16x2_t out;
+    out.val[0] = vqtbl1q_u8(lut, vshrq_n_u8(v, 4));    /* high-nibble chars */
+    out.val[1] = vqtbl1q_u8(lut, vandq_u8(v, lomask)); /* low-nibble chars  */
+    vst2q_u8((uint8_t *)dst + o, out);
+    o += 32;
+  }
+  for (; i < n; i++) {
+    dst[o++] = simd_neon_hexc[src[i] >> 4];
+    dst[o++] = simd_neon_hexc[src[i] & 0x0F];
+  }
+}
+
+/* Convert a vector of hex chars to nibble values, OR-ing the per-lane validity
+ * (0xFF valid) into *valid; invalid lanes yield a don't-care nibble. */
+static inline uint8x16_t simd_neon_hex_nibbles(uint8x16_t c, uint8x16_t *valid) {
+  uint8x16_t isd = vandq_u8(vcgeq_u8(c, vdupq_n_u8('0')),
+                            vcleq_u8(c, vdupq_n_u8('9')));
+  uint8x16_t isl = vandq_u8(vcgeq_u8(c, vdupq_n_u8('a')),
+                            vcleq_u8(c, vdupq_n_u8('f')));
+  uint8x16_t isu = vandq_u8(vcgeq_u8(c, vdupq_n_u8('A')),
+                            vcleq_u8(c, vdupq_n_u8('F')));
+  *valid = vorrq_u8(isd, vorrq_u8(isl, isu));
+  return vorrq_u8(
+      vandq_u8(vsubq_u8(c, vdupq_n_u8('0')), isd),
+      vorrq_u8(vandq_u8(vsubq_u8(c, vdupq_n_u8('a' - 10)), isl),
+               vandq_u8(vsubq_u8(c, vdupq_n_u8('A' - 10)), isu)));
+}
+
+/* Decode: vld2 deinterleaves 32 chars into even (high-nibble) and odd
+ * (low-nibble) lanes; validate both, then pack (hi<<4)|lo into 16 bytes. */
+static size_t simd_neon_hex_decode(const char *restrict src, size_t n,
+                                   uint8_t *restrict dst) {
+  size_t i = 0, o = 0;
+  if (n & 1) return SIZE_MAX;
+  for (; i + 32 <= n; i += 32) {
+    uint8x16x2_t v = vld2q_u8((const uint8_t *)src + i);
+    uint8x16_t hvalid, lvalid;
+    uint8x16_t hn = simd_neon_hex_nibbles(v.val[0], &hvalid);
+    uint8x16_t ln = simd_neon_hex_nibbles(v.val[1], &lvalid);
+    if (vminvq_u8(vandq_u8(hvalid, lvalid)) != 0xFF) return SIZE_MAX;
+    vst1q_u8(dst + o, vorrq_u8(vshlq_n_u8(hn, 4), ln));
+    o += 16;
+  }
+  for (; i < n; i += 2) {
+    int hi = simd_neon_hexval((uint8_t)src[i]);
+    int lo = simd_neon_hexval((uint8_t)src[i + 1]);
+    if (hi < 0 || lo < 0) return SIZE_MAX;
+    dst[o++] = (uint8_t)((hi << 4) | lo);
+  }
+  return o;
+}
+
+/* latin1 -> UTF-8: bulk-copy pure-ASCII 16-byte blocks; scalar-expand the rest. */
+static size_t simd_neon_latin1_to_utf8(const uint8_t *restrict src, size_t n,
+                                       uint8_t *restrict dst) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    if (i + 16 <= n) {
+      uint8x16_t blk = vld1q_u8(src + i);
+      if (vmaxvq_u8(vandq_u8(blk, vdupq_n_u8(0x80))) == 0) {
+        vst1q_u8(dst + o, blk);
+        i += 16; o += 16;
+        continue;
+      }
+    }
+    {
+      uint8_t c = src[i++];
+      if (c < 0x80) {
+        dst[o++] = c;
+      } else {
+        dst[o++] = (uint8_t)(0xC0 | (c >> 6));
+        dst[o++] = (uint8_t)(0x80 | (c & 0x3F));
+      }
+    }
+  }
+  return o;
+}
+
+/* UTF-8 -> latin1: bulk-copy pure-ASCII 16-byte blocks; scalar-decode the rest. */
+static int simd_neon_utf8_to_latin1(const uint8_t *restrict src, size_t n,
+                                    uint8_t *restrict dst, size_t *out_len) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    if (i + 16 <= n) {
+      uint8x16_t blk = vld1q_u8(src + i);
+      if (vmaxvq_u8(vandq_u8(blk, vdupq_n_u8(0x80))) == 0) {
+        vst1q_u8(dst + o, blk);
+        i += 16; o += 16;
+        continue;
+      }
+    }
+    {
+      uint8_t c = src[i];
+      if (c < 0x80) { dst[o++] = c; i++; continue; }
+      if ((c & 0xE0) == 0xC0) {
+        uint8_t c1;
+        uint32_t cp;
+        if (i + 1 >= n) return -1;
+        c1 = src[i + 1];
+        if ((c1 & 0xC0) != 0x80) return -1;
+        cp = ((uint32_t)(c & 0x1F) << 6) | (c1 & 0x3F);
+        if (cp < 0x80 || cp > 0xFF) return -1;
+        dst[o++] = (uint8_t)cp;
+        i += 2;
+        continue;
+      }
+      return -1;
+    }
+  }
+  *out_len = o;
+  return 0;
+}
+
+/* Count code points: per block, 16 minus the number of continuation bytes. */
+static size_t simd_neon_count_utf8(const uint8_t *restrict p, size_t n) {
+  uint8x16_t c0 = vdupq_n_u8(0xC0), c80 = vdupq_n_u8(0x80), one = vdupq_n_u8(1);
+  size_t i = 0, total = 0;
+  for (; i + 16 <= n; i += 16) {
+    uint8x16_t blk = vld1q_u8(p + i);
+    uint8x16_t iscont = vceqq_u8(vandq_u8(blk, c0), c80); /* 0xFF if cont */
+    total += 16 - vaddvq_u8(vandq_u8(iscont, one));
+  }
+  for (; i < n; i++)
+    if ((p[i] & 0xC0) != 0x80) total++;
+  return total;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_neon(simd_t *t) {
+  t->hex_encode = simd_neon_hex_encode;
+  t->hex_decode = simd_neon_hex_decode;
+  t->latin1_to_utf8 = simd_neon_latin1_to_utf8;
+  t->utf8_to_latin1 = simd_neon_utf8_to_latin1;
+  t->count_utf8 = simd_neon_count_utf8;
   t->find_u16 = simd_neon_find_u16;
   t->find_u32 = simd_neon_find_u32;
   t->find_f32 = simd_neon_find_f32;

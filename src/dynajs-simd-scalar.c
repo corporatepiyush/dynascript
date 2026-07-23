@@ -736,6 +736,86 @@ static size_t simd_scalar_base64_decode(const char *restrict src, size_t n,
   return o;
 }
 
+/* ── hex / latin1 / utf8 byte kernels (scalar reference + differential oracle) ── */
+
+static const char simd_hex_lut[] = "0123456789abcdef";
+
+/* Hex-nibble value of a char: 0-9, a-f, A-F accepted; -1 for anything else. */
+static inline int simd_hex_val(uint8_t c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+static void simd_scalar_hex_encode(const uint8_t *restrict src, size_t n,
+                                   char *restrict dst) {
+  size_t i, o = 0;
+  for (i = 0; i < n; i++) {
+    dst[o++] = simd_hex_lut[src[i] >> 4];
+    dst[o++] = simd_hex_lut[src[i] & 0x0F];
+  }
+}
+
+static size_t simd_scalar_hex_decode(const char *restrict src, size_t n,
+                                     uint8_t *restrict dst) {
+  size_t i, o = 0;
+  if (n & 1) return SIZE_MAX;
+  for (i = 0; i < n; i += 2) {
+    int hi = simd_hex_val((uint8_t)src[i]);
+    int lo = simd_hex_val((uint8_t)src[i + 1]);
+    if (hi < 0 || lo < 0) return SIZE_MAX;
+    dst[o++] = (uint8_t)((hi << 4) | lo);
+  }
+  return o;
+}
+
+static size_t simd_scalar_latin1_to_utf8(const uint8_t *restrict src, size_t n,
+                                         uint8_t *restrict dst) {
+  size_t i, o = 0;
+  for (i = 0; i < n; i++) {
+    uint8_t c = src[i];
+    if (c < 0x80) {
+      dst[o++] = c;
+    } else {
+      dst[o++] = (uint8_t)(0xC0 | (c >> 6));
+      dst[o++] = (uint8_t)(0x80 | (c & 0x3F));
+    }
+  }
+  return o;
+}
+
+static int simd_scalar_utf8_to_latin1(const uint8_t *restrict src, size_t n,
+                                      uint8_t *restrict dst, size_t *out_len) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    uint8_t c = src[i];
+    if (c < 0x80) { dst[o++] = c; i++; continue; }
+    if ((c & 0xE0) == 0xC0) { /* 2-byte lead 0xC0..0xDF */
+      uint8_t c1;
+      uint32_t cp;
+      if (i + 1 >= n) return -1;              /* truncated */
+      c1 = src[i + 1];
+      if ((c1 & 0xC0) != 0x80) return -1;      /* bad continuation */
+      cp = ((uint32_t)(c & 0x1F) << 6) | (c1 & 0x3F);
+      if (cp < 0x80 || cp > 0xFF) return -1;   /* overlong, or won't fit latin1 */
+      dst[o++] = (uint8_t)cp;
+      i += 2;
+      continue;
+    }
+    return -1; /* stray continuation, or 3-/4-byte lead => code point > 0xFF */
+  }
+  *out_len = o;
+  return 0;
+}
+
+static size_t simd_scalar_count_utf8(const uint8_t *restrict p, size_t n) {
+  size_t i, c = 0;
+  for (i = 0; i < n; i++)
+    if ((p[i] & 0xC0) != 0x80) c++; /* not a UTF-8 continuation byte */
+  return c;
+}
+
 void simd_override_scalar(simd_t *t) {
   t->find_u8 = simd_scalar_find_u8;
   t->find_u16 = simd_scalar_find_u16;
@@ -748,6 +828,11 @@ void simd_override_scalar(simd_t *t) {
   t->validate_utf8 = simd_scalar_validate_utf8;
   t->base64_encode = simd_scalar_base64_encode;
   t->base64_decode = simd_scalar_base64_decode;
+  t->hex_encode = simd_scalar_hex_encode;
+  t->hex_decode = simd_scalar_hex_decode;
+  t->latin1_to_utf8 = simd_scalar_latin1_to_utf8;
+  t->utf8_to_latin1 = simd_scalar_utf8_to_latin1;
+  t->count_utf8 = simd_scalar_count_utf8;
   t->dot = simd_scalar_dot;
   t->dot_f = simd_scalar_dot_f;
   t->norm_l2_sq = simd_scalar_norm_l2_sq;
