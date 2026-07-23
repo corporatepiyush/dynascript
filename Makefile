@@ -267,6 +267,9 @@ endif
 ifneq ($(wildcard src/dynajs-crypto.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_CRYPTO
 endif
+ifneq ($(wildcard src/dynajs-encoding.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_ENCODING
+endif
 endif
 ifdef CONFIG_WIN32
 LDEXPORT=
@@ -372,6 +375,9 @@ NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-bytes.o
 endif
 ifneq ($(wildcard src/dynajs-crypto.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-crypto.o
+endif
+ifneq ($(wildcard src/dynajs-encoding.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-encoding.o
 endif
 ifdef CONFIG_IO_URING
 ifneq ($(wildcard src/dynajs-uring.c),)
