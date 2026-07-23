@@ -73,20 +73,34 @@ No `package.json`, no install step, no build — the capabilities are in the bin
 
 ## The standard library (`dynajs:*`)
 
-Build with `CONFIG_NATIVE_MODULES=y` (the installer does this) to get a **native standard library** —
-highlights:
+Build with `CONFIG_NATIVE_MODULES=y` (the installer does this) to get a curated **native standard
+library** — one `import` each, no dependencies:
 
-| | | |
-|---|---|---|
-| **Data & text** | `strings` `bytes` `encoding` `text` | Go-style strings, byte LE/BE, hex/base64/base32/base85/varint, SIMD UTF‑8↔UTF‑16 |
-| **Crypto & IDs** | `crypto` `random` | SHA/MD5/HMAC/CRC, seedable PRNG |
-| **Numbers** | `mathx` `bits` | gamma/erf/gcd/lcm/factorial/isPrime, Go `math/bits` |
-| **Collections** | `container` `structures` | heap / list / ring, vector / hashmap |
-| **Filesystem** | `sys` `path` `file` `uring` | fs metadata + glob + process, path logic, buffered I/O, io_uring |
-| **Networking** | `http` | reactor server + client |
-| **Time & versions** | `time` `semver` | durations/monotonic/RFC3339, SemVer + ranges |
-| **Compute** | `simd` `ml` | multi-ISA f32/f64/i32 vector math, regression/kmeans |
-| **Formats** | `compress` `docparse` `sort` `search` | gzip, JSON/CSV, sort + SIMD substring search |
+| Module | What it gives you |
+|---|---|
+| `dynajs:strings` | Go-style string utilities: split/fields/trim/pad/title/replace/`equalFold` (SIMD `contains`/`count`) |
+| `dynajs:bytes` | Byte-buffer ops + read/write every int & float width in LE and BE + hex/base64/utf8 |
+| `dynajs:encoding` | hex, base64 / base64url, base32, Ascii85, and LEB128 var-ints |
+| `dynajs:text` | SIMD text kernels: UTF‑8 validate/count, hex, Latin‑1↔UTF‑8, UTF‑8↔UTF‑16 |
+| `dynajs:crypto` | SHA‑1/224/256/384/512, MD5, HMAC, CRC‑32/32C, and a streaming `Hasher` |
+| `dynajs:random` | A fast, **seedable** PRNG (reproducible streams) |
+| `dynajs:mathx` | Special functions (gamma/erf/hypot) + exact integer math (gcd/lcm/factorial/isPrime, BigInt) |
+| `dynajs:bits` | Go `math/bits`: leading/trailing zeros, popcount, rotate, and 64‑bit carry arithmetic |
+| `dynajs:container` | A `Heap` (priority queue), a doubly-linked `List`, and a `Ring` buffer |
+| `dynajs:structures` | A growable `Vector` and a native-backed `HashMap` |
+| `dynajs:sys` | Filesystem metadata + directories + glob + process/environment, unified |
+| `dynajs:path` | POSIX path manipulation (join/resolve/normalize/dirname/relative) |
+| `dynajs:file` | Buffered file reader/writer with per-OS fast paths (`F_FULLFSYNC`, io_uring) |
+| `dynajs:uring` | High-queue-depth bulk file reads via Linux io_uring |
+| `dynajs:http` | An HTTP client and a single-thread kqueue/epoll/io_uring reactor server |
+| `dynajs:time` | Nanosecond durations, a monotonic clock, and RFC 3339 formatting |
+| `dynajs:semver` | SemVer 2.0.0 parsing/comparison and the full npm range grammar |
+| `dynajs:simd` | Multi-ISA vector math over typed arrays (f32/f64/i32): dot/norm/distance/GEMM/activations/scans |
+| `dynajs:ml` | Native `LinearRegression`, `LogisticRegression`, and `KMeans` |
+| `dynajs:compress` | `gzip` / `gunzip` (a real DEFLATE implementation) |
+| `dynajs:docparse` | Fast native JSON and CSV (RFC 4180) parsing |
+| `dynajs:sort` | Sorting and binary search |
+| `dynajs:search` | SIMD substring search, including overlapping matches |
 
 Every example in the docs is real and runs. See the **[API Reference](docs/dynajs-guide/API.md)** for
 complete signatures.
