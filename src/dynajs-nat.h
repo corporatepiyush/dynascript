@@ -141,6 +141,9 @@ int js_nat_init_time(JSContext *ctx); /* dynajs:time durations/clock/RFC3339 */
 #ifdef CONFIG_NATIVE_MODULE_MATHX
 int js_nat_init_mathx(JSContext *ctx); /* dynajs:mathx Go-style math + int/BigInt helpers */
 #endif
+#ifdef CONFIG_NATIVE_MODULE_CSV
+int js_nat_init_csv(JSContext *ctx); /* dynajs:csv file CRUD, SIMD parse + atomic I/O */
+#endif
 #ifdef CONFIG_NATIVE_MODULE_UUID
 int js_nat_init_uuid(JSContext *ctx); /* dynajs:uuid RFC 9562 UUID v4/v7/v3/v5 + parse */
 #endif

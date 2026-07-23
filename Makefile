@@ -285,6 +285,9 @@ endif
 ifneq ($(wildcard src/dynajs-mathx.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_MATHX
 endif
+ifneq ($(wildcard src/dynajs-csv.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_CSV
+endif
 ifneq ($(wildcard src/dynajs-uuid.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_UUID
 endif
@@ -417,6 +420,9 @@ NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-time.o
 endif
 ifneq ($(wildcard src/dynajs-mathx.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-mathx.o
+endif
+ifneq ($(wildcard src/dynajs-csv.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-csv.o
 endif
 ifneq ($(wildcard src/dynajs-uuid.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-uuid.o
