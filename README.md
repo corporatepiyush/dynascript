@@ -36,17 +36,33 @@ installer fetch them via your package manager.
 
 ## Hello, DynaJS
 
-```js
-import { sha256Hex } from "dynajs:crypto";
-import { v7 } from "dynajs:uuid";
-import { dot } from "dynajs:simd";
-import { contains } from "dynajs:netip";
+Parse CSV natively, train a model on it, and serve a prediction over HTTP — three native modules
+working together, no dependencies:
 
-print(sha256Hex("hello world"));                 // content hash, native + streaming-capable
-print(v7());                                     // time-ordered UUID (great DB key)
-print(dot(new Float32Array([1,2,3,4]),           // SIMD dot product over typed arrays
-          new Float32Array([5,6,7,8])));          // → 70
-print(contains("10.0.0.0/8", "10.1.2.3"));        // IP/CIDR reasoning JS has no built-in for → true
+```js
+import { parseCsv } from "dynajs:docparse";
+import { LinearRegression } from "dynajs:ml";
+import { HttpServerAsync, HttpClient } from "dynajs:http";
+
+// 1. Native CSV parsing (RFC 4180).
+const rows = parseCsv("x,y\n1,3\n2,5\n3,7\n4,9");     // [["x","y"],["1","3"], ...]
+const X = rows.slice(1).map(r => [Number(r[0])]);
+const y = rows.slice(1).map(r => Number(r[1]));
+
+// 2. Fit a model natively (SIMD-backed) — recovers y = 2x + 1.
+const model = new LinearRegression();
+model.fit(X, y);
+const yhat = Math.round(model.predict([[10]])[0]);   // 21
+
+// 3. Serve it from a single-thread reactor server; call it with the built-in client.
+const server = new HttpServerAsync({ port: 0, routes: {
+  "/predict": { status: 200, contentType: "application/json", body: JSON.stringify({ y: yhat }) },
+}});
+server.start();
+const res = new HttpClient().get(`http://127.0.0.1:${server.port}/predict`);
+print("GET /predict →", res.status, res.body);       // GET /predict → 200 {"y":21}
+server.stop();
+model.close();
 ```
 
 ```sh
