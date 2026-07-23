@@ -73,16 +73,17 @@ No `package.json`, no install step, no build — the capabilities are in the bin
 
 ## The standard library (`dynajs:*`)
 
-Build with `CONFIG_NATIVE_MODULES=y` (the installer does this) to get **25 native modules**:
+Build with `CONFIG_NATIVE_MODULES=y` (the installer does this) to get a **native standard library** —
+highlights:
 
 | | | |
 |---|---|---|
 | **Data & text** | `strings` `bytes` `encoding` `text` | Go-style strings, byte LE/BE, hex/base64/base32/base85/varint, SIMD UTF‑8↔UTF‑16 |
-| **Crypto & IDs** | `crypto` `uuid` `random` | SHA/MD5/HMAC/CRC, RFC 9562 UUID v4/v7, seedable PRNG |
+| **Crypto & IDs** | `crypto` `random` | SHA/MD5/HMAC/CRC, seedable PRNG |
 | **Numbers** | `mathx` `bits` | gamma/erf/gcd/lcm/factorial/isPrime, Go `math/bits` |
 | **Collections** | `container` `structures` | heap / list / ring, vector / hashmap |
 | **Filesystem** | `sys` `path` `file` `uring` | fs metadata + glob + process, path logic, buffered I/O, io_uring |
-| **Networking** | `http` `netip` | reactor server + client, IP/CIDR |
+| **Networking** | `http` | reactor server + client |
 | **Time & versions** | `time` `semver` | durations/monotonic/RFC3339, SemVer + ranges |
 | **Compute** | `simd` `ml` | multi-ISA f32/f64/i32 vector math, regression/kmeans |
 | **Formats** | `compress` `docparse` `sort` `search` | gzip, JSON/CSV, sort + SIMD substring search |
