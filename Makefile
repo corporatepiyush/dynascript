@@ -270,6 +270,9 @@ endif
 ifneq ($(wildcard src/dynajs-encoding.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_ENCODING
 endif
+ifneq ($(wildcard src/dynajs-time.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_TIME
+endif
 endif
 ifdef CONFIG_WIN32
 LDEXPORT=
@@ -378,6 +381,9 @@ NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-crypto.o
 endif
 ifneq ($(wildcard src/dynajs-encoding.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-encoding.o
+endif
+ifneq ($(wildcard src/dynajs-time.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-time.o
 endif
 ifdef CONFIG_IO_URING
 ifneq ($(wildcard src/dynajs-uring.c),)
