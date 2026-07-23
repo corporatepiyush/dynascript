@@ -144,6 +144,9 @@ int js_nat_init_uuid(JSContext *ctx); /* dynajs:uuid RFC 9562 UUID v4/v7/v3/v5 +
 #ifdef CONFIG_NATIVE_MODULE_BITS
 int js_nat_init_bits(JSContext *ctx); /* dynajs:bits Go math/bits port */
 #endif
+#ifdef CONFIG_NATIVE_MODULE_SYS
+int js_nat_init_sys(JSContext *ctx); /* dynajs:sys filesystem/process/env interface */
+#endif
 
 /* Register every compiled-in native module in `ctx`. Called from the CLI. */
 int js_nat_init_all(JSContext *ctx);
