@@ -261,6 +261,9 @@ endif
 ifneq ($(wildcard src/dynajs-strings.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_STRINGS
 endif
+ifneq ($(wildcard src/dynajs-bytes.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_BYTES
+endif
 endif
 ifdef CONFIG_WIN32
 LDEXPORT=
@@ -360,6 +363,9 @@ NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-path.o
 endif
 ifneq ($(wildcard src/dynajs-strings.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-strings.o
+endif
+ifneq ($(wildcard src/dynajs-bytes.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-bytes.o
 endif
 ifdef CONFIG_IO_URING
 ifneq ($(wildcard src/dynajs-uring.c),)

@@ -117,6 +117,9 @@ int js_nat_init_path(JSContext *ctx); /* dynajs:path POSIX path utilities */
 #ifdef CONFIG_NATIVE_MODULE_STRINGS
 int js_nat_init_strings(JSContext *ctx); /* dynajs:strings Go+JS string utilities */
 #endif
+#ifdef CONFIG_NATIVE_MODULE_BYTES
+int js_nat_init_bytes(JSContext *ctx); /* dynajs:bytes byte-buffer utilities */
+#endif
 
 /* Register every compiled-in native module in `ctx`. Called from the CLI. */
 int js_nat_init_all(JSContext *ctx);
