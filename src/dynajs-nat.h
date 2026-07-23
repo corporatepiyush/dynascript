@@ -120,6 +120,9 @@ int js_nat_init_strings(JSContext *ctx); /* dynajs:strings Go+JS string utilitie
 #ifdef CONFIG_NATIVE_MODULE_BYTES
 int js_nat_init_bytes(JSContext *ctx); /* dynajs:bytes byte-buffer utilities */
 #endif
+#ifdef CONFIG_NATIVE_MODULE_CRYPTO
+int js_nat_init_crypto(JSContext *ctx); /* dynajs:crypto hashes/HMAC/CRC */
+#endif
 
 /* Register every compiled-in native module in `ctx`. Called from the CLI. */
 int js_nat_init_all(JSContext *ctx);
