@@ -1,0 +1,20 @@
+# Reusable toolchain base for building + testing dynascript in Linux containers.
+# Deps are baked in so test runs mount the source and build WITHOUT re-running
+# apt every time. Build once per arch (cached thereafter):
+#
+#   docker build --platform linux/amd64 -f docker/Dockerfile.devbase -t dynascript-dev:amd64 .
+#   docker build --platform linux/arm64 -f docker/Dockerfile.devbase -t dynascript-dev:arm64 .
+#
+# Then (source copied in so the container's `make clean` can't touch the host tree):
+#   docker run --rm --platform linux/amd64 -v "$PWD":/host:ro dynascript-dev:amd64 \
+#       bash -c 'cp -r /host /build && cd /build && make CONFIG_CLANG=y ... && ./dynajs ...'
+FROM debian:trixie-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      clang lld make libc6-dev liburing-dev apache2-utils procps \
+      libclang-rt-19-dev ca-certificates rsync \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+CMD ["bash"]
