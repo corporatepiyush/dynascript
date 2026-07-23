@@ -48,123 +48,6 @@
 #define DYN_FILE_MIN_BUF     4096u
 #define DYN_FILE_MAX_BUF     (1u << 26) /* 64 MiB cap on a caller-chosen size */
 
-/* ==================================================================== *
- *  platform-specific primitives (the only OS #ifdefs in the module)     *
- * ==================================================================== */
-
-/* Hint that the fd will be read sequentially and warm readahead. */
-static void dyn_file_advise_seq_read(int fd, off_t size)
-{
-#if defined(__linux__)
-    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-    (void)size;
-#elif defined(__APPLE__)
-    fcntl(fd, F_RDAHEAD, 1);
-    if (size > 0) {
-        struct radvisory ra;
-        ra.ra_offset = 0;
-        ra.ra_count = size > INT_MAX ? INT_MAX : (int)size;
-        fcntl(fd, F_RDADVISE, &ra); /* kick off an async prefetch */
-    }
-#else
-    (void)fd;
-    (void)size;
-#endif
-}
-
-/* Best-effort reserve `size` bytes of backing store for a file being written
- * (reduces fragmentation and ENOSPC-mid-write). Returns 0. */
-static int dyn_file_preallocate(int fd, off_t size)
-{
-    if (size <= 0)
-        return 0;
-#if defined(__linux__)
-    /* Reserve backing blocks WITHOUT extending the logical file size
-     * (posix_fallocate would zero-pad the file up to `size`). Best-effort:
-     * some filesystems return EOPNOTSUPP. */
-#ifndef FALLOC_FL_KEEP_SIZE
-#define FALLOC_FL_KEEP_SIZE 0x01
-#endif
-    fallocate(fd, FALLOC_FL_KEEP_SIZE, 0, size);
-    return 0;
-#elif defined(__APPLE__)
-    {
-        fstore_t fst;
-        fst.fst_flags = F_ALLOCATECONTIG;
-        fst.fst_posmode = F_PEOFPOSMODE;
-        fst.fst_offset = 0;
-        fst.fst_length = size;
-        fst.fst_bytesalloc = 0;
-        if (fcntl(fd, F_PREALLOCATE, &fst) < 0) {
-            fst.fst_flags = F_ALLOCATEALL; /* allow non-contiguous */
-            fcntl(fd, F_PREALLOCATE, &fst);
-        }
-    }
-    return 0;
-#else
-    (void)fd;
-    return 0;
-#endif
-}
-
-/* Durably flush written data to stable storage. */
-static int dyn_file_durable_sync(int fd)
-{
-#if defined(__APPLE__)
-    if (fcntl(fd, F_FULLFSYNC) == 0) /* the only true flush-to-platter on macOS */
-        return 0;
-    return fsync(fd); /* fall back if the fs doesn't support F_FULLFSYNC */
-#elif defined(_POSIX_SYNCHRONIZED_IO) && _POSIX_SYNCHRONIZED_IO > 0
-    return fdatasync(fd);
-#else
-    return fsync(fd);
-#endif
-}
-
-/* Read the whole file at `path` the fastest way this platform offers. Returns 0
- * (caller free()s *out) or -1. */
-static int dyn_file_read_whole(const char *path, char **out, size_t *outlen)
-{
-#if defined(CONFIG_IO_URING) && defined(__linux__)
-    return dyn_uring_read_all(path, out, outlen); /* high-QD io_uring path */
-#else
-    struct stat st;
-    char *buf;
-    size_t off = 0, size;
-    int fd = open(path, O_RDONLY);
-    if (fd < 0)
-        return -1;
-    if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode)) {
-        close(fd);
-        return -1;
-    }
-    dyn_file_advise_seq_read(fd, st.st_size);
-    size = (size_t)st.st_size;
-    buf = (char *)malloc(size ? size : 1);
-    if (!buf) {
-        close(fd);
-        return -1;
-    }
-    while (off < size) {
-        ssize_t r = read(fd, buf + off, size - off);
-        if (r < 0) {
-            if (errno == EINTR)
-                continue;
-            free(buf);
-            close(fd);
-            return -1;
-        }
-        if (r == 0)
-            break;
-        off += (size_t)r;
-    }
-    close(fd);
-    *out = buf;
-    *outlen = off;
-    return 0;
-#endif
-}
-
 static unsigned dyn_file_clamp_bufsize(int64_t v)
 {
     if (v <= 0)
@@ -259,7 +142,7 @@ static JSValue dyn_freader_ctor(JSContext *ctx, JSValueConst new_target,
         return JS_ThrowInternalError(ctx, "FileReader: cannot open file");
     }
     if (fstat(fd, &st) == 0)
-        dyn_file_advise_seq_read(fd, st.st_size);
+        dyn_io_advise_seq_read(fd, st.st_size);
     JS_FreeCString(ctx, path);
 
     r = (dyn_freader_t *)calloc(1, sizeof(*r));
@@ -492,7 +375,7 @@ static JSValue dyn_fwriter_ctor(JSContext *ctx, JSValueConst new_target,
     if (fd < 0)
         return JS_ThrowInternalError(ctx, "FileWriter: cannot open file");
     if (preallocate > 0)
-        dyn_file_preallocate(fd, (off_t)preallocate);
+        dyn_io_preallocate(fd, (off_t)preallocate);
 
     w = (dyn_fwriter_t *)calloc(1, sizeof(*w));
     if (!w) {
@@ -608,7 +491,7 @@ static JSValue dyn_fwriter_sync(JSContext *ctx, JSValueConst this_val, int argc,
     if (!w)
         return JS_EXCEPTION;
     dyn_fwriter_flush_native(w, &err);
-    if (err || dyn_file_durable_sync(w->fd) < 0)
+    if (err || dyn_io_durable_sync(w->fd) < 0)
         return JS_ThrowInternalError(ctx, "FileWriter: sync error");
     return JS_UNDEFINED;
 }
@@ -635,7 +518,7 @@ static JSValue dyn_file_read_file(JSContext *ctx, JSValueConst this_val,
     path = JS_ToCString(ctx, argv[0]);
     if (!path)
         return JS_EXCEPTION;
-    if (dyn_file_read_whole(path, &data, &len) < 0) {
+    if (dyn_io_read_whole(path, &data, &len) < 0) {
         JS_FreeCString(ctx, path);
         return JS_ThrowInternalError(ctx, "readFile: cannot read file");
     }

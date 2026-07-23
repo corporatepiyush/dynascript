@@ -35,7 +35,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 
 #include "dynajs-simd-kernels.h"
 
@@ -201,37 +200,11 @@ static int csv_serialize(const Table *t, Buf *out) {
     return 0;
 }
 
-/* ============================ optimized file I/O ============================ */
-/* Read the whole file. Uses mmap for a zero-copy scan of large files; small
- * files are read into a heap buffer. *out must be freed with csv_slurp_free. */
-typedef struct { char *data; size_t len; int mapped; } Slurp;
-static int csv_slurp(const char *path, Slurp *s) {
-    memset(s, 0, sizeof(*s));
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return -1;
-    struct stat st;
-    if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode)) { close(fd); errno = EINVAL; return -1; }
-    s->len = (size_t)st.st_size;
-    if (s->len == 0) { close(fd); s->data = (char *)malloc(1); return s->data ? 0 : -1; }
-    if (s->len >= (256u << 10)) {                 /* mmap large files */
-        void *m = mmap(NULL, s->len, PROT_READ, MAP_PRIVATE, fd, 0);
-        if (m != MAP_FAILED) { s->data = (char *)m; s->mapped = 1; close(fd); return 0; }
-    }
-    s->data = (char *)malloc(s->len);             /* buffered read otherwise */
-    if (!s->data) { close(fd); return -1; }
-    size_t off = 0;
-    while (off < s->len) {
-        ssize_t n = read(fd, s->data + off, s->len - off);
-        if (n <= 0) { if (n < 0 && errno == EINTR) continue; free(s->data); close(fd); return -1; }
-        off += (size_t)n;
-    }
-    close(fd);
-    return 0;
-}
-static void csv_slurp_free(Slurp *s) {
-    if (s->mapped) munmap(s->data, s->len); else free(s->data);
-    s->data = NULL; s->len = 0; s->mapped = 0;
-}
+/* ==================== file I/O (shared dyn_io_* primitives) ====================
+ * Reads go through dyn_io_read_whole (io_uring on Linux, an advise-hinted
+ * sequential read otherwise); writes are atomic + durable via dyn_io_preallocate
+ * and dyn_io_durable_sync -- the same optimized primitives dynajs:file uses. */
+
 /* Create parent directories of `path` (mkdir -p of the dirname). */
 static void csv_mkparents(const char *path) {
     char *tmp = strdup(path);
@@ -248,13 +221,14 @@ static int csv_write_atomic(const char *path, const char *data, size_t len) {
     snprintf(tmp, plen + 32, "%s.tmp.%ld", path, (long)getpid());
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) { free(tmp); return -1; }
+    dyn_io_preallocate(fd, (off_t)len);           /* reserve backing store up front */
     size_t off = 0;
     while (off < len) {
         ssize_t n = write(fd, data + off, len - off);
         if (n < 0) { if (errno == EINTR) continue; close(fd); unlink(tmp); free(tmp); return -1; }
         off += (size_t)n;
     }
-    if (fsync(fd) < 0) { close(fd); unlink(tmp); free(tmp); return -1; }
+    if (dyn_io_durable_sync(fd) < 0) { close(fd); unlink(tmp); free(tmp); return -1; } /* F_FULLFSYNC on macOS */
     close(fd);
     if (rename(tmp, path) < 0) { unlink(tmp); free(tmp); return -1; }
     free(tmp);
@@ -328,10 +302,10 @@ static int header_index(const Table *t, const char *name) {
 
 /* Load + parse a file into `t`. Returns 0, or -1 with a thrown exception. */
 static int csv_load(JSContext *ctx, const char *path, Table *t) {
-    Slurp s;
-    if (csv_slurp(path, &s) < 0) { JS_ThrowTypeError(ctx, "csv: cannot read '%s': %s", path, strerror(errno)); return -1; }
-    int r = csv_parse((const uint8_t *)s.data, s.len, t);
-    csv_slurp_free(&s);
+    char *data; size_t len;
+    if (dyn_io_read_whole(path, &data, &len) < 0) { JS_ThrowTypeError(ctx, "csv: cannot read '%s': %s", path, strerror(errno)); return -1; }
+    int r = csv_parse((const uint8_t *)data, len, t);
+    free(data);
     if (r < 0) { JS_ThrowOutOfMemory(ctx); return -1; }
     if (t->n == 0) { table_free(t); JS_ThrowTypeError(ctx, "csv: '%s' is empty (no header)", path); return -1; }
     return 0;

@@ -24,6 +24,14 @@
 #ifdef CONFIG_NATIVE_MODULES
 
 #include <stddef.h>
+#include <sys/types.h>   /* off_t for the shared disk-I/O helpers below */
+
+/* Shared optimized disk-I/O primitives (implemented in dynajs-nat.c). Each uses
+ * the best facility the platform offers; used by dynajs:file, dynajs:csv, ... */
+void dyn_io_advise_seq_read(int fd, off_t size);
+int  dyn_io_preallocate(int fd, off_t size);
+int  dyn_io_durable_sync(int fd);
+int  dyn_io_read_whole(const char *path, char **out, size_t *outlen);
 
 /* Teardown callback a module supplies: free `native` and everything it owns. */
 typedef void (*DynDisposeFunc)(void *native);
