@@ -1,11 +1,11 @@
-/* test_compress.js — scl:compress (in-repo gzip/gunzip, no external deps).
+/* test_compress.js — dynajs:compress (in-repo gzip/gunzip, no external deps).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_compress.js
  * Prints "test_compress: all tests passed" on success; throws on failure.
  *
  * Covers: round-trip (empty/small/repeated/random), cross-tool against the
  * system gzip/gunzip CLIs, and malformed/truncated input handling. */
 
-import { gzip, gunzip } from "scl:compress";
+import { gzip, gunzip } from "dynajs:compress";
 import * as std from "std";
 import * as os from "os";
 

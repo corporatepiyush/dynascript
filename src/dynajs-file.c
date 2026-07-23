@@ -1,8 +1,8 @@
 /*
- * scl:file -- buffered file reader/writer with a common JS API and per-platform
+ * dynajs:file -- buffered file reader/writer with a common JS API and per-platform
  * fast paths underneath (macOS and Linux).
  *
- *   import { FileReader, FileWriter, readFile, writeFile } from "scl:file";
+ *   import { FileReader, FileWriter, readFile, writeFile } from "dynajs:file";
  *
  *   const r = new FileReader(path, { bufferSize: 1<<18 });
  *   let line; while ((line = r.readLine()) !== null) { ... }
@@ -732,7 +732,7 @@ static int dyn_file_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_file(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:file", dyn_file_init_module);
+    JSModuleDef *m = JS_NewCModule(ctx, "dynajs:file", dyn_file_init_module);
     if (!m)
         return -1;
     JS_AddModuleExport(ctx, m, "FileReader");

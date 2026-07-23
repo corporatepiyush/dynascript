@@ -1,8 +1,8 @@
 /*
- * scl:search -- native substring search. Self-contained, in-repo (no external
+ * dynajs:search -- native substring search. Self-contained, in-repo (no external
  * deps), Boyer-Moore-Horspool matcher.
  *
- *   import { indexOf, indexOfAll } from "scl:search";
+ *   import { indexOf, indexOfAll } from "dynajs:search";
  *   indexOf("the quick brown fox", "quick");   // -> 4   (first match, or -1)
  *   indexOfAll("abababab", "ab");               // -> [0, 2, 4, 6]
  *
@@ -179,7 +179,7 @@ int js_nat_init_search(JSContext *ctx)
 {
     JSModuleDef *m;
     simd_init(); /* idempotent (pthread_once): select the best strfind kernel */
-    m = JS_NewCModule(ctx, "scl:search", dyn_search_init_module);
+    m = JS_NewCModule(ctx, "dynajs:search", dyn_search_init_module);
     if (!m)
         return -1;
     return JS_AddModuleExportList(ctx, m, dyn_search_funcs,

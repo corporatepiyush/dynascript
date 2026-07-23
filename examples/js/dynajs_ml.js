@@ -1,10 +1,10 @@
 /*
- * scl:ml -- native machine learning from secure-c-libs, with DETERMINISTIC
+ * dynajs:ml -- native machine learning from secure-c-libs, with DETERMINISTIC
  * memory management (no GC reliance).
  *
  * Requires the SCL-modules build with the ML family enabled:
  *     make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_ML=y
- *     ./dynajs examples/js/scl_ml.js
+ *     ./dynajs examples/js/dynajs_ml.js
  *
  * Each model owns a private arena; .close() (aliased .dispose()) frees it
  * immediately -- O(1), no GC. The finalizer is only a safety net, so production
@@ -14,7 +14,7 @@
  * is COPIED into the native side, and predictions come back as plain JS Arrays.
  * Nothing native ever escapes into the JS heap.
  */
-import { LinearRegression, LogisticRegression, KMeans } from "scl:ml";
+import { LinearRegression, LogisticRegression, KMeans } from "dynajs:ml";
 
 function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 

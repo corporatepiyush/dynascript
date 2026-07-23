@@ -1,8 +1,8 @@
-/* test_http.js — scl:http (in-repo HTTP/1.1 client + threaded server).
+/* test_http.js — dynajs:http (in-repo HTTP/1.1 client + threaded server).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_http.js
  * Prints "test_http: all tests passed" on success; throws on failure. */
 
-import { HttpClient, HttpServer } from "scl:http";
+import { HttpClient, HttpServer } from "dynajs:http";
 
 let n = 0;
 function assert(cond, msg) {
@@ -99,16 +99,16 @@ try {
     {
         const c = new HttpClient();
         c.setTimeout(1000);
-        let threw = false, sclError = -1;
+        let threw = false, dynajsError = -1;
         try {
             c.get("http://127.0.0.1:9/"); // discard port: connection refused
         } catch (e) {
             threw = true;
-            sclError = e.sclError;
+            dynajsError = e.dynajsError;
             assert(e instanceof Error, "network failure is an Error");
         } finally { c.close(); }
         assert(threw, "refused connection throws");
-        assert(typeof sclError === "number", "error carries numeric .sclError");
+        assert(typeof dynajsError === "number", "error carries numeric .dynajsError");
     }
 
     /* --- bad URL throws --- */

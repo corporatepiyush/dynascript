@@ -1,7 +1,7 @@
 /*
- * scl:random -- seedable PRNG + RFC 4122 v4 UUIDs. Self-contained, in-repo.
+ * dynajs:random -- seedable PRNG + RFC 4122 v4 UUIDs. Self-contained, in-repo.
  *
- *   import { Random, uuid } from "scl:random";
+ *   import { Random, uuid } from "dynajs:random";
  *   const r = new Random(42);        // deterministic when seeded
  *   try {
  *     r.nextU64();      // BigInt in [0, 2^64)     (full 64-bit, lossless)
@@ -338,7 +338,7 @@ static int dyn_random_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_random(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:random", dyn_random_init_module);
+    JSModuleDef *m = JS_NewCModule(ctx, "dynajs:random", dyn_random_init_module);
     if (!m)
         return -1;
     JS_AddModuleExport(ctx, m, "Random");

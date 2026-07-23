@@ -1,11 +1,11 @@
-// scl_http.js — native HTTP/1.1 client from the scl:http module.
+// dynajs_http.js — native HTTP/1.1 client from the dynajs:http module.
 //
-// scl:http exposes HttpClient, backed by secure-c-libs. Each client owns a
+// dynajs:http exposes HttpClient, backed by secure-c-libs. Each client owns a
 // private native arena, so .close() reclaims all of its native memory in one
 // step (the GC finalizer is only a safety net). A response's native bytes are
 // copied into JS strings at the boundary, then freed — nothing native escapes.
 //
-// Run:  dynajs examples/js/scl_http.js [http://host:port/base]
+// Run:  dynajs examples/js/dynajs_http.js [http://host:port/base]
 // With no argument it demonstrates the clean error path against a closed port.
 //
 // API:
@@ -16,9 +16,9 @@
 //   c.setTimeout(ms); c.disconnect(); c.close(); c.closed
 //   `headers` may be a { name: value } object or a raw "A: B\r\n" string.
 //   `body` is a string (UTF-8). On a network/parse failure the call throws an
-//   Error with a numeric `.sclError` code.
+//   Error with a numeric `.dynajsError` code.
 
-import { HttpClient } from "scl:http";
+import { HttpClient } from "dynajs:http";
 
 const base = scriptArgs[1];
 
@@ -48,7 +48,7 @@ if (base) {
     c.get("http://127.0.0.1:9/"); // discard port: connection refused
   } catch (e) {
     print("caught clean error:", e.message);
-    print("   is Error:", e instanceof Error, " sclError:", e.sclError);
+    print("   is Error:", e instanceof Error, " dynajsError:", e.dynajsError);
   } finally {
     c.close();
   }

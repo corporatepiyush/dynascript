@@ -1,6 +1,6 @@
 /* helper: start HttpServerAsync on a fixed port for external load testing
  * (used by the docker io_uring ASan run). Not part of `make test`. */
-import { HttpServerAsync } from "scl:http";
+import { HttpServerAsync } from "dynajs:http";
 import * as std from "std";
 const port = parseInt(scriptArgs[1] || "18099", 10);
 const uptime = parseInt(scriptArgs[2] || "12000", 10);

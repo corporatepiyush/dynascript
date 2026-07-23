@@ -1,7 +1,7 @@
 /*
  * dynascript native modules -- self-contained, in-repo (no external deps).
  *
- * This is the shared framework every native `scl:*` module builds on. It is a
+ * This is the shared framework every native `dynajs:*` module builds on. It is a
  * from-scratch, simplified replacement for the old secure-c-libs binding layer:
  * there is NO per-object arena and NO external allocator. A native resource is
  * just an opaque pointer plus a dispose callback that frees whatever the module
@@ -101,15 +101,15 @@ int js_nat_init_structures3(JSContext *ctx);
 int js_nat_init_simd(JSContext *ctx);
 #endif
 #if defined(CONFIG_IO_URING) && defined(__linux__)
-int js_nat_init_uring(JSContext *ctx); /* scl:uring disk I/O (Linux only) */
+int js_nat_init_uring(JSContext *ctx); /* dynajs:uring disk I/O (Linux only) */
 /* io_uring high-queue-depth whole-file read (0 ok, caller free()s *out). */
 int dyn_uring_read_all(const char *path, char **out, size_t *outlen);
 #endif
 #ifdef CONFIG_NATIVE_MODULE_FILE
-int js_nat_init_file(JSContext *ctx); /* scl:file buffered reader/writer */
+int js_nat_init_file(JSContext *ctx); /* dynajs:file buffered reader/writer */
 #endif
 #ifdef CONFIG_NATIVE_MODULE_TEXT
-int js_nat_init_text(JSContext *ctx); /* scl:text SIMD byte/text utilities */
+int js_nat_init_text(JSContext *ctx); /* dynajs:text SIMD byte/text utilities */
 #endif
 
 /* Register every compiled-in native module in `ctx`. Called from the CLI. */

@@ -1,17 +1,17 @@
 /*
- * scl:structures -- native data structures from secure-c-libs, with
+ * dynajs:structures -- native data structures from secure-c-libs, with
  * DETERMINISTIC memory management (no GC reliance).
  *
  * Requires the SCL-modules build:
  *     make CONFIG_SCL_MODULES=y
- *     ./dynajs examples/js/scl_structures.js
+ *     ./dynajs examples/js/dynajs_structures.js
  *
  * Each native object owns a private arena; .close() (aliased .dispose())
  * frees it immediately -- O(1), no GC. The finalizer is only a safety net,
  * so production code should always close explicitly (try/finally or the
  * withResource helper below).
  */
-import { Vector, HashMap } from "scl:structures";
+import { Vector, HashMap } from "dynajs:structures";
 
 function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 
@@ -23,7 +23,7 @@ function withResource(resource, fn) {
     finally { resource.close(); }
 }
 
-/* ---- Vector: a growable array of numbers backed by scl_array ---- */
+/* ---- Vector: a growable array of numbers backed by a native growable array ---- */
 function demo_vector() {
     return withResource(new Vector(), (v) => {
         for (let i = 0; i < 10; i++) v.push(i * i);
@@ -39,7 +39,7 @@ function demo_vector() {
     });
 }
 
-/* ---- HashMap: int32 -> double, backed by scl_hash ---- */
+/* ---- HashMap: int32 -> double, backed by a native hash map ---- */
 function demo_hashmap() {
     return withResource(new HashMap(), (m) => {
         for (let i = 1; i <= 100; i++) m.set(i, 1 / i);
@@ -76,7 +76,7 @@ const n = demo_deterministic_free();
 print("Deterministic-free demo:", n, "objects created+closed in constant memory");
 
 /* ---- DisposableStack: standard-protocol deterministic cleanup ---- */
-/* scl objects expose [Symbol.dispose], so DisposableStack.use() (and, once
+/* native resource objects expose [Symbol.dispose], so DisposableStack.use() (and, once
  * `using` syntax lands, `using v = new Vector()`) auto-close them in reverse
  * order at scope exit -- even on throw. */
 function demo_disposable_stack() {

@@ -1,7 +1,7 @@
 /*
- * scl:docparse -- native document parsers. Self-contained, in-repo (no deps).
+ * dynajs:docparse -- native document parsers. Self-contained, in-repo (no deps).
  *
- *   import { parseJson, parseCsv } from "scl:docparse";
+ *   import { parseJson, parseCsv } from "dynajs:docparse";
  *   const obj  = parseJson('{"a":1,"b":[2,3]}');  // -> plain JS value
  *   const rows = parseCsv("a,b\n1,2\n3,4");        // -> [["a","b"],["1","2"],["3","4"]]
  *   const objs = parseCsv("a,b\n1,2", { header: true }); // -> [{a:"1",b:"2"}]
@@ -60,7 +60,7 @@ typedef struct {
 /* Parse one field starting at p->pos. Quoted fields are unescaped in place
  * ("" -> a single "). Leaves pos at the terminator (',', CR, LF or EOF) without
  * consuming it. The output always lies within [start, pos), so it can never
- * point past the populated buffer. Mirrors the reference scl parser exactly. */
+ * point past the populated buffer. Mirrors the reference parser exactly. */
 static void csv_parse_field(DynCsv *p, const char **out, size_t *out_len)
 {
     char *buf = p->buf;
@@ -358,7 +358,7 @@ static int js_docparse_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_docparse(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:docparse", js_docparse_init_module);
+    JSModuleDef *m = JS_NewCModule(ctx, "dynajs:docparse", js_docparse_init_module);
     if (!m)
         return -1;
     return JS_AddModuleExportList(ctx, m, js_docparse_funcs,

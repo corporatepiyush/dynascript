@@ -1,7 +1,7 @@
 /*
- * scl:uring -- io_uring disk I/O (Linux only, CONFIG_IO_URING).
+ * dynajs:uring -- io_uring disk I/O (Linux only, CONFIG_IO_URING).
  *
- *   import { readFile, readFileSync, checksum } from "scl:uring";
+ *   import { readFile, readFileSync, checksum } from "dynajs:uring";
  *
  *   const text = readFile("/etc/hostname");        // whole file via io_uring
  *   const same = readFileSync("/etc/hostname");     // pread reference
@@ -51,7 +51,7 @@ static void dyn_disk_submit(struct io_uring *ring, int fd, char *buf,
 
 /* Read the entire file at `path` into a fresh malloc'd buffer using io_uring at
  * queue depth QD. Returns 0 (caller free()s *out) or -1. Exposed (non-static)
- * so scl:file can use the io_uring bulk path for readFile() on Linux. */
+ * so dynajs:file can use the io_uring bulk path for readFile() on Linux. */
 int dyn_uring_read_all(const char *path, char **out, size_t *outlen)
 {
     struct io_uring ring;
@@ -195,7 +195,7 @@ static JSValue dyn_uring_read_common(JSContext *ctx, JSValueConst path_val,
     if ((use_uring ? dyn_uring_read_all(path, &data, &len)
                    : dyn_pread_read_all(path, &data, &len)) < 0) {
         JS_FreeCString(ctx, path);
-        return JS_ThrowInternalError(ctx, "scl:uring: read failed");
+        return JS_ThrowInternalError(ctx, "dynajs:uring: read failed");
     }
     result = JS_NewStringLen(ctx, data ? data : "", len);
     free(data);
@@ -239,7 +239,7 @@ static JSValue dyn_uring_checksum(JSContext *ctx, JSValueConst this_val,
     if ((use_uring ? dyn_uring_read_all(path, &data, &len)
                    : dyn_pread_read_all(path, &data, &len)) < 0) {
         JS_FreeCString(ctx, path);
-        return JS_ThrowInternalError(ctx, "scl:uring: read failed");
+        return JS_ThrowInternalError(ctx, "dynajs:uring: read failed");
     }
     for (i = 0; i < len; i++) {
         sum ^= (uint8_t)data[i];
@@ -271,7 +271,7 @@ static int dyn_uring_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_uring(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:uring", dyn_uring_init_module);
+    JSModuleDef *m = JS_NewCModule(ctx, "dynajs:uring", dyn_uring_init_module);
     if (!m)
         return -1;
     JS_AddModuleExportList(ctx, m, dyn_uring_funcs, (int)countof(dyn_uring_funcs));

@@ -47,7 +47,8 @@
 #include <float.h>
 
 /* x86 SIMD intrinsics (__m128/__m256/_mm_*): the per-ISA files and the core's
- * hsum helper need these; the scl build pulled them via scl_ml.h, which we drop.
+ * hsum helper need these; the original external build pulled them via a shared
+ * ml header, which we drop here.
  * ARM NEON's arm_neon.h is included by the neon file under its own arch gate. */
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
 #include <immintrin.h>
@@ -223,7 +224,7 @@ typedef struct simd {
    *    SIZE_MAX. The "generic SIMD" first+last algorithm (Muła): vector-compare
    *    the pattern's first and last byte against the text, then memcmp the
    *    interior only at candidate positions. Empty pattern => 0. Used by
-   *    scl:search and any delimiter/substring scan. ─────────────────────── */
+   *    dynajs:search and any delimiter/substring scan. ─────────────────────── */
   size_t (*strfind)(const uint8_t *text, size_t n, const uint8_t *pat,
                     size_t m);
 

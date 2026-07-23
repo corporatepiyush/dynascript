@@ -1,8 +1,8 @@
-/* test_docparse.js — scl:docparse (in-repo CSV state machine + JSON reader).
+/* test_docparse.js — dynajs:docparse (in-repo CSV state machine + JSON reader).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_docparse.js
  * Prints "test_docparse: all tests passed" on success; throws on failure. */
 
-import { parseJson, parseCsv } from "scl:docparse";
+import { parseJson, parseCsv } from "dynajs:docparse";
 
 let n = 0;
 function assert(cond, msg) {

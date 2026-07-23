@@ -1,8 +1,8 @@
 /*
- * scl:compress -- gzip (RFC 1952) compress/decompress. Self-contained, in-repo,
+ * dynajs:compress -- gzip (RFC 1952) compress/decompress. Self-contained, in-repo,
  * no external deps.
  *
- *   import { gzip, gunzip } from "scl:compress";
+ *   import { gzip, gunzip } from "dynajs:compress";
  *   const packed = gzip("hello world".repeat(100)); // str|Uint8Array|ArrayBuffer -> Uint8Array
  *   const bytes  = gunzip(packed);                   // -> Uint8Array
  *   const text   = gunzip(packed, { asString: true });// -> string (UTF-8 decode)
@@ -583,7 +583,7 @@ static int dyn_read_input(JSContext *ctx, JSValueConst val, uint8_t **pout,
         base = JS_GetArrayBuffer(ctx, &ab, val);
         if (!base) {
             JS_FreeValue(ctx, JS_GetException(ctx));
-            JS_ThrowTypeError(ctx, "scl:compress: input must be a string, "
+            JS_ThrowTypeError(ctx, "dynajs:compress: input must be a string, "
                                    "Uint8Array, or ArrayBuffer");
             return -1;
         }
@@ -684,7 +684,7 @@ static JSValue dyn_gunzip(JSContext *ctx, JSValueConst this_val, int argc,
     if (dyn_gunzip_decode(src, src_len, &o) < 0) {
         free(src);
         free(o.buf);
-        return JS_ThrowTypeError(ctx, "scl:compress gunzip: invalid gzip data");
+        return JS_ThrowTypeError(ctx, "dynajs:compress gunzip: invalid gzip data");
     }
     free(src);
 
@@ -711,7 +711,7 @@ static int dyn_compress_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_compress(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:compress", dyn_compress_init_module);
+    JSModuleDef *m = JS_NewCModule(ctx, "dynajs:compress", dyn_compress_init_module);
     if (!m)
         return -1;
     return JS_AddModuleExportList(ctx, m, dyn_compress_funcs,

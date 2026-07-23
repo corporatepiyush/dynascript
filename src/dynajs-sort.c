@@ -1,8 +1,8 @@
 /*
- * scl:sort -- native sorting + binary search. Self-contained, in-repo (no
+ * dynajs:sort -- native sorting + binary search. Self-contained, in-repo (no
  * external deps).
  *
- *   import { sort, binarySearch } from "scl:sort";
+ *   import { sort, binarySearch } from "dynajs:sort";
  *   const s = sort([3, 1, 2]);        // -> new ascending Array; input NOT mutated
  *   const i = binarySearch(s, 2);     // -> index, or -1 if absent
  *   sort(arr, (a, b) => b - a);       // optional comparator (runs user JS)
@@ -71,7 +71,7 @@ static int dyn_sort_arr_len(JSContext *ctx, JSValueConst v, uint32_t *out_len)
     if (isarr < 0)
         return -1;
     if (!isarr) {
-        JS_ThrowTypeError(ctx, "scl:sort: expected an Array");
+        JS_ThrowTypeError(ctx, "dynajs:sort: expected an Array");
         return -1;
     }
     lval = JS_GetPropertyStr(ctx, v, "length");
@@ -94,7 +94,7 @@ static int dyn_sort_get_cmp(JSContext *ctx, int argc, JSValueConst *argv,
         return 0;
     }
     if (!JS_IsFunction(ctx, argv[idx])) {
-        JS_ThrowTypeError(ctx, "scl:sort: comparator is not a function");
+        JS_ThrowTypeError(ctx, "dynajs:sort: comparator is not a function");
         return -1;
     }
     *pcmp = argv[idx];
@@ -114,7 +114,7 @@ static JSValue *dyn_sort_read_values(JSContext *ctx, JSValueConst arr,
     uint32_t i;
 
     if (bytes / sizeof(JSValue) != len) { /* size_t multiply overflow */
-        JS_ThrowRangeError(ctx, "scl:sort: array too large");
+        JS_ThrowRangeError(ctx, "dynajs:sort: array too large");
         return NULL;
     }
     elems = js_malloc(ctx, bytes);
@@ -269,7 +269,7 @@ static double *dyn_sort_read_doubles(JSContext *ctx, JSValueConst arr,
     uint32_t i;
 
     if (bytes / sizeof(double) != len) { /* size_t multiply overflow */
-        JS_ThrowRangeError(ctx, "scl:sort: array too large");
+        JS_ThrowRangeError(ctx, "dynajs:sort: array too large");
         return NULL;
     }
     buf = js_malloc(ctx, bytes);
@@ -495,7 +495,7 @@ static int dyn_sort_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_sort(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:sort", dyn_sort_init_module);
+    JSModuleDef *m = JS_NewCModule(ctx, "dynajs:sort", dyn_sort_init_module);
     if (!m)
         return -1;
     return JS_AddModuleExportList(ctx, m, dyn_sort_funcs,

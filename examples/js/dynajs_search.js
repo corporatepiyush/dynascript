@@ -1,12 +1,12 @@
 /*
- * scl:search -- native substring search (KMP) backed by secure-c-libs.
+ * dynajs:search -- native substring search (KMP) backed by secure-c-libs.
  *
  * Build a dynajs with the module, then run this script:
  *   make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_SEARCH=y \
  *        SCL_DIR=../secure-c-libs -j4 dynajs
- *   ./dynajs examples/scl_search.js
+ *   ./dynajs examples/dynajs_search.js
  */
-import { indexOf, indexOfAll } from "scl:search";
+import { indexOf, indexOfAll } from "dynajs:search";
 
 // indexOf -> byte offset of the first match, or -1.
 print(indexOf("the quick brown fox", "quick")); // 4

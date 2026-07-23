@@ -1,16 +1,16 @@
 /*
- * scl:structures3 -- more native data structures from secure-c-libs, with
+ * dynajs:structures3 -- more native data structures from secure-c-libs, with
  * DETERMINISTIC memory management (one arena per object, O(1) close()).
  *
  * Requires the SCL-modules build:
  *     make CONFIG_SCL_MODULES=y
- *     ./dynajs examples/js/scl_structures3.js
+ *     ./dynajs examples/js/dynajs_structures3.js
  *
  *   LRUCache(capacity) : int32 key -> double value, evicts least-recently-used
  *   UnionFind(n)       : disjoint-set forest over elements 0..n-1
  *   SortedSet()        : ordered set of doubles (skiplist)
  */
-import { LRUCache, UnionFind, SortedSet } from "scl:structures3";
+import { LRUCache, UnionFind, SortedSet } from "dynajs:structures3";
 
 function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 

@@ -1,7 +1,7 @@
 /*
- * scl:http -- self-contained, in-repo HTTP/1.1 client + server (no external deps).
+ * dynajs:http -- self-contained, in-repo HTTP/1.1 client + server (no external deps).
  *
- *   import { HttpClient, HttpServer } from "scl:http";
+ *   import { HttpClient, HttpServer } from "dynajs:http";
  *
  *   // --- client (synchronous, runs entirely on the JS thread) ---
  *   const c = new HttpClient();
@@ -59,6 +59,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h> /* TCP_NODELAY */
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
@@ -66,12 +67,13 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "dynajs-simd-kernels.h" /* shared multi-ISA `simd` table (strfind) */
 
 #ifndef countof
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 #endif
 
-/* Structured error codes surfaced as the numeric `.sclError` on a thrown Error. */
+/* Structured error codes surfaced as the numeric `.dynajsError` on a thrown Error. */
 #define DYN_HTTP_ERR_URL      1 /* malformed / unsupported URL */
 #define DYN_HTTP_ERR_RESOLVE  2 /* getaddrinfo failed */
 #define DYN_HTTP_ERR_CONNECT  3 /* socket/connect failed */
@@ -126,19 +128,23 @@ static int dyn_bytes_append(dyn_bytes_t *b, const char *src, size_t n)
 }
 
 /* Portable, dependency-free substring search over a possibly-NUL-containing
- * byte range (avoids relying on memmem / _GNU_SOURCE). */
+ * byte range (avoids relying on memmem / _GNU_SOURCE). Delegates to the shared
+ * multi-ISA SIMD strfind kernel (Muła first+last): request/response header
+ * blocks are hundreds of bytes, long enough that the vectorised scan beats the
+ * scalar byte loop ~4.75x on a realistic header set (see tests/bench_memfind.c).
+ * Pure C, no JS -- safe to call from the acceptor/worker threads. The `simd`
+ * table is installed once (simd_init) on the JS thread before any thread spawns
+ * or any request is parsed. */
 static const char *dyn_memfind(const char *hay, size_t hlen,
                                const char *needle, size_t nlen)
 {
-    size_t i;
+    size_t idx;
 
     if (nlen == 0 || hlen < nlen)
         return NULL;
-    for (i = 0; i + nlen <= hlen; i++) {
-        if (hay[i] == needle[0] && memcmp(hay + i, needle, nlen) == 0)
-            return hay + i;
-    }
-    return NULL;
+    idx = simd.strfind((const uint8_t *)hay, hlen,
+                       (const uint8_t *)needle, nlen);
+    return idx == SIZE_MAX ? NULL : hay + idx;
 }
 
 static int dyn_ci_equal(const char *a, size_t alen, const char *b)
@@ -159,6 +165,16 @@ static int dyn_ci_equal(const char *a, size_t alen, const char *b)
 }
 
 /* Write all `len` bytes to `fd`, retrying short writes. Returns 0 or -1. */
+/* Disable Nagle's algorithm: an HTTP request/response is a ping-pong of small
+ * writes, where Nagle + delayed-ACK can stall a reply ~40ms waiting to coalesce.
+ * Every serious HTTP endpoint sets this on both accepted and client sockets.
+ * Best-effort (ignore failure: a non-TCP fd or unsupported option is harmless). */
+static void dyn_set_nodelay(int fd)
+{
+    int on = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+}
+
 static int dyn_send_all(int fd, const char *buf, size_t len)
 {
     size_t off = 0;
@@ -305,6 +321,7 @@ static int dyn_tcp_connect(const char *host, uint16_t port, int64_t timeout_ms,
         rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
         if (rc == 0) {
             fcntl(fd, F_SETFL, flags);
+            dyn_set_nodelay(fd);
             break;
         }
         if (errno == EINPROGRESS) {
@@ -320,6 +337,7 @@ static int dyn_tcp_connect(const char *host, uint16_t port, int64_t timeout_ms,
                 if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 &&
                     soerr == 0) {
                     fcntl(fd, F_SETFL, flags);
+                    dyn_set_nodelay(fd);
                     break;
                 }
             }
@@ -434,7 +452,7 @@ static char *dyn_headers_to_string(JSContext *ctx, JSValueConst headers,
     return NULL;
 }
 
-/* Turn a code into a thrown JS Error with a numeric `.sclError`. Returns
+/* Turn a code into a thrown JS Error with a numeric `.dynajsError`. Returns
  * JS_EXCEPTION. */
 static JSValue dyn_http_throw(JSContext *ctx, int code, const char *method,
                              const char *url)
@@ -455,7 +473,7 @@ static JSValue dyn_http_throw(JSContext *ctx, int code, const char *method,
         return JS_EXCEPTION;
     JS_DefinePropertyValueStr(ctx, e, "message", JS_NewString(ctx, msg),
                               JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
-    JS_DefinePropertyValueStr(ctx, e, "sclError", JS_NewInt32(ctx, code),
+    JS_DefinePropertyValueStr(ctx, e, "dynajsError", JS_NewInt32(ctx, code),
                               JS_PROP_C_W_E);
     return JS_Throw(ctx, e);
 }
@@ -1251,6 +1269,7 @@ static void *dyn_http_acceptor_main(void *arg)
         fd = accept(s->listen_fd, NULL, NULL);
         if (fd < 0)
             continue;
+        dyn_set_nodelay(fd);
         pthread_mutex_lock(&s->q.mutex);
         if (s->q.count < DYN_HTTP_CONN_QUEUE_CAP && !s->q.shutdown) {
             s->q.fds[s->q.tail] = fd;
@@ -1939,6 +1958,7 @@ static void dyn_alisten_cb(dyn_evloop_t *lp, int fd, int events, void *udata)
             close(cfd);
             continue;
         }
+        dyn_set_nodelay(cfd);
         c = (dyn_aconn_t *)calloc(1, sizeof(*c));
         if (!c) {
             close(cfd);
@@ -2109,6 +2129,7 @@ static void dyn_ur_on_accept(dyn_uring_ctx *u, dyn_http_async_t *s,
             close(res);
             return;
         }
+        dyn_set_nodelay(res);
         dyn_ur_arm_recv(u, c);
     }
 }
@@ -2570,7 +2591,11 @@ static int dyn_http_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_http(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:http", dyn_http_init_module);
+    JSModuleDef *m;
+    /* Install the SIMD dispatch table on the JS thread before any acceptor/
+     * worker thread spawns; dyn_memfind reads it lock-free thereafter. */
+    simd_init();
+    m = JS_NewCModule(ctx, "dynajs:http", dyn_http_init_module);
     if (!m)
         return -1;
     JS_AddModuleExport(ctx, m, "HttpClient");

@@ -3,7 +3,7 @@
  * kqueue (macOS), epoll (Linux), or io_uring (Linux, CONFIG_IO_URING) all serve
  * correctly. The io_uring path in particular fails here if the ring cannot be
  * created (e.g. seccomp-blocked) or the poll/complete state machine is wrong. */
-import { HttpServerAsync, HttpClient } from "scl:http";
+import { HttpServerAsync, HttpClient } from "dynajs:http";
 
 function assert(cond, msg) { if (!cond) throw new Error("assertion failed: " + msg); }
 

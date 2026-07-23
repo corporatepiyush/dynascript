@@ -1,4 +1,4 @@
-// scl_compress.js — the native scl:compress module (gzip / gunzip), backed by
+// dynajs_compress.js — the native dynajs:compress module (gzip / gunzip), backed by
 // secure-c-libs. Each call runs in a private SCL arena: the input bytes are
 // copied in, the codec runs, the result is copied into an independent JS value
 // (a Uint8Array, or a string with { asString: true }), then the arena is
@@ -6,13 +6,13 @@
 //
 // Requires a build with the module linked in:
 //   make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_COMPRESS=y dynajs
-// then:  ./dynajs examples/js/scl_compress.js
+// then:  ./dynajs examples/js/dynajs_compress.js
 //
-// NOTE: the bundled libscl compressor emits valid, fully round-trippable gzip,
+// NOTE: the native compressor emits valid, fully round-trippable gzip,
 // but its LZ77 match finder currently yields a near-stored ratio; this binding
 // guarantees correctness (round-trip + clean errors), not a particular ratio.
 
-import { gzip, gunzip } from "scl:compress";
+import { gzip, gunzip } from "dynajs:compress";
 import { test, run, assert, assertEqual, assertThrows, rng, randInt } from "./harness.js";
 
 test("gzip returns a Uint8Array with the gzip magic header", () => {
@@ -88,4 +88,4 @@ test("wrong-type input is rejected with a TypeError", () => {
   assertThrows(() => gzip({}));
 });
 
-await run("scl:compress (native gzip / gunzip)");
+await run("dynajs:compress (native gzip / gunzip)");

@@ -1,7 +1,7 @@
 /*
- * scl:structures -- native data structures, self-contained and in-repo.
+ * dynajs:structures -- native data structures, self-contained and in-repo.
  *
- *   import { Vector, HashMap } from "scl:structures";
+ *   import { Vector, HashMap } from "dynajs:structures";
  *   const v = new Vector();
  *   try { v.push({x: 1}); v.push("s"); print(v.get(0).x, v.length); }
  *   finally { v.close(); }              // deterministic free
@@ -11,7 +11,7 @@
  *   finally { m.close(); }
  *
  * This is a from-scratch replacement for the old secure-c-libs binding
- * (dynajs-scl-structures.c). It keeps the same JS surface -- class names,
+ * (dynajs-structures.c). It keeps the same JS surface -- class names,
  * method names, arities, return types and error behavior -- but drops the
  * per-object SCL arena for the plain-malloc resource model of dynajs-nat.h.
  *
@@ -502,7 +502,7 @@ static int dyn_structures_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_structures(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:structures",
+    JSModuleDef *m = JS_NewCModule(ctx, "dynajs:structures",
                                    dyn_structures_init_module);
     if (!m)
         return -1;
@@ -514,8 +514,8 @@ int js_nat_init_structures(JSContext *ctx)
 /* The framework's js_nat_init_all() references js_nat_init_structures_ext()
  * unconditionally under CONFIG_NATIVE_MODULE_STRUCTURES (the flag this file
  * turns on). The extended structures (BloomFilter/Heap/RingBuffer/Deque of
- * dynajs-scl-structures-ext.c) are not part of this migration slice, so this
- * registers nothing: "scl:structures2" stays unavailable (import throws),
+ * dynajs-structures.c (ext half)) are not part of this migration slice, so this
+ * registers nothing: "dynajs:structures2" stays unavailable (import throws),
  * which is the correct state for an unported module. */
 int js_nat_init_structures_ext(JSContext *ctx)
 {

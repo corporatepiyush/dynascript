@@ -1,7 +1,7 @@
-/* test_file.js — scl:file buffered reader/writer, common cross-platform API.
+/* test_file.js — dynajs:file buffered reader/writer, common cross-platform API.
  * Backend differs per OS (Linux fadvise/fallocate/io_uring, macOS F_RDAHEAD/
  * F_PREALLOCATE/F_FULLFSYNC) but behaviour is identical and tested here. */
-import { FileReader, FileWriter, readFile, writeFile } from "scl:file";
+import { FileReader, FileWriter, readFile, writeFile } from "dynajs:file";
 
 function assert(c, m) { if (!c) throw new Error("assertion failed: " + m); }
 

@@ -364,7 +364,7 @@ LIBS+=-ldl
 endif
 LIBS+=$(EXTRA_LIBS)
 
-# Opt-in io_uring backend for the scl:http async reactor (Linux only; needs
+# Opt-in io_uring backend for the dynajs:http async reactor (Linux only; needs
 # liburing-dev). Falls back to epoll when unset. No effect on non-Linux hosts.
 ifdef CONFIG_IO_URING
 CFLAGS+=-DCONFIG_IO_URING
@@ -590,6 +590,8 @@ test: dynajs$(EXE)
 ifndef CONFIG_WIN32
 	$(WINE) ./dynajs$(EXE) tests/test_std.js
 	$(WINE) ./dynajs$(EXE) tests/test_rw_handler.js
+	$(WINE) ./dynajs$(EXE) tests/test_async_api.js
+	$(WINE) ./dynajs$(EXE) tests/test_async_leak.js
 endif
 ifdef CONFIG_SHARED_LIBS
 	$(WINE) ./dynajs$(EXE) tests/test_bjson.js

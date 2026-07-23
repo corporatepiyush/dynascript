@@ -1,9 +1,9 @@
 /*
- * scl:ml -- native machine learning, self-contained and in-repo (no external
+ * dynajs:ml -- native machine learning, self-contained and in-repo (no external
  * deps). A from-scratch replacement for the old secure-c-libs binding, with the
  * exact same JS API:
  *
- *   import { LinearRegression, LogisticRegression, KMeans } from "scl:ml";
+ *   import { LinearRegression, LogisticRegression, KMeans } from "dynajs:ml";
  *   const m = new LinearRegression();
  *   try { m.fit([[1],[2],[3]], [3,5,7]); print(m.predict([[4]])[0]); }
  *   finally { m.close(); }        // deterministic free
@@ -932,7 +932,7 @@ static int dyn_ml_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_ml(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:ml", dyn_ml_init_module);
+    JSModuleDef *m = JS_NewCModule(ctx, "dynajs:ml", dyn_ml_init_module);
     if (!m)
         return -1;
     JS_AddModuleExport(ctx, m, "LinearRegression");

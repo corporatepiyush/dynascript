@@ -1,7 +1,7 @@
 /*
- * scl:simd -- vectorized float kernels over TypedArrays, exposed to JS.
+ * dynajs:simd -- vectorized float kernels over TypedArrays, exposed to JS.
  *
- *   import { dot, sum, scale, axpy, add } from "scl:simd";
+ *   import { dot, sum, scale, axpy, add } from "dynajs:simd";
  *   const a = new Float32Array([1,2,3,4]), b = new Float32Array([5,6,7,8]);
  *   dot(a, b);          // 70            (sum of a[i]*b[i])
  *   sum(a);             // 10
@@ -154,7 +154,12 @@ static int js_simd_init_module(JSContext *ctx, JSModuleDef *m)
 
 int js_nat_init_simd(JSContext *ctx)
 {
-    JSModuleDef *m = JS_NewCModule(ctx, "scl:simd", js_simd_init_module);
+    JSModuleDef *m;
+    /* Populate the dispatch table before any kernel is called. Without this the
+     * `simd` globals are NULL unless another SIMD module (search/text/http/
+     * docparse) happened to init first -- a fragile cross-module dependency. */
+    simd_init();
+    m = JS_NewCModule(ctx, "dynajs:simd", js_simd_init_module);
     if (!m)
         return -1;
     return JS_AddModuleExportList(ctx, m, js_simd_funcs, countof(js_simd_funcs));

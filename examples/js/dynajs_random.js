@@ -1,17 +1,17 @@
 /*
- * scl:random -- native random number generation from secure-c-libs, with
+ * dynajs:random -- native random number generation from secure-c-libs, with
  * DETERMINISTIC memory management (no GC reliance).
  *
  * Requires the SCL-modules build:
  *     make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_RANDOM=y
- *     ./dynajs examples/js/scl_random.js
+ *     ./dynajs examples/js/dynajs_random.js
  *
  * Random is an arena-per-object PRNG (xoshiro256**): a private arena holds its
  * state and .close() (aliased .dispose()) frees it immediately -- O(1), no GC.
  * uuid() is a plain function (RFC 4122 v4). Seeded Randoms are deterministic;
  * an unseeded Random draws its seed from the system CSPRNG.
  */
-import { Random, uuid } from "scl:random";
+import { Random, uuid } from "dynajs:random";
 
 function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 

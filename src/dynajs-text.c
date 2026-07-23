@@ -1,9 +1,9 @@
 /*
- * scl:text -- SIMD-accelerated byte/text utilities over the shared kernel
+ * dynajs:text -- SIMD-accelerated byte/text utilities over the shared kernel
  * engine (dynajs-simd-kernels.h). Self-contained, in-repo (no external deps).
  *
  *   import { count, indexOfAny, isValidUtf8, base64Encode, base64Decode }
- *       from "scl:text";
+ *       from "dynajs:text";
  *
  *   count("a,b,c,d", ",");                 // -> 3   (byte count; SIMD count_u8)
  *   indexOfAny("key: value", ":,\n");      // -> 3   (first delimiter; find_first_of)
@@ -12,7 +12,7 @@
  *   base64Decode("aGk=");                   // -> ArrayBuffer([0x68,0x69])
  *
  * Byte semantics: string arguments are materialised as UTF-8 bytes via
- * JS_ToCStringLen (offsets/counts are byte-based, matching scl:search).
+ * JS_ToCStringLen (offsets/counts are byte-based, matching dynajs:search).
  * ArrayBuffer arguments are used as raw bytes. Every JS argument is coerced to
  * a C view BEFORE any kernel runs (coercion can run arbitrary JS); these are
  * plain functions with no closable resource, and every owned C string is freed
@@ -228,7 +228,7 @@ int js_nat_init_text(JSContext *ctx)
 {
     JSModuleDef *m;
     simd_init(); /* idempotent: select best count/find_first_of/utf8 kernels */
-    m = JS_NewCModule(ctx, "scl:text", dyn_text_init_module);
+    m = JS_NewCModule(ctx, "dynajs:text", dyn_text_init_module);
     if (!m)
         return -1;
     return JS_AddModuleExportList(ctx, m, dyn_text_funcs,

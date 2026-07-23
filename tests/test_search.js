@@ -1,8 +1,8 @@
-/* test_search.js — scl:search (in-repo Boyer-Moore-Horspool substring search).
+/* test_search.js — dynajs:search (in-repo Boyer-Moore-Horspool substring search).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_search.js
  * Prints "test_search: all tests passed" on success; throws on failure. */
 
-import { indexOf, indexOfAll } from "scl:search";
+import { indexOf, indexOfAll } from "dynajs:search";
 
 let n = 0;
 function assert(cond, msg) {

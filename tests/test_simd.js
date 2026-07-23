@@ -1,6 +1,6 @@
-/* test_simd.js — scl:simd float32 vector kernels.
+/* test_simd.js — dynajs:simd float32 vector kernels.
  * Run: dynajs (CONFIG_NATIVE_MODULES=y) tests/test_simd.js */
-import { dot, sum, scale, axpy, add } from "scl:simd";
+import { dot, sum, scale, axpy, add } from "dynajs:simd";
 
 let n = 0;
 function assert(c, m) { n++; if (!c) throw new Error("assertion failed: " + m); }

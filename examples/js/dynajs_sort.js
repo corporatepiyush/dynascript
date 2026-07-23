@@ -1,16 +1,16 @@
 /*
- * scl:sort -- native sorting + binary search from secure-c-libs.
+ * dynajs:sort -- native sorting + binary search from secure-c-libs.
  *
  * Requires the SCL-modules build:
  *     make CONFIG_SCL_MODULES=y
- *     ./dynajs examples/js/scl_sort.js
+ *     ./dynajs examples/js/dynajs_sort.js
  *
  * These are TRANSIENT functions, not resource objects: each call spins up a
  * private arena, copies the whole input into it, sorts/searches natively, copies
  * the result back into fresh JS values, and destroys the arena before returning.
  * Nothing to .close() -- peak memory stays flat across any number of calls.
  */
-import { sort, binarySearch } from "scl:sort";
+import { sort, binarySearch } from "dynajs:sort";
 
 function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 
