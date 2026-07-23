@@ -1100,6 +1100,80 @@ static size_t simd_neon_strfind(const uint8_t *text, size_t n,
   return SIZE_MAX;
 }
 
+/* Count occurrences of byte `v`: sum per-block match lanes (0/1) with vaddvq. */
+static size_t simd_neon_count_u8(const uint8_t *restrict p, uint8_t v,
+                                 size_t n) {
+  uint8x16_t vv = vdupq_n_u8(v);
+  uint8x16_t one = vdupq_n_u8(1);
+  size_t i = 0, total = 0;
+  for (; i + 16 <= n; i += 16) {
+    uint8x16_t cmp = vceqq_u8(vld1q_u8(p + i), vv); /* 0xFF per match */
+    total += vaddvq_u8(vandq_u8(cmp, one));         /* <=16, fits u8 */
+  }
+  for (; i < n; i++)
+    if (p[i] == v) total++;
+  return total;
+}
+
+/* First index whose byte is in `set`: OR of per-byte compares for setlen<=8;
+ * a 256-entry membership table drives the tail and larger sets. */
+static size_t simd_neon_find_first_of(const uint8_t *restrict p, size_t n,
+                                      const uint8_t *restrict set,
+                                      size_t setlen) {
+  uint8_t tbl[256];
+  size_t i = 0, k;
+  if (setlen == 0) return SIZE_MAX;
+  memset(tbl, 0, sizeof(tbl));
+  for (k = 0; k < setlen; k++) tbl[set[k]] = 1;
+  if (setlen <= 8) {
+    uint8x16_t vset[8];
+    for (k = 0; k < setlen; k++) vset[k] = vdupq_n_u8(set[k]);
+    for (; i + 16 <= n; i += 16) {
+      uint8x16_t blk = vld1q_u8(p + i);
+      uint8x16_t m = vceqq_u8(blk, vset[0]);
+      for (k = 1; k < setlen; k++)
+        m = vorrq_u8(m, vceqq_u8(blk, vset[k]));
+      uint64_t mask = simd_neon_nibble_mask(m);
+      if (mask) return i + (__builtin_ctzll(mask) >> 2);
+    }
+  }
+  for (; i < n; i++)
+    if (tbl[p[i]]) return i;
+  return SIZE_MAX;
+}
+
+/* Validate UTF-8: SIMD-skip pure-ASCII 16-byte blocks, scalar-validate each
+ * multibyte sequence exactly as the scalar oracle does. */
+static size_t simd_neon_validate_utf8(const uint8_t *restrict p, size_t n) {
+  size_t i = 0;
+  while (i < n) {
+    if (i + 16 <= n) {
+      uint8x16_t blk = vld1q_u8(p + i);
+      if (vmaxvq_u8(vandq_u8(blk, vdupq_n_u8(0x80))) == 0) { i += 16; continue; }
+    }
+    uint8_t c = p[i];
+    size_t len, j;
+    uint32_t cp;
+    if (c < 0x80) { i++; continue; }
+    if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
+    else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
+    else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
+    else return i;
+    if (i + len > n) return i;
+    for (j = 1; j < len; j++) {
+      uint8_t cc = p[i + j];
+      if ((cc & 0xC0) != 0x80) return i;
+      cp = (cp << 6) | (cc & 0x3F);
+    }
+    if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) ||
+        (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
+        (cp >= 0xD800 && cp <= 0xDFFF))
+      return i;
+    i += len;
+  }
+  return n;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_neon(simd_t *t) {
   t->find_u16 = simd_neon_find_u16;
@@ -1107,6 +1181,9 @@ void simd_override_neon(simd_t *t) {
   t->find_f32 = simd_neon_find_f32;
   t->find_f64 = simd_neon_find_f64;
   t->strfind = simd_neon_strfind;
+  t->count_u8 = simd_neon_count_u8;
+  t->find_first_of = simd_neon_find_first_of;
+  t->validate_utf8 = simd_neon_validate_utf8;
   t->dot = simd_neon_dot;
   t->dot_f = simd_neon_dot_f;
   t->norm_l2_sq = simd_neon_norm_l2_sq;

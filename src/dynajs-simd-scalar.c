@@ -612,6 +612,126 @@ static size_t simd_scalar_strfind(const uint8_t *text, size_t n,
   return SIZE_MAX;
 }
 
+/* ── Byte-scanning / text kernels (scalar reference + differential oracle) ── */
+
+static size_t simd_scalar_count_u8(const uint8_t *restrict p, uint8_t v,
+                                   size_t n) {
+  size_t c = 0;
+  for (size_t i = 0; i < n; i++)
+    if (p[i] == v) c++;
+  return c;
+}
+
+static size_t simd_scalar_find_first_of(const uint8_t *restrict p, size_t n,
+                                        const uint8_t *restrict set,
+                                        size_t setlen) {
+  uint8_t tbl[256];
+  if (setlen == 0) return SIZE_MAX;
+  memset(tbl, 0, sizeof(tbl));
+  for (size_t i = 0; i < setlen; i++) tbl[set[i]] = 1;
+  for (size_t i = 0; i < n; i++)
+    if (tbl[p[i]]) return i;
+  return SIZE_MAX;
+}
+
+/* Strict UTF-8 validator: rejects overlong forms, surrogates (U+D800..DFFF),
+ * and code points > U+10FFFF. Returns n if valid, else first invalid index. */
+static size_t simd_scalar_validate_utf8(const uint8_t *restrict p, size_t n) {
+  size_t i = 0;
+  while (i < n) {
+    uint8_t c = p[i];
+    size_t len;
+    uint32_t cp;
+    if (c < 0x80) { i++; continue; }
+    if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
+    else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
+    else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
+    else return i; /* stray continuation byte or 0xF8..0xFF */
+    if (i + len > n) return i; /* truncated multibyte sequence */
+    for (size_t j = 1; j < len; j++) {
+      uint8_t cc = p[i + j];
+      if ((cc & 0xC0) != 0x80) return i; /* not a continuation byte */
+      cp = (cp << 6) | (cc & 0x3F);
+    }
+    if (len == 2 && cp < 0x80) return i;      /* overlong */
+    if (len == 3 && cp < 0x800) return i;     /* overlong */
+    if (len == 4 && cp < 0x10000) return i;   /* overlong */
+    if (cp > 0x10FFFF) return i;              /* out of range */
+    if (cp >= 0xD800 && cp <= 0xDFFF) return i; /* UTF-16 surrogate */
+    i += len;
+  }
+  return n;
+}
+
+static const char simd_b64_alphabet[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static size_t simd_scalar_base64_encode(const uint8_t *restrict src, size_t n,
+                                        char *restrict dst) {
+  const char *E = simd_b64_alphabet;
+  size_t i = 0, o = 0;
+  for (; i + 3 <= n; i += 3) {
+    uint32_t x = ((uint32_t)src[i] << 16) | ((uint32_t)src[i + 1] << 8) |
+                 src[i + 2];
+    dst[o++] = E[(x >> 18) & 0x3F];
+    dst[o++] = E[(x >> 12) & 0x3F];
+    dst[o++] = E[(x >> 6) & 0x3F];
+    dst[o++] = E[x & 0x3F];
+  }
+  if (n - i == 1) {
+    uint32_t x = (uint32_t)src[i] << 16;
+    dst[o++] = E[(x >> 18) & 0x3F];
+    dst[o++] = E[(x >> 12) & 0x3F];
+    dst[o++] = '=';
+    dst[o++] = '=';
+  } else if (n - i == 2) {
+    uint32_t x = ((uint32_t)src[i] << 16) | ((uint32_t)src[i + 1] << 8);
+    dst[o++] = E[(x >> 18) & 0x3F];
+    dst[o++] = E[(x >> 12) & 0x3F];
+    dst[o++] = E[(x >> 6) & 0x3F];
+    dst[o++] = '=';
+  }
+  return o;
+}
+
+static size_t simd_scalar_base64_decode(const char *restrict src, size_t n,
+                                        uint8_t *restrict dst) {
+  int8_t dec[256];
+  size_t i, o = 0;
+  if (n % 4 != 0) return SIZE_MAX;
+  if (n == 0) return 0;
+  memset(dec, -1, sizeof(dec));
+  for (int k = 0; k < 64; k++) dec[(uint8_t)simd_b64_alphabet[k]] = (int8_t)k;
+  for (i = 0; i < n; i += 4) {
+    int last = (i + 4 == n);
+    uint8_t c0 = (uint8_t)src[i], c1 = (uint8_t)src[i + 1];
+    uint8_t c2 = (uint8_t)src[i + 2], c3 = (uint8_t)src[i + 3];
+    int v0 = dec[c0], v1 = dec[c1], v2, v3, pad = 0;
+    uint32_t x;
+    if (v0 < 0 || v1 < 0) return SIZE_MAX;
+    if (c2 == '=') {
+      if (!last || c3 != '=') return SIZE_MAX; /* '=' only at the tail */
+      pad = 2; v2 = 0; v3 = 0;
+    } else {
+      v2 = dec[c2];
+      if (v2 < 0) return SIZE_MAX;
+      if (c3 == '=') {
+        if (!last) return SIZE_MAX;
+        pad = 1; v3 = 0;
+      } else {
+        v3 = dec[c3];
+        if (v3 < 0) return SIZE_MAX;
+      }
+    }
+    x = ((uint32_t)v0 << 18) | ((uint32_t)v1 << 12) | ((uint32_t)v2 << 6) |
+        (uint32_t)v3;
+    dst[o++] = (x >> 16) & 0xFF;
+    if (pad < 2) dst[o++] = (x >> 8) & 0xFF;
+    if (pad < 1) dst[o++] = x & 0xFF;
+  }
+  return o;
+}
+
 void simd_override_scalar(simd_t *t) {
   t->find_u8 = simd_scalar_find_u8;
   t->find_u16 = simd_scalar_find_u16;
@@ -619,6 +739,11 @@ void simd_override_scalar(simd_t *t) {
   t->find_f32 = simd_scalar_find_f32;
   t->find_f64 = simd_scalar_find_f64;
   t->strfind = simd_scalar_strfind;
+  t->count_u8 = simd_scalar_count_u8;
+  t->find_first_of = simd_scalar_find_first_of;
+  t->validate_utf8 = simd_scalar_validate_utf8;
+  t->base64_encode = simd_scalar_base64_encode;
+  t->base64_decode = simd_scalar_base64_decode;
   t->dot = simd_scalar_dot;
   t->dot_f = simd_scalar_dot_f;
   t->norm_l2_sq = simd_scalar_norm_l2_sq;

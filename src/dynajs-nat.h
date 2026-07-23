@@ -108,6 +108,9 @@ int dyn_uring_read_all(const char *path, char **out, size_t *outlen);
 #ifdef CONFIG_NATIVE_MODULE_FILE
 int js_nat_init_file(JSContext *ctx); /* scl:file buffered reader/writer */
 #endif
+#ifdef CONFIG_NATIVE_MODULE_TEXT
+int js_nat_init_text(JSContext *ctx); /* scl:text SIMD byte/text utilities */
+#endif
 
 /* Register every compiled-in native module in `ctx`. Called from the CLI. */
 int js_nat_init_all(JSContext *ctx);

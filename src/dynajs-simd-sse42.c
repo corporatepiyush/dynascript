@@ -1065,9 +1065,81 @@ simd_sse42_strfind(const uint8_t *text, size_t n, const uint8_t *pat,
   return SIZE_MAX;
 }
 
+__attribute__((target("sse4.2"))) static size_t
+simd_sse42_count_u8(const uint8_t *restrict p, uint8_t v, size_t n) {
+  __m128i vv = _mm_set1_epi8((char)v);
+  size_t i = 0, total = 0;
+  for (; i + 16 <= n; i += 16) {
+    __m128i cmp = _mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)(p + i)), vv);
+    total += (size_t)__builtin_popcount((unsigned)_mm_movemask_epi8(cmp));
+  }
+  for (; i < n; i++)
+    if (p[i] == v) total++;
+  return total;
+}
+
+__attribute__((target("sse4.2"))) static size_t
+simd_sse42_find_first_of(const uint8_t *restrict p, size_t n,
+                         const uint8_t *restrict set, size_t setlen) {
+  uint8_t tbl[256];
+  size_t i = 0, k;
+  if (setlen == 0) return SIZE_MAX;
+  memset(tbl, 0, sizeof(tbl));
+  for (k = 0; k < setlen; k++) tbl[set[k]] = 1;
+  if (setlen <= 8) {
+    __m128i vset[8];
+    for (k = 0; k < setlen; k++) vset[k] = _mm_set1_epi8((char)set[k]);
+    for (; i + 16 <= n; i += 16) {
+      __m128i blk = _mm_loadu_si128((const __m128i *)(p + i));
+      __m128i m = _mm_cmpeq_epi8(blk, vset[0]);
+      for (k = 1; k < setlen; k++)
+        m = _mm_or_si128(m, _mm_cmpeq_epi8(blk, vset[k]));
+      unsigned mask = (unsigned)_mm_movemask_epi8(m);
+      if (mask) return i + (size_t)__builtin_ctz(mask);
+    }
+  }
+  for (; i < n; i++)
+    if (tbl[p[i]]) return i;
+  return SIZE_MAX;
+}
+
+__attribute__((target("sse4.2"))) static size_t
+simd_sse42_validate_utf8(const uint8_t *restrict p, size_t n) {
+  size_t i = 0;
+  while (i < n) {
+    if (i + 16 <= n) {
+      __m128i blk = _mm_loadu_si128((const __m128i *)(p + i));
+      if (_mm_movemask_epi8(blk) == 0) { i += 16; continue; } /* all ASCII */
+    }
+    uint8_t c = p[i];
+    size_t len, j;
+    uint32_t cp;
+    if (c < 0x80) { i++; continue; }
+    if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
+    else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
+    else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
+    else return i;
+    if (i + len > n) return i;
+    for (j = 1; j < len; j++) {
+      uint8_t cc = p[i + j];
+      if ((cc & 0xC0) != 0x80) return i;
+      cp = (cp << 6) | (cc & 0x3F);
+    }
+    if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) ||
+        (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
+        (cp >= 0xD800 && cp <= 0xDFFF))
+      return i;
+    i += len;
+  }
+  return n;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_sse42(simd_t *t) {
   t->strfind = simd_sse42_strfind;
+  t->count_u8 = simd_sse42_count_u8;
+  t->find_first_of = simd_sse42_find_first_of;
+  t->validate_utf8 = simd_sse42_validate_utf8;
   t->dot = simd_sse42_dot;
   t->dot_f = simd_sse42_dot_f;
   t->norm_l2_sq = simd_sse42_norm_l2_sq;

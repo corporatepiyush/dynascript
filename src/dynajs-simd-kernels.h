@@ -227,6 +227,27 @@ typedef struct simd {
   size_t (*strfind)(const uint8_t *text, size_t n, const uint8_t *pat,
                     size_t m);
 
+  /* ── Byte-scanning / text kernels (CSV, JSON, log processing). ──────── */
+  /* Count occurrences of byte `v` in p[0..n) (newline/row/field counting). */
+  size_t (*count_u8)(const uint8_t *restrict p, uint8_t v, size_t n);
+  /* First index in p[0..n) whose byte is any of set[0..setlen), or SIZE_MAX.
+   * setlen<=8 is vectorised (OR of compares); larger sets fall back to a
+   * 256-entry membership table. Delimiter/quote/newline/structural scan. */
+  size_t (*find_first_of)(const uint8_t *restrict p, size_t n,
+                          const uint8_t *restrict set, size_t setlen);
+  /* Validate UTF-8: returns n if p[0..n) is well-formed UTF-8, else the byte
+   * index of the first invalid sequence. SIMD ASCII fast path + scalar DFA. */
+  size_t (*validate_utf8)(const uint8_t *restrict p, size_t n);
+
+  /* ── base64 (RFC 4648, '+/' alphabet, '=' padding). ─────────────────── */
+  /* Encode n bytes into dst (needs 4*ceil(n/3) bytes); returns bytes written. */
+  size_t (*base64_encode)(const uint8_t *restrict src, size_t n,
+                          char *restrict dst);
+  /* Decode n base64 chars into dst (needs 3*(n/4) bytes); returns bytes
+   * written, or SIZE_MAX on an invalid character / bad length. */
+  size_t (*base64_decode)(const char *restrict src, size_t n,
+                          uint8_t *restrict dst);
+
 } simd_t;
 
 /* Global dispatch table — safe to read from any thread after init. */
