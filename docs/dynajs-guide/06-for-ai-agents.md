@@ -30,7 +30,7 @@ Import strings are always `dynajs:<name>`.
 | `strings` | `split splitN fields join trimChars title repeat contains index lastIndex count replace replaceAll equalFold compare` |
 | `bytes` | `compare equal indexOf lastIndexOf contains count concat copy fill toHex fromHex toBase64 fromBase64 toUtf8 fromUtf8` |
 | `encoding` | `hexEncode hexDecode base64Encode base64Decode base64UrlEncode base64UrlDecode putUvarint uvarint putVarint varint base85Encode base85Decode` |
-| `text` | `count indexOfAny isValidUtf8 base64Encode base64Decode hexEncode hexDecode latin1ToUtf8 utf8ToLatin1 countUtf8` |
+| `text` | `count indexOfAny isValidUtf8 base64Encode base64Decode hexEncode hexDecode latin1ToUtf8 utf8ToLatin1 countUtf8 utf8ToUtf16 utf16ToUtf8 isValidUtf16 countUtf16` |
 | `crypto` | `md5 sha1 sha224 sha256 sha384 sha512` (+ each `*Hex`), `hmac hmacHex crc32 crc32c`, class `Hasher` |
 | `uuid` | `v4 v7 v3 v5 parse validate version variant bytes fromBytes NIL MAX NAMESPACE_DNS NAMESPACE_URL NAMESPACE_OID NAMESPACE_X500` |
 | `random` | class `Random` (`nextU64 nextU53 nextFloat nextBounded fill`), `uuid` |
@@ -42,6 +42,8 @@ Import strings are always `dynajs:<name>`.
 | `uring` | `readFile readFileSync checksum` (Linux io_uring) |
 | `http` | classes `HttpClient HttpServer HttpServerAsync` |
 | `netip` | `parseAddr parsePrefix contains masked canonical isValid compareAddr` |
+| `sys` | `stat lstat exists readDir makeDir remove removeAll rename symlink readLink realPath chmod glob tempDir makeTempDir makeTempFile env getEnv setEnv args cwd chDir platform pid hostName homeDir` |
+| `semver` | `parse isValid clean compare gt gte lt lte eq neq sort major minor patch prerelease inc satisfies maxSatisfying minSatisfying coerce` |
 | `time` | `Nanosecond … Hour`, `durationString parseDuration now nowUnixNano nowMillis monotonicNano formatRFC3339 formatUnix parseRFC3339 date fromUnix` |
 | `simd` | `dot sum scale axpy add sub mul div abs fma addScalar affine normL1 normL2 max min argmax argmin sigmoid relu relu6 leakyRelu elu tanhFast gelu silu softmax logSoftmax vexp vlog vsqrt vrsqrt vinv distL2 distL1 distCos distCheb gemv gemvT gemm clamp threshold topkIndices f64Sum f64Dot f64Max f64Min f64Scale f64Axpy` |
 | `ml` | classes `LinearRegression LogisticRegression KMeans` |

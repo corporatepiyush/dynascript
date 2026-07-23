@@ -41,6 +41,9 @@ the package does*, done properly and re-arranged:
 - A compression library becomes `dynajs:compress` (already shipped: real DEFLATE).
 - A CSV/JSON parser becomes `dynajs:docparse` (already shipped).
 - An HTTP client/server becomes `dynajs:http` (already shipped: reactor server + client).
+- The filesystem/glob packages (`fs-extra`, `glob`, `rimraf`, `mkdirp`) become `dynajs:sys` (already
+  shipped: unified filesystem + process + glob, re-arranged into one module).
+- The `semver` package becomes `dynajs:semver` (already shipped: SemVer 2.0.0 + npm range grammar).
 - A validation, templating, or data-structure package becomes a native module or a documented
   built-in recipe.
 

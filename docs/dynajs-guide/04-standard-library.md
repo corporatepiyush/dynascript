@@ -110,6 +110,20 @@ print(Array.from(latin1ToUtf8(new Uint8Array([0xe9]))).map(b=>b.toString(16)).jo
 These accept `Uint8Array` views, `ArrayBuffer`, or strings. On long inputs they run at multiple
 GiB/s (Chapter 5). This is the module the engine itself reuses internally for HTTP header scanning.
 
+`text` also does **UTF-8 ↔ UTF-16 transcoding** (vectorized), for interop with UTF-16 systems:
+
+```js
+import { utf8ToUtf16, utf16ToUtf8, isValidUtf16, countUtf16 } from "dynajs:text";
+
+const u16 = utf8ToUtf16("hello 世界 😀");        // → UTF-16LE bytes (Uint8Array)
+print(countUtf16(u16));                            // 10  (code points)
+print(isValidUtf16(u16));                          // true — round-trips exactly
+print(isValidUtf16(new Uint8Array([0x00, 0xD8]))); // false (lone high surrogate)
+```
+
+The policy is strict/lossless (simdutf `convert` semantics): a lone or misordered surrogate is an
+**error** (the transcoders throw; `isValidUtf16` returns false), never silently replaced with U+FFFD.
+
 ---
 
 ## 4.2 Cryptographic hashing & identity
@@ -605,7 +619,64 @@ scalar scan it replaced).
 
 ---
 
-## 4.10 The module map at a glance
+## 4.10 System: filesystem, directories, process (`dynajs:sys`)
+
+`dynajs:sys` is the unified **system-interface** module — filesystem metadata, directories,
+globbing, and process/environment — deliberately *not* split the way Node (`fs` / `os` / `process`,
+plus `glob` / `rimraf` / `mkdirp`) or Go (`os` / `path/filepath`) split it. One synchronous module.
+(Path-*string* logic stays in `dynajs:path`; buffered file *content* I/O stays in `dynajs:file` — no
+duplication.)
+
+```js
+import { stat, readDir, makeDir, removeAll, glob, exists,
+         makeTempDir, getEnv, platform } from "dynajs:sys";
+import { writeFile } from "dynajs:file";
+
+const root = makeTempDir("demo-");               // fresh unique temp dir
+makeDir(root + "/a/b", { recursive: true });
+writeFile(root + "/a/x.txt", "hi");
+writeFile(root + "/a/b/y.js", "1");
+
+print(readDir(root + "/a").map(e => e.name + (e.isDir ? "/" : ""))); // ["b/", "x.txt"]
+print(glob(root + "/**/*.js"));                  // recursive: ** / * / ? / [a-c] / [!..]
+print(stat(root + "/a/x.txt").size, stat(root + "/a").isDir);        // 2 true
+print(platform(), getEnv("HOME") !== undefined);                     // "darwin" true
+
+removeAll(root);                                 // recursive, symlink-safe, missing = no-op
+print(exists(root));                             // false
+```
+
+Highlights: `glob` is a self-contained matcher (`*`, `**`, `?`, `[...]`, ranges, negation),
+symlink-cycle-safe; `removeAll` uses `openat` + `O_NOFOLLOW` so it can never delete outside the tree
+through a symlink; every error throws an `Error` carrying `.code` (`"ENOENT"`) and `.errno`; `readDir`
+returns sorted `{ name, isDir, isFile, isSymlink }` entries. Full surface: `stat`/`lstat`/`exists`,
+`readDir`/`makeDir`/`remove`/`removeAll`/`rename`, `symlink`/`readLink`/`realPath`/`chmod`, `glob`,
+`tempDir`/`makeTempDir`/`makeTempFile`, and `env`/`getEnv`/`setEnv`/`args`/`cwd`/`chDir`/`platform`/
+`pid`/`hostName`/`homeDir`.
+
+## 4.11 Semantic versioning (`dynajs:semver`)
+
+SemVer 2.0.0 parsing, comparison, and npm-style range satisfaction — the capability behind the npm
+`semver` package, delivered as a curated native module (our own API, not a port).
+
+```js
+import { parse, compare, satisfies, inc, maxSatisfying, coerce, sort } from "dynajs:semver";
+
+print(compare("1.0.0-alpha", "1.0.0"));  // -1   (a prerelease is lower than the release)
+print(satisfies("1.2.9", "^1.2.3"));     // true
+print(satisfies("0.3.0", "^0.2.3"));     // false (caret is special for 0.x: >=0.2.3 <0.3.0)
+print(inc("1.2.3", "minor"));            // "1.3.0"
+print(maxSatisfying(["1.0.0", "1.2.0", "1.9.0", "2.0.0"], "^1.2.0")); // "1.9.0"
+print(coerce("v2.3.4-x"));               // "2.3.4"
+print(sort(["2.0.0", "1.0.0-rc.1", "1.0.0"]).join(" < ")); // "1.0.0-rc.1 < 1.0.0 < 2.0.0"
+```
+
+The full npm range grammar is supported — exact, comparators (`>` `>=` `<` `<=` `=`), caret `^`
+(including the 0.x rules), tilde `~`, hyphen `a - b`, x-ranges (`1.x`, `1.2.*`, `*`), AND (space) and
+OR (`||`), plus npm's prerelease rule (a prerelease only satisfies a range whose comparator carries a
+prerelease at the same `major.minor.patch`).
+
+## 4.12 The module map at a glance
 
 | Module | Fills the gap of | One-line why |
 |---|---|---|
@@ -626,6 +697,8 @@ scalar scan it replaced).
 | `http` | Node `http` | reactor server + client |
 | `netip` | Go `net/netip` | IP/CIDR parsing & reasoning |
 | `time` | Go `time` | durations/monotonic/RFC3339 |
+| `sys` | Node `fs`+`os`, `glob`/`rimraf` | unified filesystem + process + glob |
+| `semver` | npm `semver` | SemVer parse/compare/ranges |
 | `simd` | (native addon) | multi-ISA vector math in the runtime |
 | `ml` | (Python/Node ML) | native regression/kmeans |
 | `compress` | Node `zlib` | real DEFLATE gzip |
