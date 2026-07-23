@@ -137,13 +137,24 @@ __attribute__((target("avx2,fma"))) static float
 simd_avx2_max(const float *restrict x, size_t n) {
   if (n == 0)
     return -FLT_MAX;
-  __m256 vmax = _mm256_loadu_ps(x);
-  size_t i = 8;
-  for (; i + 8 <= n; i += 8)
-    vmax = _mm256_max_ps(vmax, _mm256_loadu_ps(&x[i]));
-  float result = hsum256_ps(
-      _mm256_max_ps(vmax, _mm256_permute2f128_ps(vmax, vmax, 1)));
-  result = fmaxf(result, _mm_cvtss_f32(_mm256_extractf128_ps(vmax, 1)));
+  /* The 8-wide head load is only safe when n >= 8. The old reduction ran
+   * hsum256_ps (a horizontal SUM) over the lane maxes — not a max. Reduce
+   * with a real horizontal max (hi/lo 128 max, then movehl + max_ss). */
+  float result;
+  size_t i;
+  if (n >= 8) {
+    __m256 vmax = _mm256_loadu_ps(x);
+    for (i = 8; i + 8 <= n; i += 8)
+      vmax = _mm256_max_ps(vmax, _mm256_loadu_ps(&x[i]));
+    __m128 m = _mm_max_ps(_mm256_castps256_ps128(vmax),
+                          _mm256_extractf128_ps(vmax, 1));
+    m = _mm_max_ps(m, _mm_movehl_ps(m, m));
+    m = _mm_max_ss(m, _mm_shuffle_ps(m, m, 1));
+    result = _mm_cvtss_f32(m);
+  } else {
+    result = x[0];
+    i = 1;
+  }
   for (; i < n; i++)
     if (x[i] > result)
       result = x[i];
@@ -155,13 +166,23 @@ __attribute__((target("avx2,fma"))) static float
 simd_avx2_min(const float *restrict x, size_t n) {
   if (n == 0)
     return FLT_MAX;
-  __m256 vmin = _mm256_loadu_ps(x);
-  size_t i = 8;
-  for (; i + 8 <= n; i += 8)
-    vmin = _mm256_min_ps(vmin, _mm256_loadu_ps(&x[i]));
-  float result = hsum256_ps(
-      _mm256_min_ps(vmin, _mm256_permute2f128_ps(vmin, vmin, 1)));
-  result = fminf(result, _mm_cvtss_f32(_mm256_extractf128_ps(vmin, 1)));
+  /* See simd_avx2_max: the old hsum256_ps reduction was a SUM, not a min.
+   * Real horizontal min; guard the head load for n < 8. */
+  float result;
+  size_t i;
+  if (n >= 8) {
+    __m256 vmin = _mm256_loadu_ps(x);
+    for (i = 8; i + 8 <= n; i += 8)
+      vmin = _mm256_min_ps(vmin, _mm256_loadu_ps(&x[i]));
+    __m128 m = _mm_min_ps(_mm256_castps256_ps128(vmin),
+                          _mm256_extractf128_ps(vmin, 1));
+    m = _mm_min_ps(m, _mm_movehl_ps(m, m));
+    m = _mm_min_ss(m, _mm_shuffle_ps(m, m, 1));
+    result = _mm_cvtss_f32(m);
+  } else {
+    result = x[0];
+    i = 1;
+  }
   for (; i < n; i++)
     if (x[i] < result)
       result = x[i];
@@ -687,16 +708,19 @@ simd_avx2_log_softmax(float *restrict out,
     if (in[i] > maxv)
       maxv = in[i];
 
-  /* exps land in out[] so simd_hsum_f32 can sum every element —
-   * the old code only summed the scalar tail. */
+  /* Accumulate the exp-sum in a register. Storing exps into out[] would
+   * clobber in[] when out aliases in (the binding calls log_softmax(a, a, n)),
+   * and the final in[i]-voff loop still needs the original input — the old
+   * "exps land in out[]" code produced a ~550% error on in-place input. */
   __m256 vmaxv = _mm256_set1_ps(maxv);
+  __m256 vsum = _mm256_setzero_ps();
   i = 0;
   for (; i + 8 <= n; i += 8)
-    _mm256_storeu_ps(
-        &out[i], avx2_fast_exp_ps(_mm256_sub_ps(_mm256_loadu_ps(&in[i]), vmaxv)));
+    vsum = _mm256_add_ps(
+        vsum, avx2_fast_exp_ps(_mm256_sub_ps(_mm256_loadu_ps(&in[i]), vmaxv)));
+  float sum = hsum256_ps(vsum);
   for (; i < n; i++)
-    out[i] = fast_exp(in[i] - maxv);
-  float sum = simd_hsum_f32(out, n);
+    sum += fast_exp(in[i] - maxv);
 
   float log_s = logf(sum);
   __m256 voff = _mm256_set1_ps(maxv + log_s);
@@ -871,9 +895,9 @@ simd_avx2_dist_cheb(const float *restrict a,
     __m256 adiff = _mm256_andnot_ps(sign_mask, _mm256_sub_ps(va, vb));
     vmax = _mm256_max_ps(vmax, adiff);
   }
-  __m256 tmp = _mm256_max_ps(vmax, _mm256_permute2f128_ps(vmax, vmax, 1));
-  float result = hsum256_ps(
-      _mm256_max_ps(tmp, _mm256_shuffle_ps(tmp, tmp, _MM_SHUFFLE(2, 3, 0, 1))));
+  /* Real horizontal max (Chebyshev = max abs diff); the old hsum256_ps
+   * summed the lane maxes instead. */
+  float result = avx2_hmax256_ps(vmax);
   for (; i < d; i++) {
     float df = fabsf(a[i] - b[i]);
     if (df > result)

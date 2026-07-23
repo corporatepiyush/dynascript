@@ -131,13 +131,23 @@ __attribute__((target("sse4.2"))) static float
 simd_sse42_max(const float *restrict x, size_t n) {
   if (n == 0)
     return -FLT_MAX;
-  __m128 vmax = _mm_loadu_ps(x);
-  size_t i = 4;
-  for (; i + 4 <= n; i += 4)
-    vmax = _mm_max_ps(vmax, _mm_loadu_ps(&x[i]));
-  float result = simd_hsum_128(
-      _mm_max_ps(vmax, _mm_shuffle_ps(vmax, vmax, _MM_SHUFFLE(2, 3, 0, 1))));
-  result = fmaxf(result, _mm_cvtss_f32(_mm_movehl_ps(vmax, vmax)));
+  /* The 4-wide head load is only safe when n >= 4. The old reduction ran
+   * simd_hsum_128 (a horizontal SUM) over the lane maxes — not a max at all
+   * (it returned ~2*(max_ab+max_cd)). Use a real horizontal max (movehl +
+   * max_ss), matching NEON's vmaxvq_f32. */
+  float result;
+  size_t i;
+  if (n >= 4) {
+    __m128 vmax = _mm_loadu_ps(x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmax = _mm_max_ps(vmax, _mm_loadu_ps(&x[i]));
+    __m128 h = _mm_max_ps(vmax, _mm_movehl_ps(vmax, vmax));
+    h = _mm_max_ss(h, _mm_shuffle_ps(h, h, 1));
+    result = _mm_cvtss_f32(h);
+  } else {
+    result = x[0];
+    i = 1;
+  }
   for (; i < n; i++)
     if (x[i] > result)
       result = x[i];
@@ -149,13 +159,21 @@ __attribute__((target("sse4.2"))) static float
 simd_sse42_min(const float *restrict x, size_t n) {
   if (n == 0)
     return FLT_MAX;
-  __m128 vmin = _mm_loadu_ps(x);
-  size_t i = 4;
-  for (; i + 4 <= n; i += 4)
-    vmin = _mm_min_ps(vmin, _mm_loadu_ps(&x[i]));
-  float result = simd_hsum_128(
-      _mm_min_ps(vmin, _mm_shuffle_ps(vmin, vmin, _MM_SHUFFLE(2, 3, 0, 1))));
-  result = fminf(result, _mm_cvtss_f32(_mm_movehl_ps(vmin, vmin)));
+  /* See simd_sse42_max: the old simd_hsum_128 reduction was a SUM, not a min.
+   * Real horizontal min (movehl + min_ss); guard the head load for n < 4. */
+  float result;
+  size_t i;
+  if (n >= 4) {
+    __m128 vmin = _mm_loadu_ps(x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmin = _mm_min_ps(vmin, _mm_loadu_ps(&x[i]));
+    __m128 h = _mm_min_ps(vmin, _mm_movehl_ps(vmin, vmin));
+    h = _mm_min_ss(h, _mm_shuffle_ps(h, h, 1));
+    result = _mm_cvtss_f32(h);
+  } else {
+    result = x[0];
+    i = 1;
+  }
   for (; i < n; i++)
     if (x[i] < result)
       result = x[i];
@@ -477,21 +495,16 @@ simd_sse42_gelu(float *restrict out, const float *restrict in,
     __m128 x = _mm_loadu_ps(&in[i]);
     __m128 x3 = _mm_mul_ps(_mm_mul_ps(x, x), x);
     __m128 inner = _mm_mul_ps(sqrt_2_over_pi, _mm_add_ps(x, _mm_mul_ps(c, x3)));
-    /* SSE4.2 has no tanh instruction (_mm_tan_ps is SVML-only, and is
-     * tan, not tanh): tanh(y) = 2*sigmoid(2y) - 1 via the bit-exp trick. */
+    /* _mm_tanh_ps is SVML-only; per-lane libm tanhf keeps the lanes
+     * bit-identical to the scalar tail. The bit-exp trick tanh
+     * (2*sigmoid(2y)-1) used here before was the fast_tanh approximation
+     * (~34% error) — gelu is an accurate activation and needs the real tanh. */
     {
-      __m128 y = inner;
-      __m128 y2 = _mm_add_ps(y, y);
-      __m128 y2c =
-          _mm_max_ps(_mm_min_ps(y2, _mm_set1_ps(10.0f)), _mm_set1_ps(-10.0f));
-      __m128i bits2 =
-          _mm_cvtps_epi32(_mm_mul_ps(y2c, _mm_set1_ps(-12102203.0f)));
-      bits2 = _mm_add_epi32(bits2, _mm_castps_si128(_mm_set1_ps(1.0f)));
-      bits2 = _mm_max_epi32(bits2, _mm_setzero_si128());
-      bits2 = _mm_min_epi32(bits2, _mm_set1_epi32(0x7F800000));
-      __m128 ve2 = _mm_add_ps(one, _mm_castsi128_ps(bits2));
-      __m128 sig2 = _mm_div_ps(one, ve2);
-      inner = _mm_sub_ps(_mm_add_ps(sig2, sig2), one);
+      float tmp[4];
+      _mm_storeu_ps(tmp, inner);
+      for (int j = 0; j < 4; j++)
+        tmp[j] = tanhf(tmp[j]);
+      inner = _mm_loadu_ps(tmp);
     }
     _mm_storeu_ps(&out[i],
                   _mm_mul_ps(_mm_mul_ps(half, x), _mm_add_ps(one, inner)));
@@ -652,16 +665,19 @@ simd_sse42_log_softmax(float *restrict out,
     if (in[i] > maxv)
       maxv = in[i];
 
-  /* exps land in out[] so simd_hsum_f32 can sum every element —
-   * the old code only summed the scalar tail. */
+  /* Accumulate the exp-sum in a register. Storing exps into out[] would
+   * clobber in[] when out aliases in (the binding calls log_softmax(a, a, n)),
+   * and the final in[i]-voff loop still needs the original input — the old
+   * "exps land in out[]" code produced a ~550% error on in-place input. */
   __m128 vmaxv = _mm_set1_ps(maxv);
+  __m128 vsum = _mm_setzero_ps();
   i = 0;
   for (; i + 4 <= n; i += 4)
-    _mm_storeu_ps(&out[i],
-                  sse42_fast_exp_ps(_mm_sub_ps(_mm_loadu_ps(&in[i]), vmaxv)));
+    vsum = _mm_add_ps(
+        vsum, sse42_fast_exp_ps(_mm_sub_ps(_mm_loadu_ps(&in[i]), vmaxv)));
+  float sum = simd_hsum_128(vsum);
   for (; i < n; i++)
-    out[i] = fast_exp(in[i] - maxv);
-  float sum = simd_hsum_f32(out, n);
+    sum += fast_exp(in[i] - maxv);
 
   float log_s = logf(sum);
   __m128 voff = _mm_set1_ps(maxv + log_s);
@@ -833,9 +849,11 @@ simd_sse42_dist_cheb(const float *restrict a,
     __m128 adiff = _mm_andnot_ps(sign_mask, _mm_sub_ps(va, vb));
     vmax = _mm_max_ps(vmax, adiff);
   }
-  float result = simd_hsum_128(
-      _mm_max_ps(vmax, _mm_shuffle_ps(vmax, vmax, _MM_SHUFFLE(2, 3, 0, 1))));
-  result = fmaxf(result, _mm_cvtss_f32(_mm_movehl_ps(vmax, vmax)));
+  /* Real horizontal max (Chebyshev = max abs diff); the old simd_hsum_128
+   * summed the lane maxes instead. */
+  __m128 h = _mm_max_ps(vmax, _mm_movehl_ps(vmax, vmax));
+  h = _mm_max_ss(h, _mm_shuffle_ps(h, h, 1));
+  float result = _mm_cvtss_f32(h);
   for (; i < d; i++) {
     float df = fabsf(a[i] - b[i]);
     if (df > result)

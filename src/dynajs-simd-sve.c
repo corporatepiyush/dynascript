@@ -114,6 +114,11 @@ static float simd_sve_sum(const float *restrict x, size_t n) {
 static float simd_sve_max(const float *restrict x, size_t n) {
   if (n == 0)
     return -FLT_MAX;
+  if (n < (size_t)sve_f32_cnt()) {
+    float m = x[0];
+    for (size_t i = 1; i < n; i++) if (x[i] > m) m = x[i];
+    return m;
+  }
   svbool_t pg = svptrue_b32();
   svfloat32_t vmax = svld1_f32(pg, x);
   size_t i = sve_f32_cnt();
@@ -131,6 +136,11 @@ static float simd_sve_max(const float *restrict x, size_t n) {
 static float simd_sve_min(const float *restrict x, size_t n) {
   if (n == 0)
     return FLT_MAX;
+  if (n < (size_t)sve_f32_cnt()) {
+    float m = x[0];
+    for (size_t i = 1; i < n; i++) if (x[i] < m) m = x[i];
+    return m;
+  }
   svbool_t pg = svptrue_b32();
   svfloat32_t vmin = svld1_f32(pg, x);
   size_t i = sve_f32_cnt();
@@ -148,6 +158,11 @@ static float simd_sve_min(const float *restrict x, size_t n) {
 static size_t simd_sve_argmax(const float *restrict x, size_t n) {
   if (n == 0)
     return 0;
+  if (n < (size_t)sve_f32_cnt()) {
+    size_t k = 0;
+    for (size_t i = 1; i < n; i++) if (x[i] > x[k]) k = i;
+    return k;
+  }
   svbool_t pg = svptrue_b32();
   svfloat32_t vmax = svld1_f32(pg, x);
   svuint32_t vidx_max = svindex_u32(0, 1);
@@ -186,6 +201,11 @@ static size_t simd_sve_argmax(const float *restrict x, size_t n) {
 static size_t simd_sve_argmin(const float *restrict x, size_t n) {
   if (n == 0)
     return 0;
+  if (n < (size_t)sve_f32_cnt()) {
+    size_t k = 0;
+    for (size_t i = 1; i < n; i++) if (x[i] < x[k]) k = i;
+    return k;
+  }
   svbool_t pg = svptrue_b32();
   svfloat32_t vmin = svld1_f32(pg, x);
   svuint32_t vidx_min = svindex_u32(0, 1);
@@ -224,6 +244,12 @@ static void simd_sve_argminmax(const float *restrict x, size_t n,
                                       size_t *argmin_out, size_t *argmax_out) {
   if (n == 0) {
     *argmin_out = *argmax_out = 0;
+    return;
+  }
+  if (n < (size_t)sve_f32_cnt()) {
+    size_t mn = 0, mx = 0;
+    for (size_t i = 1; i < n; i++) { if (x[i] < x[mn]) mn = i; if (x[i] > x[mx]) mx = i; }
+    *argmin_out = mn; *argmax_out = mx;
     return;
   }
   svbool_t pg = svptrue_b32();

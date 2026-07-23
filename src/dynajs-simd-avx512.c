@@ -119,6 +119,11 @@ __attribute__((target("avx512f,avx512bw,avx512dq"))) static float
 simd_avx512_max(const float *restrict x, size_t n) {
   if (n == 0)
     return -FLT_MAX;
+  if (n < 16) { /* 16-wide head load reads past x[n) for small n (OOB) */
+    float m = x[0];
+    for (size_t i = 1; i < n; i++) if (x[i] > m) m = x[i];
+    return m;
+  }
   __m512 vmax = _mm512_loadu_ps(x);
   size_t i = 16;
   for (; i + 16 <= n; i += 16)
@@ -134,6 +139,11 @@ __attribute__((target("avx512f,avx512bw,avx512dq"))) static float
 simd_avx512_min(const float *restrict x, size_t n) {
   if (n == 0)
     return FLT_MAX;
+  if (n < 16) { /* 16-wide head load reads past x[n) for small n (OOB) */
+    float m = x[0];
+    for (size_t i = 1; i < n; i++) if (x[i] < m) m = x[i];
+    return m;
+  }
   __m512 vmin = _mm512_loadu_ps(x);
   size_t i = 16;
   for (; i + 16 <= n; i += 16)
@@ -150,6 +160,11 @@ __attribute__((target("avx512f,avx512bw,avx512dq"))) static size_t
 simd_avx512_argmax(const float *restrict x, size_t n) {
   if (n == 0)
     return 0;
+  if (n < 16) { /* 16-wide head load reads past x[n) for small n (OOB) */
+    size_t k = 0;
+    for (size_t i = 1; i < n; i++) if (x[i] > x[k]) k = i;
+    return k;
+  }
   __m512 vmax = _mm512_loadu_ps(x);
   __m512i vidx =
       _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
@@ -188,6 +203,11 @@ __attribute__((target("avx512f,avx512bw,avx512dq"))) static size_t
 simd_avx512_argmin(const float *restrict x, size_t n) {
   if (n == 0)
     return 0;
+  if (n < 16) { /* 16-wide head load reads past x[n) for small n (OOB) */
+    size_t k = 0;
+    for (size_t i = 1; i < n; i++) if (x[i] < x[k]) k = i;
+    return k;
+  }
   __m512 vmin = _mm512_loadu_ps(x);
   __m512i vidx =
       _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
@@ -228,6 +248,12 @@ simd_avx512_argminmax(const float *restrict x, size_t n,
                              size_t *argmin_out, size_t *argmax_out) {
   if (n == 0) {
     *argmin_out = *argmax_out = 0;
+    return;
+  }
+  if (n < 16) { /* 16-wide head load reads past x[n) for small n (OOB) */
+    size_t mn = 0, mx = 0;
+    for (size_t i = 1; i < n; i++) { if (x[i] < x[mn]) mn = i; if (x[i] > x[mx]) mx = i; }
+    *argmin_out = mn; *argmax_out = mx;
     return;
   }
   __m512 vmin = _mm512_loadu_ps(x);
@@ -653,16 +679,19 @@ simd_avx512_log_softmax(float *restrict out,
     if (in[i] > maxv)
       maxv = in[i];
 
-  /* exps land in out[] so simd_hsum_f32 can sum every element —
-   * the old code only summed the scalar tail. */
+  /* Accumulate the exp-sum in a register. Storing exps into out[] would
+   * clobber in[] when out aliases in (the binding calls log_softmax(a, a, n)),
+   * and the final in[i]-voff loop still needs the original input — the old
+   * "exps land in out[]" code produced a ~550% error on in-place input. */
   __m512 vmaxv = _mm512_set1_ps(maxv);
+  __m512 vsum = _mm512_setzero_ps();
   i = 0;
   for (; i + 16 <= n; i += 16)
-    _mm512_storeu_ps(&out[i], avx512_fast_exp_ps(
-                                  _mm512_sub_ps(_mm512_loadu_ps(&in[i]), vmaxv)));
+    vsum = _mm512_add_ps(
+        vsum, avx512_fast_exp_ps(_mm512_sub_ps(_mm512_loadu_ps(&in[i]), vmaxv)));
+  float sum = _mm512_reduce_add_ps(vsum);
   for (; i < n; i++)
-    out[i] = fast_exp(in[i] - maxv);
-  float sum = simd_hsum_f32(out, n);
+    sum += fast_exp(in[i] - maxv);
 
   float log_s = logf(sum);
   __m512 voff = _mm512_set1_ps(maxv + log_s);

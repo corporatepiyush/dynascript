@@ -494,14 +494,11 @@ static JSValue js_simd_gelu(JSContext *ctx, JSValueConst this_val,
     return JS_DupValue(ctx, argv[0]);
 }
 
-/* silu(x) = x * sigmoid(x), composed from sigmoid + mul rather than routed
- * through simd.silu directly: the shared NEON kernel (dynajs-simd-neon.c,
- * not owned by this module) double-negates before applying the fast-exp
- * magic constant and ends up computing x*sigmoid(-x) instead -- confirmed
- * wrong (e.g. silu(-3.5) comes back near -3.4, not the correct ~-0.10).
- * simd.sigmoid does NOT have this bug (it applies the magic constant
- * directly, no separate negation step), so build silu from the two known-
- * correct kernels via a small transient scratch buffer. */
+/* silu(x) = x * sigmoid(x), composed from sigmoid + mul rather than simd.silu:
+ * NEON's silu sign bug is fixed, but the x86 silu kernels are still broken (AVX2
+ * ~3e5% error) pending the SIMD x86-hardening pass, so the compose (sigmoid+mul,
+ * which work on every ISA) is the safe cross-ISA path. Revisit once the x86
+ * activation kernels are verified via the amd64 differential harness. */
 static JSValue js_simd_silu(JSContext *ctx, JSValueConst this_val,
                             int argc, JSValueConst *argv)
 {
@@ -812,24 +809,15 @@ static JSValue js_simd_threshold(JSContext *ctx, JSValueConst this_val,
 }
 
 /* topkIndices(vals, k): returns a fresh Uint32Array of the min(k, vals.length)
- * indices of the largest values (unspecified order -- min-heap selection).
- *
- * NOTE: simd.topk_indices (shared scalar reference in dynajs-simd-scalar.c,
- * reused as-is by every ISA override including NEON -- not owned by this
- * module) is confirmed to select the k SMALLEST values despite its name and
- * "keep k largest" comment (e.g. topk_indices([1,5,3,9,2,8,4,7,6,0], 3)
- * returns the indices of {0,1,2}, not {9,8,7}). Work around it by running
- * the kernel against a negated copy: the k smallest of -vals are exactly the
- * k largest of vals, at the same indices. The kernel runs against a plain
- * malloc'd buffer, then the result is copied into a fresh JS value at the
- * boundary (module convention: nothing native escapes; no aliasing hazard
- * with `vals` either way). */
+ * indices of the LARGEST values (unspecified order -- min-heap selection).
+ * simd.topk_indices was fixed at source (dynajs-simd-scalar.c) to keep the k
+ * largest, so it is called directly on vals. */
 static JSValue js_simd_topk_indices(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv)
 {
     uint64_t k64;
-    float *vals, *neg;
-    size_t n, k, i;
+    float *vals;
+    size_t n, k;
     uint32_t stub = 0, *idx;
     JSValue ab, out;
     JSValueConst ta_args[3];
@@ -841,25 +829,13 @@ static JSValue js_simd_topk_indices(JSContext *ctx, JSValueConst this_val,
     k = (size_t)k64;
     if (k > n)
         k = n;
-    if (k == 0)
-        neg = NULL;
-    else {
-        neg = (float *)malloc(n * sizeof(float));
-        if (!neg)
-            return JS_ThrowOutOfMemory(ctx);
-        for (i = 0; i < n; i++)
-            neg[i] = -vals[i];
-    }
     idx = &stub;
     if (k) {
         idx = (uint32_t *)malloc(k * sizeof(uint32_t));
-        if (!idx) {
-            free(neg);
+        if (!idx)
             return JS_ThrowOutOfMemory(ctx);
-        }
     }
-    simd.topk_indices(k ? neg : vals, idx, n, k);
-    free(neg);
+    simd.topk_indices(vals, idx, n, k);
     ab = JS_NewArrayBufferCopy(ctx, (const uint8_t *)idx, k * sizeof(uint32_t));
     if (k)
         free(idx);

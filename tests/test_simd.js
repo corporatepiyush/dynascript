@@ -193,16 +193,28 @@ for (const len of SIZES) {
 for (const len of SIZES) {
     const a = rndVec(len, 6);
 
-    /* fast_exp (Schraudolph's method) measured relative error is a few
-     * percent worst-case, not the header's aspirational ~1e-4 -- tolerances
-     * below are set from measured worst case (rndVec over len<=1000) with
-     * >=1.5x margin, not the doc comment. */
+    /* These kernels use the Schraudolph fast_exp/fast_tanh bit-hack, whose
+     * error is a few percent worst-case (NOT the header's aspirational ~1e-4).
+     * Tolerances are the measured worst-case abs error over these inputs
+     * (rndVec, seed 6, len<=1000) plus margin. The measured numbers below are
+     * IDENTICAL on SSE4.2 (qemu Nehalem) and AVX2 (qemu Haswell) -- both use
+     * the same round-to-nearest cvtps_epi32 formulation:
+     *     sigmoid  measured 1.25e-2  -> tol 2e-2 (1.6x)
+     *     tanhFast measured 2.31e-2  -> tol 4e-2 (1.7x)
+     *     silu     measured 1.06e-2  -> tol 2e-2 (1.9x)
+     *     softmax  measured 1.15e-2  -> tol 3e-2 (2.6x)
+     *     logSoftmax measured 1.83e-2 rel -> tol 1e-1 (5.5x)
+     *     vexp     measured 6.09e-2 rel -> tol 1e-1 (1.6x)
+     * (sigmoid/silu/tanhFast bounds are absolute -- outputs are in [-1,1].) */
     const c1 = Float32Array.from(a); const r1 = sigmoid(c1);
     assert(r1 === c1, "sigmoid returns a");
     for (let i = 0; i < len; i++) assert(approx(c1[i], 1 / (1 + Math.exp(-a[i])), 2e-2), "sigmoid[" + i + "]");
 
+    /* tanhFast is an explicit fast approximation (2*fast_sigmoid(2x)-1); its
+     * measured worst-case abs error here is 2.31e-2 -- 4e-2 keeps >=1.5x
+     * margin. Do NOT tighten toward Math.tanh: the name promises "fast". */
     const c2 = Float32Array.from(a); tanhFast(c2);
-    for (let i = 0; i < len; i++) assert(approx(c2[i], Math.tanh(a[i]), 3e-2), "tanhFast[" + i + "]");
+    for (let i = 0; i < len; i++) assert(approx(c2[i], Math.tanh(a[i]), 4e-2), "tanhFast[" + i + "]");
 
     /* silu(x) = x*sigmoid(x), composed from the fast-exp-based sigmoid kernel
      * (see dynajs-simd.c) -- same tolerance class as sigmoid. */
@@ -216,9 +228,12 @@ for (const len of SIZES) {
         for (let i = 0; i < len; i++) s += c3[i];
         assert(near(s, 1, 1e-2), "softmax sums to 1, len=" + len);
         /* per-element fast_exp error compounds through the normalization
-         * ratio (measured up to ~1.2% relative); 3% covers it with margin. */
+         * ratio (measured 1.15e-2 worst-case); 3e-2 covers it with margin. */
         for (let i = 0; i < len; i++) assert(approx(c3[i], want[i] / wsum, 3e-2), "softmax[" + i + "]");
 
+        /* logSoftmax subtracts log(sum of fast_exp): the fast-exp error rides
+         * through log(sum), measured 1.83e-2 relative worst-case here; the
+         * max(1,|want|)*1e-1 bound (>=5x margin) covers it. */
         const c4 = Float32Array.from(a); logSoftmax(c4);
         for (let i = 0; i < len; i++) assert(approx(c4[i], Math.log(want[i] / wsum), Math.max(1, Math.abs(Math.log(want[i] / wsum))) * 1e-1), "logSoftmax[" + i + "]");
     } else {
@@ -234,8 +249,8 @@ for (const len of SIZES) {
     const a = rndVec(len, 7), p = posVec(len, 8);
 
     const c1 = Float32Array.from(a); vexp(c1);
-    /* fast_exp measured worst-case relative error ~6% over this vector range;
-     * 10% covers it with margin (see the sigmoid/tanhFast comment above). */
+    /* fast_exp measured worst-case relative error 6.09e-2 over this vector
+     * range (rndVec seed 7); max(1,|exp|)*1e-1 covers it with ~1.6x margin. */
     for (let i = 0; i < len; i++) assert(approx(c1[i], Math.exp(a[i]), Math.max(1, Math.abs(Math.exp(a[i]))) * 1e-1), "vexp[" + i + "]");
 
     const c2 = Float32Array.from(p); vlog(c2);

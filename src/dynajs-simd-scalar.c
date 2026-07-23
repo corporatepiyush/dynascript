@@ -512,6 +512,9 @@ float simd_scalar_exp_f(float x) { return fast_exp(x); }
 
 /* ── Top-K via min-heap (keep k largest) ────────────────────────── */
 
+/* MIN-heap sift-down: the root is the SMALLEST of the kept set. topk_indices
+ * keeps the k LARGEST by evicting the current smallest (the root) whenever a
+ * larger value arrives, so the heap must order on the minimum. */
 static inline void heap_sift_down(uint32_t *heap, const float *vals,
                                       size_t k, size_t idx) {
   float key = vals[heap[idx]];
@@ -520,14 +523,14 @@ static inline void heap_sift_down(uint32_t *heap, const float *vals,
     if (left >= k)
       break;
     size_t right = left + 1;
-    size_t larger =
-        (right < k && vals[heap[right]] > vals[heap[left]]) ? right : left;
-    if (key >= vals[heap[larger]])
+    size_t smaller =
+        (right < k && vals[heap[right]] < vals[heap[left]]) ? right : left;
+    if (key <= vals[heap[smaller]])
       break;
     uint32_t tmp = heap[idx];
-    heap[idx] = heap[larger];
-    heap[larger] = tmp;
-    idx = larger;
+    heap[idx] = heap[smaller];
+    heap[smaller] = tmp;
+    idx = smaller;
   }
 }
 
@@ -543,7 +546,8 @@ void simd_scalar_topk_indices(const float *restrict vals,
   for (size_t i = k / 2; i > 0; i--)
     heap_sift_down(indices, vals, k, i - 1);
   for (size_t i = k; i < n; i++) {
-    if (vals[i] < vals[indices[0]]) {
+    /* root is the smallest kept; a larger value evicts it (keep k largest) */
+    if (vals[i] > vals[indices[0]]) {
       indices[0] = (uint32_t)i;
       heap_sift_down(indices, vals, k, 0);
     }

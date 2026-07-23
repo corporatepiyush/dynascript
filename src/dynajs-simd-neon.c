@@ -91,11 +91,17 @@ static float simd_neon_sum(const float *restrict x, size_t n) {
 static float simd_neon_max(const float *restrict x, size_t n) {
   if (n == 0)
     return -FLT_MAX;
-  float32x4_t vmax = vld1q_f32(x);
-  size_t i = 4;
-  for (; i + 4 <= n; i += 4)
-    vmax = vmaxq_f32(vmax, vld1q_f32(&x[i]));
-  float result = vmaxvq_f32(vmax);
+  size_t i;
+  float result;
+  if (n >= 4) { /* only seed a 4-wide vector when >=4 elements exist (OOB else) */
+    float32x4_t vmax = vld1q_f32(x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmax = vmaxq_f32(vmax, vld1q_f32(&x[i]));
+    result = vmaxvq_f32(vmax);
+  } else {
+    result = x[0];
+    i = 1;
+  }
   for (; i < n; i++)
     if (x[i] > result)
       result = x[i];
@@ -106,11 +112,17 @@ static float simd_neon_max(const float *restrict x, size_t n) {
 static float simd_neon_min(const float *restrict x, size_t n) {
   if (n == 0)
     return FLT_MAX;
-  float32x4_t vmin = vld1q_f32(x);
-  size_t i = 4;
-  for (; i + 4 <= n; i += 4)
-    vmin = vminq_f32(vmin, vld1q_f32(&x[i]));
-  float result = vminvq_f32(vmin);
+  size_t i;
+  float result;
+  if (n >= 4) { /* only seed a 4-wide vector when >=4 elements exist (OOB else) */
+    float32x4_t vmin = vld1q_f32(x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmin = vminq_f32(vmin, vld1q_f32(&x[i]));
+    result = vminvq_f32(vmin);
+  } else {
+    result = x[0];
+    i = 1;
+  }
   for (; i < n; i++)
     if (x[i] < result)
       result = x[i];
@@ -121,30 +133,38 @@ static float simd_neon_min(const float *restrict x, size_t n) {
 static size_t simd_neon_argmax(const float *restrict x, size_t n) {
   if (n == 0)
     return 0;
-  float32x4_t vmax = vld1q_f32(x);
-  uint32x4_t vidx = {0, 1, 2, 3};
-  uint32x4_t vidx_max = vidx;
-  size_t i = 4;
-  for (; i + 4 <= n; i += 4) {
-    float32x4_t vi = vld1q_f32(&x[i]);
-    uint32x4_t vidxi = vmovq_n_u32((uint32_t)i);
-    uint32x4_t step = {0, 1, 2, 3};
-    vidxi = vaddq_u32(vidxi, step);
-    uint32x4_t mask = vcgtq_f32(vi, vmax);
-    vmax = vmaxq_f32(vmax, vi);
-    vidx_max = vbslq_u32(mask, vidxi, vidx_max);
-  }
-  float tmp[4];
-  uint32_t idx_tmp[4];
-  vst1q_f32(tmp, vmax);
-  vst1q_u32(idx_tmp, vidx_max);
-  float best = tmp[0];
-  size_t best_idx = idx_tmp[0];
-  for (size_t k = 1; k < 4; k++)
-    if (tmp[k] > best) {
-      best = tmp[k];
-      best_idx = idx_tmp[k];
+  size_t i;
+  float best;
+  size_t best_idx;
+  if (n >= 4) { /* only seed a 4-wide vector when >=4 elements exist (OOB else) */
+    float32x4_t vmax = vld1q_f32(x);
+    uint32x4_t vidx = {0, 1, 2, 3};
+    uint32x4_t vidx_max = vidx;
+    for (i = 4; i + 4 <= n; i += 4) {
+      float32x4_t vi = vld1q_f32(&x[i]);
+      uint32x4_t vidxi = vmovq_n_u32((uint32_t)i);
+      uint32x4_t step = {0, 1, 2, 3};
+      vidxi = vaddq_u32(vidxi, step);
+      uint32x4_t mask = vcgtq_f32(vi, vmax);
+      vmax = vmaxq_f32(vmax, vi);
+      vidx_max = vbslq_u32(mask, vidxi, vidx_max);
     }
+    float tmp[4];
+    uint32_t idx_tmp[4];
+    vst1q_f32(tmp, vmax);
+    vst1q_u32(idx_tmp, vidx_max);
+    best = tmp[0];
+    best_idx = idx_tmp[0];
+    for (size_t k = 1; k < 4; k++)
+      if (tmp[k] > best) {
+        best = tmp[k];
+        best_idx = idx_tmp[k];
+      }
+  } else {
+    best = x[0];
+    best_idx = 0;
+    i = 1;
+  }
   for (; i < n; i++)
     if (x[i] > best) {
       best = x[i];
@@ -157,30 +177,38 @@ static size_t simd_neon_argmax(const float *restrict x, size_t n) {
 static size_t simd_neon_argmin(const float *restrict x, size_t n) {
   if (n == 0)
     return 0;
-  float32x4_t vmin = vld1q_f32(x);
-  uint32x4_t vidx = {0, 1, 2, 3};
-  uint32x4_t vidx_min = vidx;
-  size_t i = 4;
-  for (; i + 4 <= n; i += 4) {
-    float32x4_t vi = vld1q_f32(&x[i]);
-    uint32x4_t vidxi = vmovq_n_u32((uint32_t)i);
-    uint32x4_t step = {0, 1, 2, 3};
-    vidxi = vaddq_u32(vidxi, step);
-    uint32x4_t mask = vcltq_f32(vi, vmin);
-    vmin = vminq_f32(vmin, vi);
-    vidx_min = vbslq_u32(mask, vidxi, vidx_min);
-  }
-  float tmp[4];
-  uint32_t idx_tmp[4];
-  vst1q_f32(tmp, vmin);
-  vst1q_u32(idx_tmp, vidx_min);
-  float best = tmp[0];
-  size_t best_idx = idx_tmp[0];
-  for (size_t k = 1; k < 4; k++)
-    if (tmp[k] < best) {
-      best = tmp[k];
-      best_idx = idx_tmp[k];
+  size_t i;
+  float best;
+  size_t best_idx;
+  if (n >= 4) { /* only seed a 4-wide vector when >=4 elements exist (OOB else) */
+    float32x4_t vmin = vld1q_f32(x);
+    uint32x4_t vidx = {0, 1, 2, 3};
+    uint32x4_t vidx_min = vidx;
+    for (i = 4; i + 4 <= n; i += 4) {
+      float32x4_t vi = vld1q_f32(&x[i]);
+      uint32x4_t vidxi = vmovq_n_u32((uint32_t)i);
+      uint32x4_t step = {0, 1, 2, 3};
+      vidxi = vaddq_u32(vidxi, step);
+      uint32x4_t mask = vcltq_f32(vi, vmin);
+      vmin = vminq_f32(vmin, vi);
+      vidx_min = vbslq_u32(mask, vidxi, vidx_min);
     }
+    float tmp[4];
+    uint32_t idx_tmp[4];
+    vst1q_f32(tmp, vmin);
+    vst1q_u32(idx_tmp, vidx_min);
+    best = tmp[0];
+    best_idx = idx_tmp[0];
+    for (size_t k = 1; k < 4; k++)
+      if (tmp[k] < best) {
+        best = tmp[k];
+        best_idx = idx_tmp[k];
+      }
+  } else {
+    best = x[0];
+    best_idx = 0;
+    i = 1;
+  }
   for (; i < n; i++)
     if (x[i] < best) {
       best = x[i];
@@ -196,40 +224,48 @@ static void simd_neon_argminmax(const float *restrict x, size_t n,
     *argmin_out = *argmax_out = 0;
     return;
   }
-  float32x4_t vmin = vld1q_f32(x);
-  float32x4_t vmax = vmin;
-  uint32x4_t vidx = {0, 1, 2, 3};
-  uint32x4_t vidx_min = vidx, vidx_max = vidx;
-  size_t i = 4;
-  for (; i + 4 <= n; i += 4) {
-    float32x4_t vi = vld1q_f32(&x[i]);
-    uint32x4_t vidxi = vmovq_n_u32((uint32_t)i);
-    uint32x4_t step = {0, 1, 2, 3};
-    vidxi = vaddq_u32(vidxi, step);
-    uint32x4_t mask_lt = vcltq_f32(vi, vmin);
-    uint32x4_t mask_gt = vcgtq_f32(vi, vmax);
-    vmin = vminq_f32(vmin, vi);
-    vmax = vmaxq_f32(vmax, vi);
-    vidx_min = vbslq_u32(mask_lt, vidxi, vidx_min);
-    vidx_max = vbslq_u32(mask_gt, vidxi, vidx_max);
-  }
-  float tmp_min[4], tmp_max[4];
-  uint32_t idx_min[4], idx_max[4];
-  vst1q_f32(tmp_min, vmin);
-  vst1q_f32(tmp_max, vmax);
-  vst1q_u32(idx_min, vidx_min);
-  vst1q_u32(idx_max, vidx_max);
-  float best_min = tmp_min[0], best_max = tmp_max[0];
-  size_t imin = idx_min[0], imax = idx_max[0];
-  for (size_t k = 1; k < 4; k++) {
-    if (tmp_min[k] < best_min) {
-      best_min = tmp_min[k];
-      imin = idx_min[k];
+  size_t i;
+  float best_min, best_max;
+  size_t imin, imax;
+  if (n >= 4) { /* only seed a 4-wide vector when >=4 elements exist (OOB else) */
+    float32x4_t vmin = vld1q_f32(x);
+    float32x4_t vmax = vmin;
+    uint32x4_t vidx = {0, 1, 2, 3};
+    uint32x4_t vidx_min = vidx, vidx_max = vidx;
+    for (i = 4; i + 4 <= n; i += 4) {
+      float32x4_t vi = vld1q_f32(&x[i]);
+      uint32x4_t vidxi = vmovq_n_u32((uint32_t)i);
+      uint32x4_t step = {0, 1, 2, 3};
+      vidxi = vaddq_u32(vidxi, step);
+      uint32x4_t mask_lt = vcltq_f32(vi, vmin);
+      uint32x4_t mask_gt = vcgtq_f32(vi, vmax);
+      vmin = vminq_f32(vmin, vi);
+      vmax = vmaxq_f32(vmax, vi);
+      vidx_min = vbslq_u32(mask_lt, vidxi, vidx_min);
+      vidx_max = vbslq_u32(mask_gt, vidxi, vidx_max);
     }
-    if (tmp_max[k] > best_max) {
-      best_max = tmp_max[k];
-      imax = idx_max[k];
+    float tmp_min[4], tmp_max[4];
+    uint32_t idx_min[4], idx_max[4];
+    vst1q_f32(tmp_min, vmin);
+    vst1q_f32(tmp_max, vmax);
+    vst1q_u32(idx_min, vidx_min);
+    vst1q_u32(idx_max, vidx_max);
+    best_min = tmp_min[0], best_max = tmp_max[0];
+    imin = idx_min[0], imax = idx_max[0];
+    for (size_t k = 1; k < 4; k++) {
+      if (tmp_min[k] < best_min) {
+        best_min = tmp_min[k];
+        imin = idx_min[k];
+      }
+      if (tmp_max[k] > best_max) {
+        best_max = tmp_max[k];
+        imax = idx_max[k];
+      }
     }
+  } else {
+    best_min = best_max = x[0];
+    imin = imax = 0;
+    i = 1;
   }
   for (; i < n; i++) {
     if (x[i] < best_min) {
@@ -457,8 +493,10 @@ static void simd_neon_silu(float *restrict out,
   for (; i + 4 <= n; i += 4) {
     float32x4_t x = vld1q_f32(&in[i]);
     float32x4_t neg_x = vnegq_f32(x);
-    /* Fast exp approx for neg_x */
-    float32x4_t magic = vdupq_n_f32(-12102203.0f);
+    /* Fast exp approx of neg_x = exp(-x). Schraudolph magic is POSITIVE
+     * (2^23/ln2 ≈ 12102203); a negative constant here double-negates and
+     * computes exp(+x) => sigmoid(-x) => silu(-x) (the historical bug). */
+    float32x4_t magic = vdupq_n_f32(12102203.0f);
     float32x4_t bias = vdupq_n_f32(1.0f);
     int32x4_t bits = vcvtq_s32_f32(vmulq_f32(neg_x, magic));
     bits = vaddq_s32(bits, vreinterpretq_s32_f32(bias));
