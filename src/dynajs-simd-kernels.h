@@ -211,6 +211,24 @@ typedef struct simd {
   void (*clamp)(float *restrict out, const float *restrict in, float lo,
                 float hi, size_t n);
 
+  /* ── Double-precision (f64) array kernels ────────────────────────────
+   * JS `Number` IS f64, so these run zero-copy over Float64Array. Reductions
+   * (f64_sum/f64_dot) reorder additions vs a sequential scalar loop and are
+   * therefore NOT bit-identical (compare with a relative tolerance). f64_min/
+   * f64_max/f64_scale/f64_axpy ARE bit-exact vs a scalar reference: axpy uses a
+   * NON-fused multiply-then-add (`y[i] += a*x[i]` in two rounding steps) so it
+   * matches JS/scalar exactly on every ISA. Every reduction early-returns a
+   * scalar loop for 0 < n < vector-width BEFORE any full-width load (no OOB). */
+  double (*f64_sum)(const double *restrict x, size_t n);
+  double (*f64_dot)(const double *restrict a, const double *restrict b,
+                    size_t n);
+  double (*f64_min)(const double *restrict x, size_t n);
+  double (*f64_max)(const double *restrict x, size_t n);
+  void (*f64_scale)(double *restrict out, const double *restrict x, double s,
+                    size_t n);
+  void (*f64_axpy)(double *restrict y, double a, const double *restrict x,
+                   size_t n);
+
   /* ── Forward value search: first index of `v` in p[0..n), or SIZE_MAX.
    *    Used by String.indexOf/includes (find_u8/u16) and TypedArray
    *    indexOf/includes (find_u8/u16/u32/f32/f64). ─────────────────── */

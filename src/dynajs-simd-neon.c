@@ -1045,6 +1045,98 @@ static void simd_neon_clamp(float *restrict out,
   }
 }
 
+/* ── Double-precision (f64) kernels — float64x2_t, 2 lanes (aarch64) ──
+ * The whole file is gated on __aarch64__/_M_ARM64, both of which have 64-bit
+ * NEON; 32-bit NEON (no f64) never reaches here. Reductions run only full
+ * 2-lane bodies then a scalar tail (no seed load past x[n)). */
+static double simd_neon_f64_sum(const double *restrict x, size_t n) {
+  float64x2_t acc = vdupq_n_f64(0.0);
+  size_t i = 0;
+  for (; i + 2 <= n; i += 2)
+    acc = vaddq_f64(acc, vld1q_f64(&x[i]));
+  double result = vaddvq_f64(acc);
+  for (; i < n; i++)
+    result += x[i];
+  return result;
+}
+
+static double simd_neon_f64_dot(const double *restrict a,
+                                const double *restrict b, size_t n) {
+  float64x2_t acc = vdupq_n_f64(0.0);
+  size_t i = 0;
+  for (; i + 2 <= n; i += 2)
+    acc = vfmaq_f64(acc, vld1q_f64(&a[i]), vld1q_f64(&b[i]));
+  double result = vaddvq_f64(acc);
+  for (; i < n; i++)
+    result += a[i] * b[i];
+  return result;
+}
+
+static double simd_neon_f64_max(const double *restrict x, size_t n) {
+  if (n == 0)
+    return -DBL_MAX;
+  double result;
+  size_t i;
+  if (n >= 2) { /* seed a 2-wide vector only when >=2 elements exist (OOB else) */
+    float64x2_t vmax = vld1q_f64(x);
+    for (i = 2; i + 2 <= n; i += 2)
+      vmax = vmaxq_f64(vmax, vld1q_f64(&x[i]));
+    result = vmaxvq_f64(vmax);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+static double simd_neon_f64_min(const double *restrict x, size_t n) {
+  if (n == 0)
+    return DBL_MAX;
+  double result;
+  size_t i;
+  if (n >= 2) { /* seed a 2-wide vector only when >=2 elements exist (OOB else) */
+    float64x2_t vmin = vld1q_f64(x);
+    for (i = 2; i + 2 <= n; i += 2)
+      vmin = vminq_f64(vmin, vld1q_f64(&x[i]));
+    result = vminvq_f64(vmin);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+static void simd_neon_f64_scale(double *restrict out, const double *restrict x,
+                                double s, size_t n) {
+  float64x2_t vs = vdupq_n_f64(s);
+  size_t i = 0;
+  for (; i + 2 <= n; i += 2)
+    vst1q_f64(&out[i], vmulq_f64(vld1q_f64(&x[i]), vs));
+  for (; i < n; i++)
+    out[i] = x[i] * s;
+}
+
+static void simd_neon_f64_axpy(double *restrict y, double a,
+                               const double *restrict x, size_t n) {
+  float64x2_t va = vdupq_n_f64(a);
+  size_t i = 0;
+  for (; i + 2 <= n; i += 2) {
+    /* non-fused mul-then-add: bit-exact vs scalar/JS `y[i] += a*x[i]` */
+    float64x2_t p = vmulq_f64(va, vld1q_f64(&x[i]));
+    vst1q_f64(&y[i], vaddq_f64(vld1q_f64(&y[i]), p));
+  }
+  for (; i < n; i++) {
+    double p = a * x[i];
+    y[i] = y[i] + p;
+  }
+}
+
 /* ── forward value search (NEON: compare a lane-block, then locate the
  *    first hit scalar within the block; scalar tail). find_u8 stays memchr
  *    (already SIMD in libc), set by the scalar override. ─────────────── */
@@ -1425,6 +1517,12 @@ void simd_override_neon(simd_t *t) {
   t->hamming = simd_neon_hamming;
   t->topk_indices = simd_neon_topk_indices;
   t->clamp = simd_neon_clamp;
+  t->f64_sum = simd_neon_f64_sum;
+  t->f64_dot = simd_neon_f64_dot;
+  t->f64_min = simd_neon_f64_min;
+  t->f64_max = simd_neon_f64_max;
+  t->f64_scale = simd_neon_f64_scale;
+  t->f64_axpy = simd_neon_f64_axpy;
 }
 
 #else  /* !ARM64 */

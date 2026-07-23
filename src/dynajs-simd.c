@@ -80,6 +80,37 @@ static int simd_get_f32(JSContext *ctx, JSValueConst v, float **pp, size_t *pn)
     return 0;
 }
 
+/* Resolve a Float64Array argument to its backing double* and element count.
+ * Same contract as simd_get_f32 but for 8-byte elements (JS Number IS f64).
+ * Throws (and returns -1) for a non-typed-array, a non-8-byte element type, or
+ * a detached buffer. */
+static int simd_get_f64(JSContext *ctx, JSValueConst v, double **pp, size_t *pn)
+{
+    JSValue buf;
+    uint8_t *base;
+    size_t off, len, bpe, ab;
+
+    buf = JS_GetTypedArrayBuffer(ctx, v, &off, &len, &bpe);
+    if (JS_IsException(buf))
+        return -1;
+    if (bpe != 8) {
+        JS_FreeValue(ctx, buf);
+        JS_ThrowTypeError(ctx, "expected a Float64Array");
+        return -1;
+    }
+    base = JS_GetArrayBuffer(ctx, &ab, buf);
+    JS_FreeValue(ctx, buf);
+    if (!base) /* detached */
+        return -1;
+    if (off > ab || len > ab - off) {
+        JS_ThrowRangeError(ctx, "typed array out of bounds");
+        return -1;
+    }
+    *pp = (double *)(base + off);
+    *pn = len / 8;
+    return 0;
+}
+
 /* True if a*b would overflow size_t (guards gemv/gemvT/gemm dimension
  * products against attacker-controlled m/n/k before they size a bounds
  * check or a buffer). */
@@ -849,6 +880,99 @@ static JSValue js_simd_topk_indices(JSContext *ctx, JSValueConst this_val,
     return out;
 }
 
+/* ---------- f64 (double-precision) kernels over Float64Array ----------
+ * JS Number IS f64, so these run zero-copy on a Float64Array's backing store
+ * (bpe==8). Reductions (f64Sum/f64Dot) reorder additions and round slightly
+ * differently from a naive sequential sum; f64Min/f64Max/f64Scale/f64Axpy are
+ * bit-exact. Reentrancy discipline matches the f32 kernels: any scalar arg is
+ * coerced to a C local (which may run user valueOf) BEFORE the buffer is
+ * resolved, with no JS between the resolve and the kernel call. */
+
+static JSValue js_simd_f64_sum(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    double *a;
+    size_t n;
+    (void)this_val; (void)argc;
+    if (simd_get_f64(ctx, argv[0], &a, &n))
+        return JS_EXCEPTION;
+    return JS_NewFloat64(ctx, simd.f64_sum(a, n));
+}
+
+static JSValue js_simd_f64_dot(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    double *a, *b;
+    size_t na, nb;
+    (void)this_val; (void)argc;
+    if (simd_get_f64(ctx, argv[0], &a, &na) || simd_get_f64(ctx, argv[1], &b, &nb))
+        return JS_EXCEPTION;
+    if (na != nb)
+        return JS_ThrowRangeError(ctx, "f64Dot: length mismatch");
+    return JS_NewFloat64(ctx, simd.f64_dot(a, b, na));
+}
+
+static JSValue js_simd_f64_max(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    double *a;
+    size_t n;
+    (void)this_val; (void)argc;
+    if (simd_get_f64(ctx, argv[0], &a, &n))
+        return JS_EXCEPTION;
+    if (n == 0)
+        return JS_ThrowRangeError(ctx, "f64Max: empty array");
+    /* f64_max has its own 0<n<width scalar guard, so no small-n workaround. */
+    return JS_NewFloat64(ctx, simd.f64_max(a, n));
+}
+
+static JSValue js_simd_f64_min(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    double *a;
+    size_t n;
+    (void)this_val; (void)argc;
+    if (simd_get_f64(ctx, argv[0], &a, &n))
+        return JS_EXCEPTION;
+    if (n == 0)
+        return JS_ThrowRangeError(ctx, "f64Min: empty array");
+    return JS_NewFloat64(ctx, simd.f64_min(a, n));
+}
+
+/* f64Scale(x, s): x[i] *= s, in-place; returns the same array (like scale). */
+static JSValue js_simd_f64_scale(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    double *a;
+    size_t n;
+    double s;
+    (void)this_val; (void)argc;
+    if (JS_ToFloat64(ctx, &s, argv[1]))
+        return JS_EXCEPTION;
+    if (simd_get_f64(ctx, argv[0], &a, &n))
+        return JS_EXCEPTION;
+    simd.f64_scale(a, a, s, n);
+    return JS_DupValue(ctx, argv[0]);
+}
+
+/* f64Axpy(y, a, x): y[i] += a*x[i], in-place on y; returns y (like axpy). */
+static JSValue js_simd_f64_axpy(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
+{
+    double *y, *x;
+    size_t ny, nx;
+    double alpha;
+    (void)this_val; (void)argc;
+    if (JS_ToFloat64(ctx, &alpha, argv[1]))
+        return JS_EXCEPTION;
+    if (simd_get_f64(ctx, argv[0], &y, &ny) || simd_get_f64(ctx, argv[2], &x, &nx))
+        return JS_EXCEPTION;
+    if (ny != nx)
+        return JS_ThrowRangeError(ctx, "f64Axpy: length mismatch");
+    simd.f64_axpy(y, alpha, x, ny);
+    return JS_DupValue(ctx, argv[0]);
+}
+
 static const JSCFunctionListEntry js_simd_funcs[] = {
     JS_CFUNC_DEF("dot", 2, js_simd_dot),
     JS_CFUNC_DEF("sum", 1, js_simd_sum),
@@ -911,6 +1035,14 @@ static const JSCFunctionListEntry js_simd_funcs[] = {
     JS_CFUNC_DEF("clamp", 3, js_simd_clamp),
     JS_CFUNC_DEF("threshold", 2, js_simd_threshold),
     JS_CFUNC_DEF("topkIndices", 2, js_simd_topk_indices),
+
+    /* f64 (double-precision) over Float64Array */
+    JS_CFUNC_DEF("f64Sum", 1, js_simd_f64_sum),
+    JS_CFUNC_DEF("f64Dot", 2, js_simd_f64_dot),
+    JS_CFUNC_DEF("f64Max", 1, js_simd_f64_max),
+    JS_CFUNC_DEF("f64Min", 1, js_simd_f64_min),
+    JS_CFUNC_DEF("f64Scale", 2, js_simd_f64_scale),
+    JS_CFUNC_DEF("f64Axpy", 3, js_simd_f64_axpy),
 };
 
 static int js_simd_init_module(JSContext *ctx, JSModuleDef *m)

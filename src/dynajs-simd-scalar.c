@@ -565,6 +565,55 @@ void simd_scalar_clamp(float *restrict out,
   }
 }
 
+/* ── Double-precision (f64) array kernels ────────────────────────── */
+
+double simd_scalar_f64_sum(const double *restrict x, size_t n) {
+  double acc = 0.0;
+  for (size_t i = 0; i < n; i++)
+    acc += x[i];
+  return acc;
+}
+
+double simd_scalar_f64_dot(const double *restrict a, const double *restrict b,
+                           size_t n) {
+  double acc = 0.0;
+  for (size_t i = 0; i < n; i++)
+    acc += a[i] * b[i];
+  return acc;
+}
+
+double simd_scalar_f64_min(const double *restrict x, size_t n) {
+  double m = DBL_MAX;
+  for (size_t i = 0; i < n; i++)
+    if (x[i] < m)
+      m = x[i];
+  return m;
+}
+
+double simd_scalar_f64_max(const double *restrict x, size_t n) {
+  double m = -DBL_MAX;
+  for (size_t i = 0; i < n; i++)
+    if (x[i] > m)
+      m = x[i];
+  return m;
+}
+
+void simd_scalar_f64_scale(double *restrict out, const double *restrict x,
+                           double s, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    out[i] = x[i] * s;
+}
+
+/* y[i] += a*x[i], as a NON-fused multiply-then-add so every ISA (and JS) agree
+ * bit-for-bit. The split into two statements blocks FMA contraction. */
+void simd_scalar_f64_axpy(double *restrict y, double a,
+                          const double *restrict x, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    double p = a * x[i];
+    y[i] = y[i] + p;
+  }
+}
+
 /* ── Override table ──────────────────────────────────────────────── */
 
 /* ── forward value search (scalar fallback) ─────────────────────── */
@@ -890,4 +939,10 @@ void simd_override_scalar(simd_t *t) {
   t->exp_f = simd_scalar_exp_f;
   t->topk_indices = simd_scalar_topk_indices;
   t->clamp = simd_scalar_clamp;
+  t->f64_sum = simd_scalar_f64_sum;
+  t->f64_dot = simd_scalar_f64_dot;
+  t->f64_min = simd_scalar_f64_min;
+  t->f64_max = simd_scalar_f64_max;
+  t->f64_scale = simd_scalar_f64_scale;
+  t->f64_axpy = simd_scalar_f64_axpy;
 }

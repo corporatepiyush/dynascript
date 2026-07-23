@@ -1312,6 +1312,103 @@ simd_sse42_count_utf8(const uint8_t *restrict p, size_t n) {
 }
 
 /* ── Override table ─────────────────────────────────────────────── */
+/* ── Double-precision (f64) kernels — __m128d, 2 lanes (SSE2, always
+ *    present on x86-64). Reductions run only full 2-lane bodies then a scalar
+ *    tail (no seed load past x[n)); max/min guard the seed load for n < 2. ── */
+__attribute__((target("sse4.2"))) static double
+simd_sse42_f64_sum(const double *restrict x, size_t n) {
+  __m128d acc = _mm_setzero_pd();
+  size_t i = 0;
+  for (; i + 2 <= n; i += 2)
+    acc = _mm_add_pd(acc, _mm_loadu_pd(&x[i]));
+  double result = _mm_cvtsd_f64(_mm_add_sd(acc, _mm_unpackhi_pd(acc, acc)));
+  for (; i < n; i++)
+    result += x[i];
+  return result;
+}
+
+__attribute__((target("sse4.2"))) static double
+simd_sse42_f64_dot(const double *restrict a, const double *restrict b,
+                   size_t n) {
+  __m128d acc = _mm_setzero_pd();
+  size_t i = 0;
+  for (; i + 2 <= n; i += 2)
+    acc = _mm_add_pd(acc, _mm_mul_pd(_mm_loadu_pd(&a[i]), _mm_loadu_pd(&b[i])));
+  double result = _mm_cvtsd_f64(_mm_add_sd(acc, _mm_unpackhi_pd(acc, acc)));
+  for (; i < n; i++)
+    result += a[i] * b[i];
+  return result;
+}
+
+__attribute__((target("sse4.2"))) static double
+simd_sse42_f64_max(const double *restrict x, size_t n) {
+  if (n == 0)
+    return -DBL_MAX;
+  double result;
+  size_t i;
+  if (n >= 2) {
+    __m128d vmax = _mm_loadu_pd(x);
+    for (i = 2; i + 2 <= n; i += 2)
+      vmax = _mm_max_pd(vmax, _mm_loadu_pd(&x[i]));
+    result = _mm_cvtsd_f64(_mm_max_sd(vmax, _mm_unpackhi_pd(vmax, vmax)));
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("sse4.2"))) static double
+simd_sse42_f64_min(const double *restrict x, size_t n) {
+  if (n == 0)
+    return DBL_MAX;
+  double result;
+  size_t i;
+  if (n >= 2) {
+    __m128d vmin = _mm_loadu_pd(x);
+    for (i = 2; i + 2 <= n; i += 2)
+      vmin = _mm_min_pd(vmin, _mm_loadu_pd(&x[i]));
+    result = _mm_cvtsd_f64(_mm_min_sd(vmin, _mm_unpackhi_pd(vmin, vmin)));
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("sse4.2"))) static void
+simd_sse42_f64_scale(double *restrict out, const double *restrict x, double s,
+                     size_t n) {
+  __m128d vs = _mm_set1_pd(s);
+  size_t i = 0;
+  for (; i + 2 <= n; i += 2)
+    _mm_storeu_pd(&out[i], _mm_mul_pd(_mm_loadu_pd(&x[i]), vs));
+  for (; i < n; i++)
+    out[i] = x[i] * s;
+}
+
+__attribute__((target("sse4.2"))) static void
+simd_sse42_f64_axpy(double *restrict y, double a, const double *restrict x,
+                    size_t n) {
+  __m128d va = _mm_set1_pd(a);
+  size_t i = 0;
+  for (; i + 2 <= n; i += 2) {
+    /* non-fused mul-then-add: SSE2 has no FMA, matching scalar/JS bit-for-bit */
+    __m128d p = _mm_mul_pd(va, _mm_loadu_pd(&x[i]));
+    _mm_storeu_pd(&y[i], _mm_add_pd(_mm_loadu_pd(&y[i]), p));
+  }
+  for (; i < n; i++) {
+    double p = a * x[i];
+    y[i] = y[i] + p;
+  }
+}
+
 void simd_override_sse42(simd_t *t) {
   t->hex_encode = simd_sse42_hex_encode;
   t->hex_decode = simd_sse42_hex_decode;
@@ -1371,6 +1468,12 @@ void simd_override_sse42(simd_t *t) {
   t->hamming = simd_sse42_hamming;
   t->topk_indices = simd_sse42_topk_indices;
   t->clamp = simd_sse42_clamp;
+  t->f64_sum = simd_sse42_f64_sum;
+  t->f64_dot = simd_sse42_f64_dot;
+  t->f64_min = simd_sse42_f64_min;
+  t->f64_max = simd_sse42_f64_max;
+  t->f64_scale = simd_sse42_f64_scale;
+  t->f64_axpy = simd_sse42_f64_axpy;
 }
 
 #else /* !x86_64 */

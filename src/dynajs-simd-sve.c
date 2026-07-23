@@ -1088,6 +1088,114 @@ static void simd_sve_clamp(float *restrict out,
 }
 
 /* ── Override table ─────────────────────────────────────────────── */
+/* ── Double-precision (f64) kernels — svfloat64_t, svcntd() lanes. ───
+ * Predicated full-vector bodies + scalar tail (the seed load in max/min is
+ * guarded by the n < svcntd() scalar path). axpy is a non-fused svmul+svadd
+ * so it matches the scalar/JS reference bit-for-bit. */
+static inline int sve_f64_cnt(void) { return svcntd(); }
+
+static double simd_sve_f64_sum(const double *restrict x, size_t n) {
+  svbool_t pg = svptrue_b64();
+  svfloat64_t acc = svdup_f64(0.0);
+  size_t i = 0;
+  int cnt = sve_f64_cnt();
+  for (; i + (size_t)cnt <= n; i += cnt)
+    acc = svadd_f64_z(pg, acc, svld1_f64(pg, &x[i]));
+  double result = svaddv_f64(pg, acc);
+  for (; i < n; i++)
+    result += x[i];
+  return result;
+}
+
+static double simd_sve_f64_dot(const double *restrict a,
+                               const double *restrict b, size_t n) {
+  svbool_t pg = svptrue_b64();
+  svfloat64_t acc = svdup_f64(0.0);
+  size_t i = 0;
+  int cnt = sve_f64_cnt();
+  for (; i + (size_t)cnt <= n; i += cnt)
+    acc = svmla_f64_z(pg, acc, svld1_f64(pg, &a[i]), svld1_f64(pg, &b[i]));
+  double result = svaddv_f64(pg, acc);
+  for (; i < n; i++)
+    result += a[i] * b[i];
+  return result;
+}
+
+static double simd_sve_f64_max(const double *restrict x, size_t n) {
+  if (n == 0)
+    return -DBL_MAX;
+  if (n < (size_t)sve_f64_cnt()) {
+    double m = x[0];
+    for (size_t i = 1; i < n; i++)
+      if (x[i] > m)
+        m = x[i];
+    return m;
+  }
+  svbool_t pg = svptrue_b64();
+  svfloat64_t vmax = svld1_f64(pg, x);
+  int cnt = sve_f64_cnt();
+  size_t i = (size_t)cnt;
+  for (; i + (size_t)cnt <= n; i += cnt)
+    vmax = svmax_f64_z(pg, vmax, svld1_f64(pg, &x[i]));
+  double result = svmaxv_f64(pg, vmax);
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+static double simd_sve_f64_min(const double *restrict x, size_t n) {
+  if (n == 0)
+    return DBL_MAX;
+  if (n < (size_t)sve_f64_cnt()) {
+    double m = x[0];
+    for (size_t i = 1; i < n; i++)
+      if (x[i] < m)
+        m = x[i];
+    return m;
+  }
+  svbool_t pg = svptrue_b64();
+  svfloat64_t vmin = svld1_f64(pg, x);
+  int cnt = sve_f64_cnt();
+  size_t i = (size_t)cnt;
+  for (; i + (size_t)cnt <= n; i += cnt)
+    vmin = svmin_f64_z(pg, vmin, svld1_f64(pg, &x[i]));
+  double result = svminv_f64(pg, vmin);
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+static void simd_sve_f64_scale(double *restrict out, const double *restrict x,
+                               double s, size_t n) {
+  svbool_t pg = svptrue_b64();
+  svfloat64_t vs = svdup_f64(s);
+  size_t i = 0;
+  int cnt = sve_f64_cnt();
+  for (; i + (size_t)cnt <= n; i += cnt)
+    svst1_f64(pg, &out[i], svmul_f64_z(pg, svld1_f64(pg, &x[i]), vs));
+  for (; i < n; i++)
+    out[i] = x[i] * s;
+}
+
+static void simd_sve_f64_axpy(double *restrict y, double a,
+                              const double *restrict x, size_t n) {
+  svbool_t pg = svptrue_b64();
+  svfloat64_t va = svdup_f64(a);
+  size_t i = 0;
+  int cnt = sve_f64_cnt();
+  for (; i + (size_t)cnt <= n; i += cnt) {
+    /* non-fused svmul then svadd: bit-exact vs scalar/JS y[i] += a*x[i] */
+    svfloat64_t p = svmul_f64_z(pg, va, svld1_f64(pg, &x[i]));
+    svst1_f64(pg, &y[i], svadd_f64_z(pg, svld1_f64(pg, &y[i]), p));
+  }
+  for (; i < n; i++) {
+    double p = a * x[i];
+    y[i] = y[i] + p;
+  }
+}
+
 void simd_override_sve(simd_t *t) {
   t->dot = simd_sve_dot;
   t->dot_f = simd_sve_dot_f;
@@ -1140,6 +1248,12 @@ void simd_override_sve(simd_t *t) {
   t->hamming = simd_sve_hamming;
   t->topk_indices = simd_sve_topk_indices;
   t->clamp = simd_sve_clamp;
+  t->f64_sum = simd_sve_f64_sum;
+  t->f64_dot = simd_sve_f64_dot;
+  t->f64_min = simd_sve_f64_min;
+  t->f64_max = simd_sve_f64_max;
+  t->f64_scale = simd_sve_f64_scale;
+  t->f64_axpy = simd_sve_f64_axpy;
 }
 
 #else  /* !__ARM_FEATURE_SVE */

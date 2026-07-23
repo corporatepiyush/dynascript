@@ -1073,6 +1073,117 @@ simd_avx512_clamp(float *restrict out, const float *restrict in,
 }
 
 /* ── Override table ─────────────────────────────────────────────── */
+/* ── Double-precision (f64) kernels — __m512d, 8 lanes (AVX-512). ────
+ * Uses the intrinsic tree reductions (_mm512_reduce_{add,max,min}_pd).
+ * Reductions run only full 8-lane bodies then a scalar tail; max/min take a
+ * scalar path for n < 8 so the 8-wide seed load never reads past x[n).
+ *
+ * GATED OFF by default (DYNAJS_SIMD_F64_AVX512 undefined): this host's QEMU/
+ * Rosetta amd64 emulation tops out at AVX2 and cannot execute AVX-512, so these
+ * kernels are compile-clean but NOT runtime-proven under the differential
+ * harness. Per the repo's "do not ship unproven x86 SIMD" rule they stay
+ * disabled; AVX-512 hardware therefore runs the PROVEN AVX2 __m256d f64 kernels
+ * (simd_init installs avx2 before avx512, and f64 is left un-overridden here).
+ * Define DYNAJS_SIMD_F64_AVX512 once you can exercise them on AVX-512-capable
+ * emulation/hardware via tests/test_simd_f64.c. */
+#ifdef DYNAJS_SIMD_F64_AVX512
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static double
+simd_avx512_f64_sum(const double *restrict x, size_t n) {
+  __m512d acc = _mm512_setzero_pd();
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8)
+    acc = _mm512_add_pd(acc, _mm512_loadu_pd(&x[i]));
+  double result = _mm512_reduce_add_pd(acc);
+  for (; i < n; i++)
+    result += x[i];
+  return result;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static double
+simd_avx512_f64_dot(const double *restrict a, const double *restrict b,
+                    size_t n) {
+  __m512d acc = _mm512_setzero_pd();
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8)
+    acc = _mm512_fmadd_pd(_mm512_loadu_pd(&a[i]), _mm512_loadu_pd(&b[i]), acc);
+  double result = _mm512_reduce_add_pd(acc);
+  for (; i < n; i++)
+    result += a[i] * b[i];
+  return result;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static double
+simd_avx512_f64_max(const double *restrict x, size_t n) {
+  if (n == 0)
+    return -DBL_MAX;
+  if (n < 8) { /* 8-wide seed load would read past x[n) for small n (OOB) */
+    double m = x[0];
+    for (size_t i = 1; i < n; i++)
+      if (x[i] > m)
+        m = x[i];
+    return m;
+  }
+  __m512d vmax = _mm512_loadu_pd(x);
+  size_t i = 8;
+  for (; i + 8 <= n; i += 8)
+    vmax = _mm512_max_pd(vmax, _mm512_loadu_pd(&x[i]));
+  double result = _mm512_reduce_max_pd(vmax);
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static double
+simd_avx512_f64_min(const double *restrict x, size_t n) {
+  if (n == 0)
+    return DBL_MAX;
+  if (n < 8) { /* 8-wide seed load would read past x[n) for small n (OOB) */
+    double m = x[0];
+    for (size_t i = 1; i < n; i++)
+      if (x[i] < m)
+        m = x[i];
+    return m;
+  }
+  __m512d vmin = _mm512_loadu_pd(x);
+  size_t i = 8;
+  for (; i + 8 <= n; i += 8)
+    vmin = _mm512_min_pd(vmin, _mm512_loadu_pd(&x[i]));
+  double result = _mm512_reduce_min_pd(vmin);
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static void
+simd_avx512_f64_scale(double *restrict out, const double *restrict x, double s,
+                      size_t n) {
+  __m512d vs = _mm512_set1_pd(s);
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8)
+    _mm512_storeu_pd(&out[i], _mm512_mul_pd(_mm512_loadu_pd(&x[i]), vs));
+  for (; i < n; i++)
+    out[i] = x[i] * s;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512dq"))) static void
+simd_avx512_f64_axpy(double *restrict y, double a, const double *restrict x,
+                     size_t n) {
+  __m512d va = _mm512_set1_pd(a);
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    /* non-fused mul-then-add (NOT fmadd): bit-exact vs scalar/JS y[i]+=a*x[i] */
+    __m512d p = _mm512_mul_pd(va, _mm512_loadu_pd(&x[i]));
+    _mm512_storeu_pd(&y[i], _mm512_add_pd(_mm512_loadu_pd(&y[i]), p));
+  }
+  for (; i < n; i++) {
+    double p = a * x[i];
+    y[i] = y[i] + p;
+  }
+}
+#endif /* DYNAJS_SIMD_F64_AVX512 */
+
 void simd_override_avx512(simd_t *t) {
   t->dot = simd_avx512_dot;
   t->dot_f = simd_avx512_dot_f;
@@ -1125,6 +1236,16 @@ void simd_override_avx512(simd_t *t) {
   t->hamming = simd_avx512_hamming;
   t->topk_indices = simd_avx512_topk_indices;
   t->clamp = simd_avx512_clamp;
+#ifdef DYNAJS_SIMD_F64_AVX512
+  /* Off by default — see the gate comment above. AVX-512 HW keeps the proven
+   * AVX2 f64 kernels installed by simd_override_avx2 (which runs first). */
+  t->f64_sum = simd_avx512_f64_sum;
+  t->f64_dot = simd_avx512_f64_dot;
+  t->f64_min = simd_avx512_f64_min;
+  t->f64_max = simd_avx512_f64_max;
+  t->f64_scale = simd_avx512_f64_scale;
+  t->f64_axpy = simd_avx512_f64_axpy;
+#endif
 }
 
 #else /* !x86_64 */

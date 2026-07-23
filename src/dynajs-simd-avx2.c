@@ -1300,6 +1300,120 @@ simd_avx2_count_utf8(const uint8_t *restrict p, size_t n) {
 }
 
 /* ── Override table ─────────────────────────────────────────────── */
+/* ── Double-precision (f64) kernels — __m256d, 4 lanes (AVX). ────────
+ * Horizontal reduces: fold the 256-bit vector to 128 (add/max/min), then the
+ * two remaining lanes. Reductions run only full 4-lane bodies then a scalar
+ * tail; max/min guard the seed load for n < 4. */
+__attribute__((target("avx2,fma"))) static inline double
+hsum256_pd(__m256d v) {
+  __m128d s = _mm_add_pd(_mm256_castpd256_pd128(v), _mm256_extractf128_pd(v, 1));
+  return _mm_cvtsd_f64(_mm_add_sd(s, _mm_unpackhi_pd(s, s)));
+}
+__attribute__((target("avx2,fma"))) static inline double
+hmax256_pd(__m256d v) {
+  __m128d s = _mm_max_pd(_mm256_castpd256_pd128(v), _mm256_extractf128_pd(v, 1));
+  return _mm_cvtsd_f64(_mm_max_sd(s, _mm_unpackhi_pd(s, s)));
+}
+__attribute__((target("avx2,fma"))) static inline double
+hmin256_pd(__m256d v) {
+  __m128d s = _mm_min_pd(_mm256_castpd256_pd128(v), _mm256_extractf128_pd(v, 1));
+  return _mm_cvtsd_f64(_mm_min_sd(s, _mm_unpackhi_pd(s, s)));
+}
+
+__attribute__((target("avx2,fma"))) static double
+simd_avx2_f64_sum(const double *restrict x, size_t n) {
+  __m256d acc = _mm256_setzero_pd();
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4)
+    acc = _mm256_add_pd(acc, _mm256_loadu_pd(&x[i]));
+  double result = hsum256_pd(acc);
+  for (; i < n; i++)
+    result += x[i];
+  return result;
+}
+
+__attribute__((target("avx2,fma"))) static double
+simd_avx2_f64_dot(const double *restrict a, const double *restrict b,
+                  size_t n) {
+  __m256d acc = _mm256_setzero_pd();
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4)
+    acc = _mm256_fmadd_pd(_mm256_loadu_pd(&a[i]), _mm256_loadu_pd(&b[i]), acc);
+  double result = hsum256_pd(acc);
+  for (; i < n; i++)
+    result += a[i] * b[i];
+  return result;
+}
+
+__attribute__((target("avx2,fma"))) static double
+simd_avx2_f64_max(const double *restrict x, size_t n) {
+  if (n == 0)
+    return -DBL_MAX;
+  double result;
+  size_t i;
+  if (n >= 4) {
+    __m256d vmax = _mm256_loadu_pd(x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmax = _mm256_max_pd(vmax, _mm256_loadu_pd(&x[i]));
+    result = hmax256_pd(vmax);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] > result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("avx2,fma"))) static double
+simd_avx2_f64_min(const double *restrict x, size_t n) {
+  if (n == 0)
+    return DBL_MAX;
+  double result;
+  size_t i;
+  if (n >= 4) {
+    __m256d vmin = _mm256_loadu_pd(x);
+    for (i = 4; i + 4 <= n; i += 4)
+      vmin = _mm256_min_pd(vmin, _mm256_loadu_pd(&x[i]));
+    result = hmin256_pd(vmin);
+  } else {
+    result = x[0];
+    i = 1;
+  }
+  for (; i < n; i++)
+    if (x[i] < result)
+      result = x[i];
+  return result;
+}
+
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_f64_scale(double *restrict out, const double *restrict x, double s,
+                    size_t n) {
+  __m256d vs = _mm256_set1_pd(s);
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4)
+    _mm256_storeu_pd(&out[i], _mm256_mul_pd(_mm256_loadu_pd(&x[i]), vs));
+  for (; i < n; i++)
+    out[i] = x[i] * s;
+}
+
+__attribute__((target("avx2,fma"))) static void
+simd_avx2_f64_axpy(double *restrict y, double a, const double *restrict x,
+                   size_t n) {
+  __m256d va = _mm256_set1_pd(a);
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    /* non-fused mul-then-add (NOT fmadd): bit-exact vs scalar/JS y[i]+=a*x[i] */
+    __m256d p = _mm256_mul_pd(va, _mm256_loadu_pd(&x[i]));
+    _mm256_storeu_pd(&y[i], _mm256_add_pd(_mm256_loadu_pd(&y[i]), p));
+  }
+  for (; i < n; i++) {
+    double p = a * x[i];
+    y[i] = y[i] + p;
+  }
+}
+
 void simd_override_avx2(simd_t *t) {
   t->hex_encode = simd_avx2_hex_encode;
   t->hex_decode = simd_avx2_hex_decode;
@@ -1359,6 +1473,12 @@ void simd_override_avx2(simd_t *t) {
   t->hamming = simd_avx2_hamming;
   t->topk_indices = simd_avx2_topk_indices;
   t->clamp = simd_avx2_clamp;
+  t->f64_sum = simd_avx2_f64_sum;
+  t->f64_dot = simd_avx2_f64_dot;
+  t->f64_min = simd_avx2_f64_min;
+  t->f64_max = simd_avx2_f64_max;
+  t->f64_scale = simd_avx2_f64_scale;
+  t->f64_axpy = simd_avx2_f64_axpy;
 }
 
 #else /* !x86_64 */
