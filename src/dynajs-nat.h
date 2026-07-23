@@ -132,6 +132,9 @@ int js_nat_init_encoding(JSContext *ctx); /* dynajs:encoding hex/base32/base64/v
 #ifdef CONFIG_NATIVE_MODULE_TIME
 int js_nat_init_time(JSContext *ctx); /* dynajs:time durations/clock/RFC3339 */
 #endif
+#ifdef CONFIG_NATIVE_MODULE_MATHX
+int js_nat_init_mathx(JSContext *ctx); /* dynajs:mathx Go-style math + int/BigInt helpers */
+#endif
 
 /* Register every compiled-in native module in `ctx`. Called from the CLI. */
 int js_nat_init_all(JSContext *ctx);

@@ -233,6 +233,10 @@ int js_nat_init_all(JSContext *ctx)
     if (js_nat_init_time(ctx))
         return -1;
 #endif
+#ifdef CONFIG_NATIVE_MODULE_MATHX
+    if (js_nat_init_mathx(ctx))
+        return -1;
+#endif
 #if defined(CONFIG_IO_URING) && defined(__linux__)
     if (js_nat_init_uring(ctx))
         return -1;
