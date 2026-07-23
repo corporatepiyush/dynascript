@@ -217,6 +217,10 @@ int js_nat_init_all(JSContext *ctx)
     if (js_nat_init_netip(ctx))
         return -1;
 #endif
+#ifdef CONFIG_NATIVE_MODULE_SEMVER
+    if (js_nat_init_semver(ctx))
+        return -1;
+#endif
 #ifdef CONFIG_NATIVE_MODULE_STRINGS
     if (js_nat_init_strings(ctx))
         return -1;

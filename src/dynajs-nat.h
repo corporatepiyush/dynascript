@@ -120,6 +120,9 @@ int js_nat_init_path(JSContext *ctx); /* dynajs:path POSIX path utilities */
 #ifdef CONFIG_NATIVE_MODULE_NETIP
 int js_nat_init_netip(JSContext *ctx); /* dynajs:netip IP/CIDR (Go net/netip) */
 #endif
+#ifdef CONFIG_NATIVE_MODULE_SEMVER
+int js_nat_init_semver(JSContext *ctx); /* dynajs:semver SemVer 2.0.0 + ranges */
+#endif
 #ifdef CONFIG_NATIVE_MODULE_STRINGS
 int js_nat_init_strings(JSContext *ctx); /* dynajs:strings Go+JS string utilities */
 #endif
