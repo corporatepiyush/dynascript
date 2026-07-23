@@ -240,6 +240,9 @@ endif
 ifneq ($(wildcard src/dynajs-structures3.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_STRUCTURES3
 endif
+ifneq ($(wildcard src/dynajs-container.c),)
+CFLAGS+=-DCONFIG_NATIVE_MODULE_CONTAINER
+endif
 ifneq ($(wildcard src/dynajs-ml.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_ML
 endif
@@ -351,6 +354,9 @@ NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-structures.o
 endif
 ifneq ($(wildcard src/dynajs-structures3.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-structures3.o
+endif
+ifneq ($(wildcard src/dynajs-container.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-container.o
 endif
 ifneq ($(wildcard src/dynajs-ml.c),)
 NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-ml.o
