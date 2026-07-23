@@ -514,7 +514,22 @@ The full surface includes reductions (`sum`/`max`/`min`/`argmax`/`argmin`), elem
 `distL1`/`distL2`/`distCos`/`distCheb`), activations (`relu`/`relu6`/`leakyRelu`/`elu`/`gelu`/
 `silu`/`sigmoid`/`tanhFast`/`softmax`/`logSoftmax`), transcendentals (`vexp`/`vlog`/`vsqrt`/
 `vrsqrt`/`vinv`), BLAS-2/3 (`gemv`/`gemvT`/`gemm`), and utilities (`clamp`/`threshold`/`topkIndices`),
-in both f32 and (for the core reductions/elementwise) f64.
+in both f32 and (for the core reductions/elementwise) f64. **Integer** (`Int32Array`) reductions and
+elementwise ops — `i32Sum` (exact via int64), `i32Min`/`i32Max`/`i32Dot`, `i32Add`/`i32Mul`/`i32Scale`
+(two's-complement wrap, like `Math.imul`) — and **prefix scans** `cumsum`/`cummax` (over `Int32Array`
+or `Float32Array`) round out the array toolkit:
+
+```js
+import { i32Sum, i32Dot, cumsum, cummax } from "dynajs:simd";
+
+const a = new Int32Array([5, 2, 8, 1, 9]);
+print(i32Sum(a));                 // 25       (widened, exact)
+print(i32Dot(a, a));              // 175      (Σ aᵢ²)
+const c = new Int32Array([1, 2, 3, 4]); cumsum(c);
+print(Array.from(c).join(","));   // "1,3,6,10"   (inclusive prefix sum, in place)
+const m = new Float32Array([3, 1, 4, 1, 5]); cummax(m);
+print(Array.from(m).join(","));   // "3,3,4,4,5"  (running maximum)
+```
 
 Why this is a differentiator: in Node or Bun, vector math from JS means either a slow scalar loop
 (and hoping the JIT vectorizes it — it often can't, due to aliasing and early-exit rules) or

@@ -45,7 +45,7 @@ Import strings are always `dynajs:<name>`.
 | `sys` | `stat lstat exists readDir makeDir remove removeAll rename symlink readLink realPath chmod glob tempDir makeTempDir makeTempFile env getEnv setEnv args cwd chDir platform pid hostName homeDir` |
 | `semver` | `parse isValid clean compare gt gte lt lte eq neq sort major minor patch prerelease inc satisfies maxSatisfying minSatisfying coerce` |
 | `time` | `Nanosecond … Hour`, `durationString parseDuration now nowUnixNano nowMillis monotonicNano formatRFC3339 formatUnix parseRFC3339 date fromUnix` |
-| `simd` | `dot sum scale axpy add sub mul div abs fma addScalar affine normL1 normL2 max min argmax argmin sigmoid relu relu6 leakyRelu elu tanhFast gelu silu softmax logSoftmax vexp vlog vsqrt vrsqrt vinv distL2 distL1 distCos distCheb gemv gemvT gemm clamp threshold topkIndices f64Sum f64Dot f64Max f64Min f64Scale f64Axpy` |
+| `simd` | `dot sum scale axpy add sub mul div abs fma addScalar affine normL1 normL2 max min argmax argmin sigmoid relu relu6 leakyRelu elu tanhFast gelu silu softmax logSoftmax vexp vlog vsqrt vrsqrt vinv distL2 distL1 distCos distCheb gemv gemvT gemm clamp threshold topkIndices f64Sum f64Dot f64Max f64Min f64Scale f64Axpy i32Sum i32Min i32Max i32Dot i32Add i32Mul i32Scale cumsum cummax` |
 | `ml` | classes `LinearRegression LogisticRegression KMeans` |
 | `compress` | `gzip gunzip` |
 | `docparse` | `parseJson parseCsv` |

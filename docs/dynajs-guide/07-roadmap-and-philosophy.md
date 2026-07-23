@@ -89,9 +89,11 @@ The SIMD engine (Chapter 5 §5.1) is the runtime's performance flywheel, and it 
 dual-use: every kernel accelerates both user code and the engine's own internals. The expansion
 roadmap moves through categories:
 
-- **Arrays** — integer (i8/i16/i32/i64) and f64 variants of the f32 math (f64 shipped), plus
-  vectorized sort, prefix-sum/scan, filter/compress, gather/scatter, and running statistics.
-- **Bytes/strings** — UTF-8↔UTF-16↔Latin-1 transcoding at GiB/s, multi-pattern search, and CRC via
+- **Arrays** — integer (i8/i16/i32/i64) and f64 variants of the f32 math (f64 **shipped**; i32
+  reductions/elementwise + `cumsum`/`cummax` prefix-scan **shipped**), plus vectorized sort,
+  filter/compress, gather/scatter, and running statistics.
+- **Bytes/strings** — UTF-8↔UTF-16↔Latin-1 transcoding at GiB/s (UTF-8↔UTF-16 + validate/count
+  **shipped** in `dynajs:text`; Latin-1↔UTF-8 already shipped), multi-pattern search, and CRC via
   carry-less multiply (`simdutf`-class throughput).
 - **Maps** — SwissTable-style group-probe hashing, to speed the engine's own atom/shape lookups as
   well as `dynajs:structures`.
