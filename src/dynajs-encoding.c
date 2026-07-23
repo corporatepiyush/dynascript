@@ -177,13 +177,13 @@ static JSValue dyn_enc_new_u8array(JSContext *ctx, const uint8_t *data, size_t l
 
 /* ══════════════════════════════ hex ══════════════════════════════ */
 
-static const char dyn_enc_hex_digits[] = "0123456789abcdef";
-
+/* hex enc/dec run on the shared SIMD kernel (PSHUFB on x86, table-lookup on
+ * NEON) — same one dynajs:text uses; several GB/s on long inputs. */
 static JSValue dyn_enc_hex_encode(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
     const uint8_t *data;
-    size_t n, i;
+    size_t n;
     const char *owned;
     char *out;
     JSValue result;
@@ -198,10 +198,7 @@ static JSValue dyn_enc_hex_encode(JSContext *ctx, JSValueConst this_val,
             JS_FreeCString(ctx, owned);
         return JS_ThrowOutOfMemory(ctx);
     }
-    for (i = 0; i < n; i++) {
-        out[i * 2]     = dyn_enc_hex_digits[data[i] >> 4];
-        out[i * 2 + 1] = dyn_enc_hex_digits[data[i] & 0xF];
-    }
+    simd.hex_encode(data, n, out);
     if (owned)
         JS_FreeCString(ctx, owned);
     result = JS_NewStringLen(ctx, out, n * 2);
@@ -209,19 +206,11 @@ static JSValue dyn_enc_hex_encode(JSContext *ctx, JSValueConst this_val,
     return result;
 }
 
-static int dyn_enc_hex_val(int c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 static JSValue dyn_enc_hex_decode(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
     const char *str;
-    size_t slen, i, outlen;
+    size_t slen, outlen, dec;
     uint8_t *out;
     JSValue result;
     (void)this_val; (void)argc;
@@ -239,18 +228,13 @@ static JSValue dyn_enc_hex_decode(JSContext *ctx, JSValueConst this_val,
         JS_FreeCString(ctx, str);
         return JS_ThrowOutOfMemory(ctx);
     }
-    for (i = 0; i < outlen; i++) {
-        int hi = dyn_enc_hex_val((unsigned char)str[i * 2]);
-        int lo = dyn_enc_hex_val((unsigned char)str[i * 2 + 1]);
-        if (hi < 0 || lo < 0) {
-            free(out);
-            JS_FreeCString(ctx, str);
-            return JS_ThrowSyntaxError(ctx, "hexDecode: invalid hex digit");
-        }
-        out[i] = (uint8_t)((hi << 4) | lo);
-    }
+    dec = simd.hex_decode(str, slen, out); /* SIZE_MAX on any non-hex digit */
     JS_FreeCString(ctx, str);
-    result = dyn_enc_new_u8array(ctx, out, outlen);
+    if (dec == SIZE_MAX) {
+        free(out);
+        return JS_ThrowSyntaxError(ctx, "hexDecode: invalid hex digit");
+    }
+    result = dyn_enc_new_u8array(ctx, out, dec);
     free(out);
     return result;
 }
