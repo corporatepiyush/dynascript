@@ -53,8 +53,27 @@ static int dyn_text_bytes(JSContext *ctx, JSValueConst v, const uint8_t **data,
             *data = ab;
             return 0;
         }
-        /* not an ArrayBuffer: clear the TypeError it raised before falling
-         * back to string coercion (else a stale exception leaks). */
+        /* not an ArrayBuffer: clear the TypeError it raised before trying a
+         * TypedArray view (else a stale exception leaks). */
+        JS_FreeValue(ctx, JS_GetException(ctx));
+    }
+    {
+        /* a TypedArray/DataView (e.g. Uint8Array) view: take its raw bytes
+         * through the backing buffer. The caller's argv still references the
+         * view, so the buffer data stays live for the call after we drop our
+         * local buffer ref. */
+        size_t off = 0, blen = 0, bpe = 0;
+        JSValue buf = JS_GetTypedArrayBuffer(ctx, v, &off, &blen, &bpe);
+        if (!JS_IsException(buf)) {
+            size_t absize = 0;
+            uint8_t *ab = JS_GetArrayBuffer(ctx, &absize, buf);
+            JS_FreeValue(ctx, buf);
+            if (ab) {
+                *data = ab + off;
+                *len = blen;
+                return 0;
+            }
+        }
         JS_FreeValue(ctx, JS_GetException(ctx));
     }
     /* fall back to string coercion for other types (numbers, etc.) */
