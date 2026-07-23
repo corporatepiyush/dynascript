@@ -289,6 +289,35 @@ typedef struct simd {
   /* Count code points in valid UTF-8: bytes whose top two bits are not 10. */
   size_t (*count_utf8)(const uint8_t *restrict p, size_t n);
 
+  /* ── UTF-8 <-> UTF-16 transcode + validation (simdutf lossless semantics).
+   *    UTF-16 code units are host-endian uint16_t; on the little-endian targets
+   *    this engine supports (x86-64, arm64) that is exactly UTF-16LE, hence the
+   *    "le" in the kernel names. Transcoders are STRICT/lossless: they REJECT
+   *    ill-formed input (no U+FFFD substitution), matching simdutf's non-"valid"
+   *    convert path. Every fast-path block load is guarded by an i+width<=n bound
+   *    so no read passes the input end. ─────────────────────────────────────── */
+  /* Decode UTF-8 (src[0..n)) into UTF-16 code units in dst (needs up to n
+   * units). On success sets *out_units and returns 0; returns -1 on malformed
+   * UTF-8 (bad lead/continuation, overlong, surrogate code point, > U+10FFFF,
+   * truncated). Valid UTF-8 never yields a lone surrogate, so the output of a
+   * successful call is always well-formed UTF-16. */
+  int (*utf8_to_utf16le)(const uint8_t *restrict src, size_t n,
+                         uint16_t *restrict dst, size_t *out_units);
+  /* Encode UTF-16 code units (src[0..units)) into UTF-8 in dst (needs up to
+   * 3*units bytes). On success sets *out_len and returns 0; returns -1 on an
+   * ill-formed surrogate (high not followed by low, lone/leading low, high at
+   * end of buffer). */
+  int (*utf16le_to_utf8)(const uint16_t *restrict src, size_t units,
+                         uint8_t *restrict dst, size_t *out_len);
+  /* Validate UTF-16: returns 1 if src[0..units) is well-formed (every high
+   * surrogate immediately followed by a low surrogate, no lone low surrogate),
+   * else 0. */
+  int (*validate_utf16le)(const uint16_t *restrict src, size_t units);
+  /* Count code points in UTF-16: units minus the number of low-surrogate units
+   * (each surrogate PAIR is one code point). Equals the scalar-value count for
+   * well-formed input; does not itself validate. */
+  size_t (*count_utf16)(const uint16_t *restrict src, size_t units);
+
 } simd_t;
 
 /* Global dispatch table — safe to read from any thread after init. */

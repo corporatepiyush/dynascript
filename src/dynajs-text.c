@@ -25,6 +25,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "dynajs-simd-kernels.h"
 
@@ -399,6 +400,152 @@ static JSValue dyn_text_count_utf8(JSContext *ctx, JSValueConst this_val,
     }
 }
 
+/* Borrow input as UTF-16 code units: read raw bytes via dyn_text_bytes, then
+ * copy into a fresh 2-byte-aligned uint16_t buffer (a TypedArray view may start
+ * at an odd byte offset, and the scalar kernels do aligned u16 reads). On
+ * success returns the malloc'd buffer (release with free()), sets *units to
+ * byte_len/2 and *odd to the trailing-odd-byte flag. Returns NULL with a
+ * pending exception on error/OOM. A 0-unit input returns a valid non-NULL stub.
+ * On this engine's little-endian targets the input bytes ARE UTF-16LE, so the
+ * host-endian uint16_t copy is a straight reinterpretation. */
+static uint16_t *dyn_text_u16_copy(JSContext *ctx, JSValueConst v, size_t *units,
+                                   int *odd)
+{
+    const uint8_t *data;
+    size_t len;
+    const char *owned;
+    uint16_t *u16;
+
+    if (dyn_text_bytes(ctx, v, &data, &len, &owned))
+        return NULL;
+    *odd = (int)(len & 1);
+    *units = len >> 1;
+    u16 = (uint16_t *)malloc(*units ? *units * 2 : 2);
+    if (!u16) {
+        if (owned)
+            JS_FreeCString(ctx, owned);
+        JS_ThrowOutOfMemory(ctx);
+        return NULL;
+    }
+    memcpy(u16, data, *units * 2); /* whole units only; a trailing odd byte drops */
+    if (owned)
+        JS_FreeCString(ctx, owned);
+    return u16;
+}
+
+/* utf8ToUtf16(bytesOrString) -> Uint8Array of UTF-16LE bytes. Strict/lossless:
+ * throws RangeError on malformed UTF-8 (matching simdutf's convert path). */
+static JSValue dyn_text_utf8_to_utf16(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    const uint8_t *data;
+    size_t len, out_units = 0;
+    const char *owned;
+    uint16_t *out;
+    JSValue result;
+    int rc;
+    (void)this_val;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "utf8ToUtf16(bytesOrString)");
+    if (dyn_text_bytes(ctx, argv[0], &data, &len, &owned))
+        return JS_EXCEPTION;
+    out = (uint16_t *)malloc(len ? len * 2 : 2); /* <= len units => 2*len bytes */
+    if (!out) {
+        if (owned)
+            JS_FreeCString(ctx, owned);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    rc = simd.utf8_to_utf16le(data, len, out, &out_units);
+    if (owned)
+        JS_FreeCString(ctx, owned);
+    if (rc != 0) {
+        free(out);
+        return JS_ThrowRangeError(ctx, "utf8ToUtf16: invalid UTF-8");
+    }
+    result = dyn_text_new_u8array(ctx, (const uint8_t *)out, out_units * 2);
+    free(out);
+    return result;
+}
+
+/* utf16ToUtf8(u16bytes) -> Uint8Array of UTF-8 bytes. Strict/lossless: throws
+ * RangeError on an odd byte length or an ill-formed surrogate. */
+static JSValue dyn_text_utf16_to_utf8(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    size_t units = 0, out_len = 0;
+    int odd, rc;
+    uint16_t *u16;
+    uint8_t *out;
+    JSValue result;
+    (void)this_val;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "utf16ToUtf8(u16bytes)");
+    u16 = dyn_text_u16_copy(ctx, argv[0], &units, &odd);
+    if (!u16)
+        return JS_EXCEPTION;
+    if (odd) {
+        free(u16);
+        return JS_ThrowRangeError(ctx, "utf16ToUtf8: byte length must be even");
+    }
+    out = (uint8_t *)malloc(units ? units * 3 : 1); /* <= 3 UTF-8 bytes per unit */
+    if (!out) {
+        free(u16);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    rc = simd.utf16le_to_utf8(u16, units, out, &out_len);
+    free(u16);
+    if (rc != 0) {
+        free(out);
+        return JS_ThrowRangeError(ctx,
+                                  "utf16ToUtf8: ill-formed UTF-16 surrogate");
+    }
+    result = dyn_text_new_u8array(ctx, out, out_len);
+    free(out);
+    return result;
+}
+
+/* isValidUtf16(u16bytes) -> true if the bytes are well-formed UTF-16LE (even
+ * length, every high surrogate paired with a following low surrogate). */
+static JSValue dyn_text_is_valid_utf16(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    size_t units = 0;
+    int odd, ok;
+    uint16_t *u16;
+    (void)this_val;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "isValidUtf16(u16bytes)");
+    u16 = dyn_text_u16_copy(ctx, argv[0], &units, &odd);
+    if (!u16)
+        return JS_EXCEPTION;
+    ok = !odd && simd.validate_utf16le(u16, units); /* odd byte length is ill-formed */
+    free(u16);
+    return JS_NewBool(ctx, ok);
+}
+
+/* countUtf16(u16bytes) -> number of code points (surrogate pairs count once).
+ * Does not validate; a trailing odd byte is ignored. */
+static JSValue dyn_text_count_utf16(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    size_t units = 0, c;
+    int odd;
+    uint16_t *u16;
+    (void)this_val;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "countUtf16(u16bytes)");
+    u16 = dyn_text_u16_copy(ctx, argv[0], &units, &odd);
+    if (!u16)
+        return JS_EXCEPTION;
+    c = simd.count_utf16(u16, units);
+    free(u16);
+    return JS_NewInt64(ctx, (int64_t)c);
+}
+
 static const JSCFunctionListEntry dyn_text_funcs[] = {
     JS_CFUNC_DEF("count", 2, dyn_text_count),
     JS_CFUNC_DEF("indexOfAny", 2, dyn_text_index_of_any),
@@ -410,6 +557,10 @@ static const JSCFunctionListEntry dyn_text_funcs[] = {
     JS_CFUNC_DEF("latin1ToUtf8", 1, dyn_text_latin1_to_utf8),
     JS_CFUNC_DEF("utf8ToLatin1", 1, dyn_text_utf8_to_latin1),
     JS_CFUNC_DEF("countUtf8", 1, dyn_text_count_utf8),
+    JS_CFUNC_DEF("utf8ToUtf16", 1, dyn_text_utf8_to_utf16),
+    JS_CFUNC_DEF("utf16ToUtf8", 1, dyn_text_utf16_to_utf8),
+    JS_CFUNC_DEF("isValidUtf16", 1, dyn_text_is_valid_utf16),
+    JS_CFUNC_DEF("countUtf16", 1, dyn_text_count_utf16),
 };
 
 static int dyn_text_init_module(JSContext *ctx, JSModuleDef *m)

@@ -1451,6 +1451,147 @@ static size_t simd_neon_count_utf8(const uint8_t *restrict p, size_t n) {
   return total;
 }
 
+/* ── UTF-8 <-> UTF-16 transcode + validation (NEON) ──────────────────
+ * Each kernel keeps a SIMD fast path for the common case (ASCII / all-BMP /
+ * no-low-surrogate) and drops to the scalar code point loop otherwise. The
+ * scalar path is byte-identical to the scalar reference (differential oracle). */
+
+/* latin1-style ASCII fast path: a pure-ASCII 16-byte block widens to 16
+ * UTF-16 units (zero-extend); anything else falls to the scalar decoder. */
+static int simd_neon_utf8_to_utf16le(const uint8_t *restrict src, size_t n,
+                                     uint16_t *restrict dst, size_t *out_units) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    if (i + 16 <= n) {
+      uint8x16_t blk = vld1q_u8(src + i);
+      if (vmaxvq_u8(vandq_u8(blk, vdupq_n_u8(0x80))) == 0) { /* all ASCII */
+        vst1q_u16(dst + o, vmovl_u8(vget_low_u8(blk)));
+        vst1q_u16(dst + o + 8, vmovl_u8(vget_high_u8(blk)));
+        i += 16; o += 16;
+        continue;
+      }
+    }
+    {
+      uint8_t c = src[i];
+      size_t len, j;
+      uint32_t cp;
+      if (c < 0x80) { dst[o++] = c; i++; continue; }
+      if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
+      else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
+      else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
+      else return -1;
+      if (i + len > n) return -1;
+      for (j = 1; j < len; j++) {
+        uint8_t cc = src[i + j];
+        if ((cc & 0xC0) != 0x80) return -1;
+        cp = (cp << 6) | (cc & 0x3F);
+      }
+      if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) ||
+          (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
+          (cp >= 0xD800 && cp <= 0xDFFF))
+        return -1;
+      if (cp < 0x10000) {
+        dst[o++] = (uint16_t)cp;
+      } else {
+        cp -= 0x10000;
+        dst[o++] = (uint16_t)(0xD800 | (cp >> 10));
+        dst[o++] = (uint16_t)(0xDC00 | (cp & 0x3FF));
+      }
+      i += len;
+    }
+  }
+  *out_units = o;
+  return 0;
+}
+
+/* Fast path: 16 UTF-16 units all < 0x80 narrow to 16 UTF-8 bytes. */
+static int simd_neon_utf16le_to_utf8(const uint16_t *restrict src, size_t units,
+                                     uint8_t *restrict dst, size_t *out_len) {
+  size_t i = 0, o = 0;
+  while (i < units) {
+    if (i + 16 <= units) {
+      uint16x8_t v0 = vld1q_u16(src + i);
+      uint16x8_t v1 = vld1q_u16(src + i + 8);
+      uint16x8_t both = vorrq_u16(v0, v1);
+      if (vmaxvq_u16(vandq_u16(both, vdupq_n_u16(0xFF80))) == 0) { /* all < 0x80 */
+        vst1q_u8(dst + o, vcombine_u8(vmovn_u16(v0), vmovn_u16(v1)));
+        i += 16; o += 16;
+        continue;
+      }
+    }
+    {
+      uint32_t cp = src[i];
+      if (cp < 0xD800 || cp > 0xDFFF) {
+        i++;
+      } else if (cp <= 0xDBFF) {
+        uint32_t lo;
+        if (i + 1 >= units) return -1;
+        lo = src[i + 1];
+        if (lo < 0xDC00 || lo > 0xDFFF) return -1;
+        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+        i += 2;
+      } else {
+        return -1;
+      }
+      if (cp < 0x80) {
+        dst[o++] = (uint8_t)cp;
+      } else if (cp < 0x800) {
+        dst[o++] = (uint8_t)(0xC0 | (cp >> 6));
+        dst[o++] = (uint8_t)(0x80 | (cp & 0x3F));
+      } else if (cp < 0x10000) {
+        dst[o++] = (uint8_t)(0xE0 | (cp >> 12));
+        dst[o++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+        dst[o++] = (uint8_t)(0x80 | (cp & 0x3F));
+      } else {
+        dst[o++] = (uint8_t)(0xF0 | (cp >> 18));
+        dst[o++] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
+        dst[o++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+        dst[o++] = (uint8_t)(0x80 | (cp & 0x3F));
+      }
+    }
+  }
+  *out_len = o;
+  return 0;
+}
+
+/* Fast path: an 8-unit block with NO surrogate at all is well-formed; skip it. */
+static int simd_neon_validate_utf16le(const uint16_t *restrict src,
+                                      size_t units) {
+  const uint16x8_t f800 = vdupq_n_u16(0xF800), d800 = vdupq_n_u16(0xD800);
+  size_t i = 0;
+  while (i < units) {
+    if (i + 8 <= units) {
+      uint16x8_t v = vld1q_u16(src + i);
+      uint16x8_t issur = vceqq_u16(vandq_u16(v, f800), d800);
+      if (vmaxvq_u16(issur) == 0) { i += 8; continue; } /* all BMP */
+    }
+    {
+      uint32_t c = src[i];
+      if (c < 0xD800 || c > 0xDFFF) { i++; continue; }
+      if (c > 0xDBFF) return 0;
+      if (i + 1 >= units) return 0;
+      if (src[i + 1] < 0xDC00 || src[i + 1] > 0xDFFF) return 0;
+      i += 2;
+    }
+  }
+  return 1;
+}
+
+/* Count code points: per block, 8 minus the number of low-surrogate units. */
+static size_t simd_neon_count_utf16(const uint16_t *restrict src, size_t units) {
+  const uint16x8_t fc00 = vdupq_n_u16(0xFC00), dc00 = vdupq_n_u16(0xDC00);
+  const uint16x8_t one = vdupq_n_u16(1);
+  size_t i = 0, total = 0;
+  for (; i + 8 <= units; i += 8) {
+    uint16x8_t v = vld1q_u16(src + i);
+    uint16x8_t islow = vceqq_u16(vandq_u16(v, fc00), dc00); /* 0xFFFF if low */
+    total += 8 - vaddvq_u16(vandq_u16(islow, one));
+  }
+  for (; i < units; i++)
+    if (src[i] < 0xDC00 || src[i] > 0xDFFF) total++;
+  return total;
+}
+
 /* ── Override table ─────────────────────────────────────────────── */
 void simd_override_neon(simd_t *t) {
   t->hex_encode = simd_neon_hex_encode;
@@ -1458,6 +1599,10 @@ void simd_override_neon(simd_t *t) {
   t->latin1_to_utf8 = simd_neon_latin1_to_utf8;
   t->utf8_to_latin1 = simd_neon_utf8_to_latin1;
   t->count_utf8 = simd_neon_count_utf8;
+  t->utf8_to_utf16le = simd_neon_utf8_to_utf16le;
+  t->utf16le_to_utf8 = simd_neon_utf16le_to_utf8;
+  t->validate_utf16le = simd_neon_validate_utf16le;
+  t->count_utf16 = simd_neon_count_utf16;
   t->find_u16 = simd_neon_find_u16;
   t->find_u32 = simd_neon_find_u32;
   t->find_f32 = simd_neon_find_f32;

@@ -865,6 +865,108 @@ static size_t simd_scalar_count_utf8(const uint8_t *restrict p, size_t n) {
   return c;
 }
 
+/* ── UTF-8 <-> UTF-16 transcode + validation (scalar reference + oracle) ──
+ * These are the differential oracle the SIMD variants must match byte-for-byte.
+ * UTF-16 units are host-endian uint16_t (== UTF-16LE on this engine's LE
+ * targets). Both transcoders reject ill-formed input (lossless, no U+FFFD). */
+
+static int simd_scalar_utf8_to_utf16le(const uint8_t *restrict src, size_t n,
+                                       uint16_t *restrict dst,
+                                       size_t *out_units) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    uint8_t c = src[i];
+    size_t len, j;
+    uint32_t cp;
+    if (c < 0x80) { dst[o++] = c; i++; continue; }
+    if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
+    else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
+    else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
+    else return -1; /* stray continuation byte or 0xF8..0xFF */
+    if (i + len > n) return -1; /* truncated multibyte sequence */
+    for (j = 1; j < len; j++) {
+      uint8_t cc = src[i + j];
+      if ((cc & 0xC0) != 0x80) return -1; /* not a continuation byte */
+      cp = (cp << 6) | (cc & 0x3F);
+    }
+    if (len == 2 && cp < 0x80) return -1;    /* overlong */
+    if (len == 3 && cp < 0x800) return -1;   /* overlong */
+    if (len == 4 && cp < 0x10000) return -1; /* overlong */
+    if (cp > 0x10FFFF) return -1;            /* out of range */
+    if (cp >= 0xD800 && cp <= 0xDFFF) return -1; /* UTF-16 surrogate */
+    if (cp < 0x10000) {
+      dst[o++] = (uint16_t)cp;
+    } else {
+      cp -= 0x10000;
+      dst[o++] = (uint16_t)(0xD800 | (cp >> 10));
+      dst[o++] = (uint16_t)(0xDC00 | (cp & 0x3FF));
+    }
+    i += len;
+  }
+  *out_units = o;
+  return 0;
+}
+
+static int simd_scalar_utf16le_to_utf8(const uint16_t *restrict src,
+                                       size_t units, uint8_t *restrict dst,
+                                       size_t *out_len) {
+  size_t i = 0, o = 0;
+  while (i < units) {
+    uint32_t cp = src[i];
+    if (cp < 0xD800 || cp > 0xDFFF) {
+      i++; /* BMP scalar value */
+    } else if (cp <= 0xDBFF) {           /* high surrogate: need a low next */
+      uint32_t lo;
+      if (i + 1 >= units) return -1;     /* high surrogate at end of buffer */
+      lo = src[i + 1];
+      if (lo < 0xDC00 || lo > 0xDFFF) return -1; /* not a low surrogate */
+      cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+      i += 2;
+    } else {
+      return -1; /* lone/leading low surrogate */
+    }
+    if (cp < 0x80) {
+      dst[o++] = (uint8_t)cp;
+    } else if (cp < 0x800) {
+      dst[o++] = (uint8_t)(0xC0 | (cp >> 6));
+      dst[o++] = (uint8_t)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+      dst[o++] = (uint8_t)(0xE0 | (cp >> 12));
+      dst[o++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+      dst[o++] = (uint8_t)(0x80 | (cp & 0x3F));
+    } else {
+      dst[o++] = (uint8_t)(0xF0 | (cp >> 18));
+      dst[o++] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
+      dst[o++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+      dst[o++] = (uint8_t)(0x80 | (cp & 0x3F));
+    }
+  }
+  *out_len = o;
+  return 0;
+}
+
+static int simd_scalar_validate_utf16le(const uint16_t *restrict src,
+                                        size_t units) {
+  size_t i = 0;
+  while (i < units) {
+    uint32_t c = src[i];
+    if (c < 0xD800 || c > 0xDFFF) { i++; continue; } /* BMP */
+    if (c > 0xDBFF) return 0;                         /* lone low surrogate */
+    if (i + 1 >= units) return 0;                     /* high at end */
+    if (src[i + 1] < 0xDC00 || src[i + 1] > 0xDFFF) return 0; /* not low */
+    i += 2;
+  }
+  return 1;
+}
+
+static size_t simd_scalar_count_utf16(const uint16_t *restrict src,
+                                      size_t units) {
+  size_t i, c = 0;
+  for (i = 0; i < units; i++)
+    if (src[i] < 0xDC00 || src[i] > 0xDFFF) c++; /* not a low surrogate */
+  return c;
+}
+
 void simd_override_scalar(simd_t *t) {
   t->find_u8 = simd_scalar_find_u8;
   t->find_u16 = simd_scalar_find_u16;
@@ -882,6 +984,10 @@ void simd_override_scalar(simd_t *t) {
   t->latin1_to_utf8 = simd_scalar_latin1_to_utf8;
   t->utf8_to_latin1 = simd_scalar_utf8_to_latin1;
   t->count_utf8 = simd_scalar_count_utf8;
+  t->utf8_to_utf16le = simd_scalar_utf8_to_utf16le;
+  t->utf16le_to_utf8 = simd_scalar_utf16le_to_utf8;
+  t->validate_utf16le = simd_scalar_validate_utf16le;
+  t->count_utf16 = simd_scalar_count_utf16;
   t->dot = simd_scalar_dot;
   t->dot_f = simd_scalar_dot_f;
   t->norm_l2_sq = simd_scalar_norm_l2_sq;

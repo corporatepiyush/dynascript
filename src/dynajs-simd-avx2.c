@@ -1299,6 +1299,158 @@ simd_avx2_count_utf8(const uint8_t *restrict p, size_t n) {
   return total;
 }
 
+/* ── UTF-8 <-> UTF-16 transcode + validation (AVX2) ──────────────────
+ * GATED OFF by default (DYNAJS_SIMD_UTF16_AVX2 undefined): this host's amd64
+ * emulation (Rosetta under OrbStack) tops out at SSE4.2 and cannot execute
+ * AVX2 faithfully under the differential harness, and qemu-AVX is unreliable
+ * here. Per the repo's "do not ship unproven x86 SIMD" rule these stay disabled;
+ * simd_init installs SSE4.2 before AVX2 and leaves these four slots un-overridden
+ * on AVX2 hardware, so it transparently runs the PROVEN SSE4.2 UTF-16 kernels.
+ * They mirror the proven SSE4.2 structure (and the packus+permute lane fixup
+ * already proven in simd_avx2_hex_decode); define DYNAJS_SIMD_UTF16_AVX2 once
+ * they can be exercised on AVX2-capable emulation/hardware. */
+#ifdef DYNAJS_SIMD_UTF16_AVX2
+__attribute__((target("avx2,fma"))) static int
+simd_avx2_utf8_to_utf16le(const uint8_t *restrict src, size_t n,
+                          uint16_t *restrict dst, size_t *out_units) {
+  size_t i = 0, o = 0;
+  while (i < n) {
+    if (i + 32 <= n) {
+      __m256i blk = _mm256_loadu_si256((const __m256i *)(src + i));
+      if (_mm256_movemask_epi8(blk) == 0) { /* all ASCII: zero-extend 32->32 */
+        __m256i lo = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(blk));
+        __m256i hi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(blk, 1));
+        _mm256_storeu_si256((__m256i *)(dst + o), lo);
+        _mm256_storeu_si256((__m256i *)(dst + o + 16), hi);
+        i += 32; o += 32;
+        continue;
+      }
+    }
+    {
+      uint8_t c = src[i];
+      size_t len, j;
+      uint32_t cp;
+      if (c < 0x80) { dst[o++] = c; i++; continue; }
+      if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
+      else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
+      else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
+      else return -1;
+      if (i + len > n) return -1;
+      for (j = 1; j < len; j++) {
+        uint8_t cc = src[i + j];
+        if ((cc & 0xC0) != 0x80) return -1;
+        cp = (cp << 6) | (cc & 0x3F);
+      }
+      if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) ||
+          (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
+          (cp >= 0xD800 && cp <= 0xDFFF))
+        return -1;
+      if (cp < 0x10000) {
+        dst[o++] = (uint16_t)cp;
+      } else {
+        cp -= 0x10000;
+        dst[o++] = (uint16_t)(0xD800 | (cp >> 10));
+        dst[o++] = (uint16_t)(0xDC00 | (cp & 0x3FF));
+      }
+      i += len;
+    }
+  }
+  *out_units = o;
+  return 0;
+}
+
+__attribute__((target("avx2,fma"))) static int
+simd_avx2_utf16le_to_utf8(const uint16_t *restrict src, size_t units,
+                          uint8_t *restrict dst, size_t *out_len) {
+  const __m256i m7f80 = _mm256_set1_epi16((short)0xFF80);
+  size_t i = 0, o = 0;
+  while (i < units) {
+    if (i + 32 <= units) {
+      __m256i v0 = _mm256_loadu_si256((const __m256i *)(src + i));
+      __m256i v1 = _mm256_loadu_si256((const __m256i *)(src + i + 16));
+      if (_mm256_testz_si256(_mm256_or_si256(v0, v1), m7f80)) { /* all < 0x80 */
+        /* packus is per-128-lane; permute the qwords back to linear order */
+        __m256i packed = _mm256_packus_epi16(v0, v1);
+        __m256i perm = _mm256_permute4x64_epi64(packed, _MM_SHUFFLE(3, 1, 2, 0));
+        _mm256_storeu_si256((__m256i *)(dst + o), perm);
+        i += 32; o += 32;
+        continue;
+      }
+    }
+    {
+      uint32_t cp = src[i];
+      if (cp < 0xD800 || cp > 0xDFFF) {
+        i++;
+      } else if (cp <= 0xDBFF) {
+        uint32_t lo;
+        if (i + 1 >= units) return -1;
+        lo = src[i + 1];
+        if (lo < 0xDC00 || lo > 0xDFFF) return -1;
+        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+        i += 2;
+      } else {
+        return -1;
+      }
+      if (cp < 0x80) {
+        dst[o++] = (uint8_t)cp;
+      } else if (cp < 0x800) {
+        dst[o++] = (uint8_t)(0xC0 | (cp >> 6));
+        dst[o++] = (uint8_t)(0x80 | (cp & 0x3F));
+      } else if (cp < 0x10000) {
+        dst[o++] = (uint8_t)(0xE0 | (cp >> 12));
+        dst[o++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+        dst[o++] = (uint8_t)(0x80 | (cp & 0x3F));
+      } else {
+        dst[o++] = (uint8_t)(0xF0 | (cp >> 18));
+        dst[o++] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
+        dst[o++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+        dst[o++] = (uint8_t)(0x80 | (cp & 0x3F));
+      }
+    }
+  }
+  *out_len = o;
+  return 0;
+}
+
+__attribute__((target("avx2,fma"))) static int
+simd_avx2_validate_utf16le(const uint16_t *restrict src, size_t units) {
+  const __m256i f800 = _mm256_set1_epi16((short)0xF800);
+  const __m256i d800 = _mm256_set1_epi16((short)0xD800);
+  size_t i = 0;
+  while (i < units) {
+    if (i + 16 <= units) {
+      __m256i v = _mm256_loadu_si256((const __m256i *)(src + i));
+      __m256i issur = _mm256_cmpeq_epi16(_mm256_and_si256(v, f800), d800);
+      if (_mm256_movemask_epi8(issur) == 0) { i += 16; continue; } /* all BMP */
+    }
+    {
+      uint32_t c = src[i];
+      if (c < 0xD800 || c > 0xDFFF) { i++; continue; }
+      if (c > 0xDBFF) return 0;
+      if (i + 1 >= units) return 0;
+      if (src[i + 1] < 0xDC00 || src[i + 1] > 0xDFFF) return 0;
+      i += 2;
+    }
+  }
+  return 1;
+}
+
+__attribute__((target("avx2,fma"))) static size_t
+simd_avx2_count_utf16(const uint16_t *restrict src, size_t units) {
+  const __m256i fc00 = _mm256_set1_epi16((short)0xFC00);
+  const __m256i dc00 = _mm256_set1_epi16((short)0xDC00);
+  size_t i = 0, total = 0;
+  for (; i + 16 <= units; i += 16) {
+    __m256i v = _mm256_loadu_si256((const __m256i *)(src + i));
+    __m256i islow = _mm256_cmpeq_epi16(_mm256_and_si256(v, fc00), dc00);
+    total += 16 - (size_t)(__builtin_popcount((unsigned)_mm256_movemask_epi8(islow)) / 2);
+  }
+  for (; i < units; i++)
+    if (src[i] < 0xDC00 || src[i] > 0xDFFF) total++;
+  return total;
+}
+#endif /* DYNAJS_SIMD_UTF16_AVX2 */
+
 /* ── Override table ─────────────────────────────────────────────── */
 /* ── Double-precision (f64) kernels — __m256d, 4 lanes (AVX). ────────
  * Horizontal reduces: fold the 256-bit vector to 128 (add/max/min), then the
@@ -1420,6 +1572,12 @@ void simd_override_avx2(simd_t *t) {
   t->latin1_to_utf8 = simd_avx2_latin1_to_utf8;
   t->utf8_to_latin1 = simd_avx2_utf8_to_latin1;
   t->count_utf8 = simd_avx2_count_utf8;
+#ifdef DYNAJS_SIMD_UTF16_AVX2 /* gated OFF: unverifiable here; SSE4.2 runs instead */
+  t->utf8_to_utf16le = simd_avx2_utf8_to_utf16le;
+  t->utf16le_to_utf8 = simd_avx2_utf16le_to_utf8;
+  t->validate_utf16le = simd_avx2_validate_utf16le;
+  t->count_utf16 = simd_avx2_count_utf16;
+#endif
   t->strfind = simd_avx2_strfind;
   t->dot = simd_avx2_dot;
   t->dot_f = simd_avx2_dot_f;
