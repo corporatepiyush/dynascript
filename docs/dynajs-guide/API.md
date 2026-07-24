@@ -4,6 +4,11 @@ Complete, per-function documentation for every `dyna:*` standard-library module 
 open in a tab while you code. If you'd rather learn by example first, [Chapter 4](04-standard-library.md)
 is the tutorial-style tour; this is the look-up-the-exact-signature companion.
 
+The final part — [**Built-in prototype extensions (SugarJS + RamdaJS)**](#built-in-prototype-extensions-sugarjs--ramdajs) —
+documents the always-on native methods installed on `Array`/`String`/`Number`/`Object`/`Function`/
+`Date` and the `Lens` type. These need **no import** (they are part of every build, not `dyna:*`
+modules), and the ⚡ marker flags the ones backed by SIMD kernels.
+
 ## Conventions used in this reference
 
 **Importing.** Every module is imported by its `dyna:` specifier, either statically in a module
@@ -1786,3 +1791,409 @@ SIMD substring search over strings (byte offsets into UTF‑8).
 indexOf("the quick brown fox", "quick");   // 4
 indexOfAll("abababa", "aba");              // [0, 2, 4]
 ```
+
+---
+
+# Built-in prototype extensions (SugarJS + RamdaJS)
+
+Native methods matching **SugarJS 2.0** and **RamdaJS 0.32** where they are *not* already ECMAScript,
+installed **non-enumerable** on the built-in prototypes/constructors via the engine's own method
+tables (the exact mechanism as `map`/`filter`). **No import** — present in every build.
+
+**Conventions.**
+- **Naming** — plain names; an ES-standard method is never shadowed (`map filter reduce find sort
+  slice concat join …` stay ES). Ramda `is` is not exposed (collides with ES `Object.is`).
+- **Immutability** — value-producing `Array`/`Object`/`Date` methods return a **new** value. Exceptions:
+  `Object.set` (deep-mutates), `Number.times/upto/downto` and `Number.range` (build fresh arrays).
+- **Matchers** — many `Array` methods accept **value | predicate `fn` | `RegExp`** (kind resolved once
+  per call). Set-ops use SameValueZero; `Object.equals` is deep (SameValue leaf).
+- **Date** — English/ISO, **local-time**, immutable. `Date.create(string)` (NL parser) and per-locale
+  masks are not implemented.
+- **Security** — iteration builders cap element count at `1e8` and throw `RangeError` *before*
+  allocating; `pad`/`hex` cap width at 65536; `Function.until` caps at `1e7` iterations;
+  `String.removeTags` is single-pass O(n).
+- **⚡ SIMD** — the marker flags methods that dispatch to `simd.*` byte/vector kernels (scalar →
+  NEON/SSE4.2/AVX2/AVX‑512). SIMD pays only on long spans (64-byte gate); short inputs run a scalar
+  oracle. The complete SIMD-accelerated set is: `%TypedArray%` `sum min max mean average dot`; `String`
+  `compact count escapeHTML unescapeHTML stripTags lines encodeBase64 decodeBase64`. Everything else is
+  scalar (the generic `Array` cannot SIMD strided tagged values).
+
+## Array.prototype
+
+**Aggregate & query** — a `match` is a value, a predicate `fn`, or a `RegExp`; a `map` is a mapper `fn`,
+a property-key string, or omitted (identity).
+
+| Method | Signature | Description |
+|---|---|---|
+| `sum` / `average` / `mean` | `() → number` | Σ / arithmetic mean (mean of empty = `NaN`). |
+| `median` / `product` | `() → number` | Middle value (coerced to a C buffer first) / Π. |
+| `min` / `max` | `(map?) → element` | Extremum by optional mapper. |
+| `count` / `none` / `any` / `all` | `(match) → number \| boolean` | Count / quantifiers over the matcher. |
+| `countBy` / `indexBy` | `(fn) → object` | `{key: count}` / `{key: lastElement}` grouped by `fn(el)`. |
+| `scan` | `(fn, acc) → array` | Running reduce (all intermediate accumulators). |
+
+**Access & window**
+
+| Method | Signature | Description |
+|---|---|---|
+| `first` / `last` / `head` | `() → element` | Ends (`head` = `first`). |
+| `nth` | `(i) → element` | `i`-th element (negative from the end). |
+| `init` / `tail` | `() → array` | All but last / all but first. |
+| `take` / `drop` / `takeLast` / `dropLast` | `(n) → array` | Fixed-count slices. |
+| `takeWhile` / `dropWhile` / `takeLastWhile` / `dropLastWhile` | `(match) → array` | Matcher-bounded slices. |
+
+**Transform & structure**
+
+| Method | Signature | Description |
+|---|---|---|
+| `unique` / `uniq` / `uniqBy` | `(map?) → array` | Dedup by SameValueZero (or by `fn(el)`). |
+| `compact` | `() → array` | Drop falsey (`null`/`undefined`/`NaN`/`false`/empty) elements. |
+| `flatten` / `transpose` | `() → array` | Deep flatten / matrix transpose. |
+| `intersperse` | `(sep) → array` | Insert `sep` between elements. |
+| `aperture` | `(n) → array` | Sliding windows of width `n`. |
+| `splitEvery` / `splitAt` / `splitWhen` | `(n \| i \| match) → array` | Chunk / split at index / split at first match. |
+| `shuffle` / `sample` | `() → array \| element` | Fisher–Yates / random element. |
+| `sortBy` / `groupBy` / `partition` | `(map \| fn \| match) → …` | Stable sort / `{key:[…]}` / `[pass, fail]`. |
+| `pluck` | `(key) → array` | `el[key]` for each. |
+| `adjust` / `update` | `(i, fn) / (i, v) → array` | Non-mutating element edit. |
+| `move` / `swap` | `(from, to) / (i, j) → array` | Non-mutating reorder. |
+| `zip` / `zipWith` / `zipObj` / `fromPairs` | `(b) / (fn,b) / (vals) / () → …` | Pair, combine, or build objects. |
+| `xprod` / `innerJoin` | `(b) / (pred, b) → array` | Cartesian product / relational join. |
+
+**Build & combine**
+
+| Method | Signature | Description |
+|---|---|---|
+| `append` / `prepend` | `(x) → array` | Add one element at an end. |
+| `insert` / `insertAll` | `(i, x) / (i, xs) → array` | Splice-insert (out-of-range appends). |
+| `removeAt` / `removeRange` | `(i) / (start, count) → array` | Non-mutating removal. |
+| `remove` / `reject` | `(match) → array` | Drop matching elements (aliases). |
+| `union` / `intersect` / `intersection` / `difference` / `without` | `(b) → array` | Set ops (SameValueZero). |
+
+```js
+[1,2,3,4].sum();                 // 10
+[5,3,1,4,2].sortBy();            // [1,2,3,4,5]
+["a","b","c"].intersperse("-");  // ["a","-","b","-","c"]
+[{n:1},{n:2}].pluck("n");        // [1, 2]
+[1,2,3].union([3,4,5]);          // [1,2,3,4,5]
+```
+
+## %TypedArray%.prototype  (SIMD reductions)
+
+| Method | Signature | Description |
+|---|---|---|
+| `sum` ⚡ | `() → number` | SIMD Σ (f64/f32/i32 kernel by array type). |
+| `min` / `max` ⚡ | `() → number` | SIMD horizontal min/max. |
+| `mean` / `average` ⚡ | `() → number` | SIMD sum ÷ length. |
+| `dot` ⚡ | `(other) → number` | SIMD dot product with another same-type TypedArray. |
+
+```js
+new Float64Array([1,2,3,4]).sum();                          // 10
+new Float32Array([1,2,3]).dot(new Float32Array([4,5,6]));   // 32
+```
+
+## String.prototype
+
+**Predicates & slice**
+
+| Method | Signature | Description |
+|---|---|---|
+| `isEmpty` / `isBlank` | `() → boolean` | Length 0 / empty-or-whitespace. |
+| `first` / `last` | `(n=1) → string` | Leading / trailing `n` chars. |
+| `from` / `to` | `(i) → string` | Substring from / up to index (negative from end). |
+
+**Split & scan**
+
+| Method | Signature | Description |
+|---|---|---|
+| `chars` / `codes` | `() → array` | Code-point strings / char codes (pre-sized fast array). |
+| `words` | `() → string[]` | Whitespace-delimited words. |
+| `lines` ⚡ | `() → string[]` | Split on `\n` (`simd.count_u8` presize + `simd.find_u8`). |
+| `count` ⚡ | `(sub) → number` | Non-overlapping occurrences (`simd.count_u8` for a 1-char needle). |
+| `forEach` | `(fn) → string[]` | `fn(char, i)` per code point; returns the char array. |
+
+**Transform**
+
+| Method | Signature | Description |
+|---|---|---|
+| `reverse` | `() → string` | Reversed (direct alloc + tight copy; auto-vectorized). |
+| `compact` ⚡ | `() → string` | Collapse whitespace runs → single space, trim (`simd.find_first_of`). |
+| `insert` | `(str, i=end) → string` | Insert at a code-unit index. |
+| `remove` / `removeAll` | `(m) → string` | Delete first / all matches (string or `RegExp`). |
+| `shift` | `(n) → string` | Caesar-shift each char code by `n`. |
+| `truncate` / `truncateOnWord` | `(len, from='right', ellipsis='…') → string` | Clip with ellipsis. |
+| `pad` | `(n, char=' ') → string` | Pad both sides to width `n`. |
+
+**Case & inflection**
+
+| Method | Signature | Description |
+|---|---|---|
+| `capitalize` | `(all=false, downcaseRest=false) → string` | Capitalize first (or each) word. |
+| `camelize` / `underscore` / `dasherize` / `spacify` | `(upperFirst=true?) → string` | camelCase / snake / kebab / spaced. |
+| `titleize` | `() → string` | Title Case with a lowercase stop-word list. |
+| `humanize` | `() → string` | `user_name_id` → `"User name"`. |
+| `parameterize` | `() → string` | Lowercase URL slug (`-`; ASCII, no accent transliteration). |
+| `pluralize` / `singularize` | `() → string` | English rules + small irregular/uncountable table. |
+
+**HTML / URL / Base64**
+
+| Method | Signature | Description |
+|---|---|---|
+| `escapeHTML` ⚡ | `() → string` | Escape `& < >` (`simd.find_first_of`). |
+| `unescapeHTML` ⚡ | `() → string` | Decode named + numeric entities (`simd.find_u8`). |
+| `stripTags` ⚡ | `() → string` | Remove `<…>` tags, keep text (`simd.find_u8`). |
+| `removeTags` | `(tagName?) → string` | Remove element(s) **and** content; single-pass **O(n)**. |
+| `escapeURL` / `unescapeURL` | `(all=false? / partial=false?) → string` | Percent encode / decode. |
+| `encodeBase64` ⚡ | `() → string` | `simd.base64_encode`. |
+| `decodeBase64` ⚡ | `() → string` | `simd.base64_decode`. |
+
+**Convert**
+
+| Method | Signature | Description |
+|---|---|---|
+| `toNumber` | `(base=10) → number` | Lenient parse (`strtod` / `strtoll`); `NaN` on failure. |
+| `format` | `(...args) → string` | `{0}`/`{name}` template (`{{`/`}}` literal braces). |
+
+```js
+"  many   spaces  ".compact();       // "many spaces"
+"banana".count("a");                 // 3
+"<b>hi</b>".stripTags();             // "hi"
+"hello_world".titleize();            // "Hello World"
+"person".pluralize();                // "people"
+"{0} + {1}".format(2, 3);            // "2 + 3"
+```
+
+## Number.prototype
+
+**Ramda arithmetic / relational**
+
+| Method | Signature | Description |
+|---|---|---|
+| `negate` / `inc` / `dec` | `() → number` | −x / x+1 / x−1. |
+| `abs` `sqrt` `exp` `sin` `cos` `tan` `asin` `acos` `atan` | `() → number` | libm delegation. |
+| `add` `subtract` `multiply` `divide` `modulo` `pow` | `(n) → number` | `modulo` == `fmod` == JS `%`. |
+| `gt` / `gte` / `lt` / `lte` | `(n) → boolean` | Relational (NaN → false). |
+
+**Predicates & math**
+
+| Method | Signature | Description |
+|---|---|---|
+| `isInteger` / `isOdd` / `isEven` | `() → boolean` | Integer tests. |
+| `isMultipleOf` | `(n) → boolean` | `this % n === 0`. |
+| `mathMod` | `(n) → number` | Non-negative modulus; `NaN` unless both integer and `n ≥ 1`. |
+| `clamp` | `(min, max) → number` | Clamp into range. |
+| `log` | `(base=e) → number` | Change-of-base logarithm. |
+| `round` / `ceil` / `floor` | `(places=0) → number` | Precision rounding (negative places → tens/hundreds). |
+| `chr` | `() → string` | The char for this char code. |
+
+**Formatting**
+
+| Method | Signature | Description |
+|---|---|---|
+| `pad` | `(place, sign=false, base=10) → string` | Zero-pad the integer part. |
+| `hex` | `(place=1) → string` | Hex, zero-padded. |
+| `format` | `(place=0, thousands=',', decimal='.') → string` | Grouped thousands. |
+| `abbr` / `metric` / `bytes` | `(precision=0) → string` | `2k` (÷1000 k/m/b/t) / SI / byte size (÷1024). |
+| `ordinalize` | `() → string` | `1`→`"1st"`, `11`→`"11th"`. |
+| `duration` | `() → string` | Treat `this` as ms → `"2 hours"`. |
+
+**Iteration** — build arrays; element count capped at `1e8` (throws `RangeError` before allocating).
+
+| Method | Signature | Description |
+|---|---|---|
+| `times` | `(fn?) → array` | `[fn(0)…fn(n-1)]` (or `[0…n-1]`). |
+| `upto` / `downto` | `(end, step=1, fn?) → array` | Inclusive numeric range. |
+| `Number.range` *(static)* | `(start, end, step=1) → array` | Ramda end-exclusive range. |
+
+```js
+(3.14159).round(2);       // 3.14
+(1536).bytes(1);          // "1.5KB"
+(1234567).format();       // "1,234,567"
+(3).times(i => i*i);      // [0, 1, 4]
+Number.range(0, 5);       // [0, 1, 2, 3, 4]
+```
+
+## Object  (static on the `Object` constructor)
+
+**Type guards & nil** — `(v) → boolean` unless noted (class-id based; wrapper objects report the
+primitive tag).
+
+| Method | Description |
+|---|---|
+| `isObject isArray isBoolean isNumber isString isFunction isDate isRegExp isError isSet isMap isArguments` | Type tests. |
+| `isNil` / `isNotNil` | `== null` / not. |
+| `type(v) → string` | `"Number"`, `"Array"`, `"Null"`, … (class-id based). |
+| `defaultTo(d, v) → any` | `v` unless `null`/`undefined`/`NaN`, then `d`. |
+| `propIs(Ctor, name, obj) → boolean` | `obj[name]` is an instance of `Ctor` (incl. primitives). |
+
+**Query** — `path` is a dotted string or an array.
+
+| Method | Signature | Description |
+|---|---|---|
+| `size` / `isEmpty` | `(o) → number \| boolean` | Count of own enumerable string keys. |
+| `keysIn` / `valuesIn` | `(o) → array` | Enumerable keys/values **including inherited**. |
+| `toPairs` / `fromPairs` | `(o) / (pairs) → …` | `[[k,v]]` ⇄ object. |
+| `has` / `hasIn` / `hasPath` | `(k,o) / (k,o) / (path,o) → boolean` | Own / `in` / deep-own presence. |
+| `prop` / `propOr` / `props` | `(k,o) / (d,k,o) / (keys,o) → …` | Read one / with default / many. |
+| `path` / `pathOr` / `paths` | `(path,o) / (d,path,o) / (list,o) → …` | Deep read. |
+| `get` | `(o, path, default?) → any` | Sugar deep read (object first). |
+
+**Predicates**
+
+| Method | Signature | Description |
+|---|---|---|
+| `equals` / `identical` | `(a, b) → boolean` | Deep structural (SameValue leaf; cycles throw) / SameValue. |
+| `propEq` / `pathEq` / `eqProps` | `(val,k,o) / (val,path,o) / (k,a,b) → boolean` | Focused equality. |
+| `propSatisfies` / `pathSatisfies` | `(pred, k\|path, o) → boolean` | Focused predicate. |
+| `where` / `whereEq` / `whereAny` | `(spec, o) → boolean` | All preds / deep-eq per key / any pred. |
+
+**Build & transform** (immutable unless noted)
+
+| Method | Signature | Description |
+|---|---|---|
+| `clone` | `(o) → any` | Deep clone (arrays, plain objects, Date, RegExp; other exotics by ref). |
+| `pick` / `pickAll` / `omit` / `pickBy` | `(keys\|pred, o) → object` | Select / with missing / drop / by predicate. |
+| `project` | `(keys, arr) → array` | `arr.map(pick(keys))`. |
+| `assoc` / `dissoc` | `(k, v, o) / (k, o) → object` | Shallow set / delete. |
+| `assocPath` / `dissocPath` | `(path, v, o) / (path, o) → object` | Immutable deep set / delete. |
+| `set` | `(o, path, v) → object` | **Mutates** `o` (deep, creates intermediates); returns `o`. |
+| `modify` / `modifyPath` | `(k\|path, fn, o) → object` | Apply `fn` to a focus. |
+| `evolve` | `(transforms, o) → object` | Per-key transform (fn or nested transforms). |
+| `mapObjIndexed` / `forEachObjIndexed` | `(fn, o) → object` | `{k: fn(v,k,o)}` / side effect returns `o`. |
+| `mapKeys` / `renameKeys` | `(fn, o) / (map, o) → object` | Transform / rename keys. |
+| `invert` / `invertObj` / `objOf` | `(o) / (o) / (k,v) → object` | Swap keys↔values / `{[k]:v}`. |
+| `tap` | `(fn, x) → x` | Run `fn(x)` for effect, return `x`. |
+| `defaults` | `(o, source) → object` | `o` wins, `source` fills gaps. |
+| `merge` / `mergeRight` / `mergeLeft` | `(a, b) → object` | Shallow (left key order; right/left wins). |
+| `mergeDeepRight` / `mergeDeepLeft` | `(a, b) → object` | Recursive merge. |
+| `mergeWith` / `mergeWithKey` | `(fn, a, b) → object` | Resolve conflicts with `fn`. |
+
+```js
+Object.pick(["a","c"], {a:1,b:2,c:3});          // {a:1, c:3}
+Object.path("a.b.c", {a:{b:{c:42}}});           // 42
+Object.mergeDeepRight({a:{x:1}}, {a:{y:2}});     // {a:{x:1, y:2}}
+Object.evolve({n: x=>x*2}, {n:5, s:"k"});        // {n:10, s:"k"}
+Object.equals({a:[1,2]}, {a:[1,2]});             // true
+```
+
+## Function.prototype  (combinators)
+
+Each returns a **new function** capturing the receiver + args; `this` is the receiving function.
+No `R.__` placeholders. Composing beyond ~253 functions throws `RangeError`.
+
+| Method | Signature | Description |
+|---|---|---|
+| `pipe` / `compose` / `flow` | `(...fns) → fn` | L→R / R→L composition (`flow` = `pipe`). |
+| `o` / `on` | `(g) → fn` | `x=>f(g(x))` / `(a,b)=>f(g(a),g(b))`. |
+| `both` / `allPass` | `(...preds) → fn` | Logical AND (short-circuit). |
+| `either` / `anyPass` / `complement` | `(...preds) / () → fn` | OR / NOT. |
+| `juxt` | `(...fns) → fn` | `x => [f(x), g(x), …]`. |
+| `converge` | `(...branches) → fn` | `(...a) => f(b0(...a), b1(...a), …)`. |
+| `useWith` | `(...ts) → fn` | `(a,b,…) => f(t0(a), t1(b), …)`. |
+| `flip` / `unary` / `binary` / `nAry` | `() / () / () / (n) → fn` | Swap first two args / fix arity. |
+| `once` / `thunkify` | `() → fn` | Memoize first result / `(...a)()` ⇒ `f(...a)`. |
+| `partial` / `partialRight` | `(...a) → fn` | Pre-bind leading / trailing args. |
+| `curry` / `curryN` | `() / (n) → fn` | Auto-curry (reusable, no arg bleed). |
+| `ifElse` / `when` / `unless` | `(t,f) / (fn) / (fn) → fn` | Conditional (`this` is the predicate). |
+| `until` | `(fn) → fn` | `x => apply fn until this(x)` (≤ 1e7 iterations). |
+| `tryCatch` | `(handler) → fn` | `(...a) => try f(...a) catch (e) handler(e, ...a)`. |
+| `unapply` / `comparator` | `() → fn` | `(...a)=>f(a)` / predicate → sort comparator. |
+
+```js
+const f = (x=>x+1).pipe(x=>x*2, x=>-x);   f(3);     // -8
+const add3 = ((a,b,c)=>a+b+c).curry();    add3(1)(2)(3);   // 6
+const safe = (x=>{ if(x<0) throw Error("neg"); return x }).tryCatch(()=>0);   safe(-1);  // 0
+```
+
+## Date.prototype  (English/ISO, local-time, immutable)
+
+**Predicates** — `() → boolean`
+
+| Group | Methods |
+|---|---|
+| State | `isValid isToday isYesterday isTomorrow isFuture isPast isWeekday isWeekend isLeapYear` |
+| Day-of-week | `isSunday isMonday isTuesday isWednesday isThursday isFriday isSaturday` |
+| Month | `isJanuary … isDecember` |
+
+**Query & compare**
+
+| Method | Signature | Description |
+|---|---|---|
+| `getWeekday` | `() → 0–6` | Day of week (Sun–Sat). |
+| `getISOWeek` | `() → 1–53` | ISO-8601 week number. |
+| `daysInMonth` | `() → number` | Days in this month. |
+| `isBefore` / `isAfter` | `(d) → boolean` | Ordering. |
+| `isBetween` | `(a, b) → boolean` | Inclusive; bounds auto-ordered. |
+
+**Diffs** — whole units (`trunc`); invalid date → `NaN`. `<unit> ∈ {milliseconds, seconds, minutes,
+hours, days, weeks, months, years}` (months/years use calendar math).
+
+| Method | Signature | Description |
+|---|---|---|
+| `<unit>Since` / `<unit>Until` | `(d) → number` | From `d` to this / this to `d`. |
+| `<unit>Ago` / `<unit>FromNow` | `() → number` | From this to now / now to this. |
+
+**Produce** — `→ Date` (immutable; JS field-overflow / MakeDay)
+
+| Method | Signature | Description |
+|---|---|---|
+| `addMilliseconds … addYears` | `(n) → Date` | Add a signed amount of a unit. |
+| `beginningOfDay` / `endOfDay` | `() → Date` | 00:00 / 23:59:59.999. |
+| `beginningOfWeek` / `endOfWeek` | `() → Date` | Sunday 00:00 / Saturday 23:59:59.999. |
+| `beginningOfMonth` / `endOfMonth` | `() → Date` | First / last day. |
+| `beginningOfYear` / `endOfYear` | `() → Date` | Jan 1 / Dec 31. |
+| `advance` / `rewind` | `(spec) → Date` | Apply/subtract `{years,months,weeks,days,hours,minutes,seconds,milliseconds}`. |
+| `clone` | `() → Date` | Copy. |
+
+**Format** — `→ string`
+
+| Method | Signature | Description |
+|---|---|---|
+| `iso` | `() → string` | `toISOString` alias. |
+| `format` | `(mask?) → string` | `{token}` substitution; no mask → `"yyyy-MM-dd HH:mm:ss"`. |
+| `relative` | `() → string` | `"2 days ago"` / `"in 3 days"` / `"just now"`. |
+
+`format` tokens: `yyyy yy MM M dd d HH H hh h mm m ss s SSS Mon Month dow Weekday tt TT`.
+
+```js
+const d = new Date(2024, 1, 29, 15, 30);
+d.isLeapYear();                              // true
+d.addDays(1).getMonth();                     // 2  (Mar 1)
+d.endOfMonth().getDate();                    // 29
+d.format("{Weekday}, {Month} {d}, {yyyy}");  // "Thursday, February 29, 2024"
+new Date(2024,0,1).daysUntil(new Date(2024,0,11));   // 10
+```
+
+## Lens  (Ramda lenses — the `Lens` global)
+
+A lens is an ordinary object (proto `Lens.prototype`, non-enumerable config); no new intrinsic class.
+`set`/`over` are immutable and preserve container type (arrays stay arrays).
+
+| Method | Signature | Description |
+|---|---|---|
+| `Lens.prop` / `Lens.index` | `(k) / (i) → Lens` | Focus a property / array index. |
+| `Lens.path` | `(p) → Lens` | Focus a deep path (dotted string or array). |
+| `Lens.lens` | `(getter, setter) → Lens` | Custom; `getter(obj)`, `setter(newVal, obj)`. |
+| `Lens.view` / `lens.view` | `(lens, o) / (o) → any` | Read the focus. |
+| `Lens.set` / `lens.set` | `(lens, v, o) / (v, o) → any` | Immutable set (new container). |
+| `Lens.over` / `lens.over` | `(lens, fn, o) / (fn, o) → any` | Immutable `fn`-modify. |
+
+Obeys the lens laws: `view(set(v,s)) ≡ v`, `set(view(s),s) ≡ s`, `set(v, set(_,s)) ≡ set(v,s)`.
+
+```js
+const nameL = Lens.prop("name");
+nameL.view({name:"ada"});                 // "ada"
+nameL.set("bob", {name:"ada", age:1});    // {name:"bob", age:1}   (original unchanged)
+Lens.over(Lens.index(1), x=>x*10, [1,2,3]);   // [1, 20, 3]
+```
+
+## Not implemented (deferred)
+
+- `Date.create(string)` — the natural-language date parser + per-locale format masks.
+- Function timers — `throttle debounce delay memoize after lazy` (need event-loop + cancellation).
+- Array transducers — `into sequence traverse transduce mapAccum`.
+- `RegExp.prototype` flag helpers — blocked by `test262 staging/sm/RegExp/prototype.js` (pins
+  `Reflect.ownKeys(RegExp.prototype)`).
+- Remaining Array (`startsWith endsWith unnest dropRepeats sortWith *With set-ops symmetricDifference
+  repeat reduceBy`, Sugar FromIndex) and Function statics (`always identity cond of not negate applyTo
+  uncurryN lift ap`).
