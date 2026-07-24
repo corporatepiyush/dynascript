@@ -1975,6 +1975,75 @@ static JSValue js_array_ext_union(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* _partition(matcher) -> [ [elements the matcher accepts], [the rest] ]
+ * (matcher = value via SameValueZero, or a predicate function). */
+static JSValue js_array_ext_partition(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue obj, yes = JS_UNDEFINED, no = JS_UNDEFINED, result, ret = JS_EXCEPTION;
+    JSValueConst matcher = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, i, jy = 0, jn = 0;
+
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj))
+        goto done;
+    yes = JS_NewArray(ctx);
+    no = JS_NewArray(ctx);
+    if (JS_IsException(yes) || JS_IsException(no))
+        goto done;
+    for (i = 0; i < len; i++) {
+        JSValue el;
+        int m;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
+        m = js_array_ext_match(ctx, matcher, el);
+        if (m < 0) { JS_FreeValue(ctx, el); goto done; }
+        if (JS_DefinePropertyValueInt64(ctx, m ? yes : no, m ? jy++ : jn++, el, JS_PROP_C_W_E) < 0)
+            goto done;
+    }
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    JS_DefinePropertyValueInt64(ctx, result, 0, yes, JS_PROP_C_W_E); /* consumes yes */
+    JS_DefinePropertyValueInt64(ctx, result, 1, no, JS_PROP_C_W_E);  /* consumes no */
+    yes = no = JS_UNDEFINED;
+    ret = result;
+ done:
+    JS_FreeValue(ctx, yes);
+    JS_FreeValue(ctx, no);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _pluck(key) -> a new array of element[key] for each element (Ramda pluck). */
+static JSValue js_array_ext_pluck(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv)
+{
+    JSValue obj, result, ret = JS_EXCEPTION;
+    JSAtom key;
+    int64_t len, i;
+
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    key = JS_ValueToAtom(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (key == JS_ATOM_NULL) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue el, v;
+        if (js_array_ext_getel(ctx, obj, i, &el)) { JS_FreeValue(ctx, result); goto done; }
+        v = JS_GetProperty(ctx, el, key);
+        JS_FreeValue(ctx, el);
+        if (JS_IsException(v)) { JS_FreeValue(ctx, result); goto done; }
+        if (JS_DefinePropertyValueInt64(ctx, result, i, v, JS_PROP_C_W_E) < 0) {
+            JS_FreeValue(ctx, result); goto done;
+        }
+    }
+    ret = result;
+ done:
+    JS_FreeAtom(ctx, key);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("_isEmpty", 0, js_array_ext_isEmpty ),
     JS_CFUNC_DEF("_first", 0, js_array_ext_first ),
@@ -2005,6 +2074,8 @@ static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_MAGIC_DEF("_difference", 1, js_array_ext_setop, 1 ),
     JS_CFUNC_MAGIC_DEF("_without", 1, js_array_ext_setop, 2 ),
     JS_CFUNC_DEF("_union", 1, js_array_ext_union ),
+    JS_CFUNC_DEF("_partition", 1, js_array_ext_partition ),
+    JS_CFUNC_DEF("_pluck", 1, js_array_ext_pluck ),
 };
 
 static const JSCFunctionListEntry js_array_proto_funcs[] = {

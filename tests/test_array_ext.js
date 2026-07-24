@@ -169,4 +169,15 @@ const setSrc = [1, 2, 3, 4]; setSrc._difference([2]); eq(setSrc, [1, 2, 3, 4], "
     assert(big._intersect(other).length === 2500, "_intersect large correct");
 }
 
+/* ---- batch 5: _partition / _pluck ---- */
+eq([1, 2, 3, 4, 5, 6]._partition(x => x % 2 === 0), [[2, 4, 6], [1, 3, 5]], "_partition(fn)");
+eq([1, 2, 1, 3, 1]._partition(1), [[1, 1, 1], [2, 3]], "_partition(value)");
+eq([]._partition(x => true), [[], []], "_partition of empty → [[],[]]");
+eq([1, 2, 3]._partition(x => true), [[1, 2, 3], []], "_partition all-match");
+eq([{ n: "a", v: 1 }, { n: "b", v: 2 }, { n: "c", v: 3 }]._pluck("n"), ["a", "b", "c"], "_pluck(key)");
+eq([{ v: 1 }, { v: 2 }]._pluck("missing"), [undefined, undefined], "_pluck missing key → undefined");
+eq([]._pluck("x"), [], "_pluck of empty → []");
+eq([[10, 20], [30, 40]]._pluck(1), [20, 40], "_pluck numeric index");
+const pSrc = [1, 2, 3]; pSrc._partition(x => x > 1); eq(pSrc, [1, 2, 3], "_partition does not mutate");
+
 print("test_array_ext: all tests passed (" + n + " assertions)");
