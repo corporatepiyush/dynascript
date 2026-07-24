@@ -1081,6 +1081,495 @@ static const JSCFunctionListEntry js_date_funcs[] = {
     JS_CFUNC_DEF("UTC", 7, js_Date_UTC ),
 };
 
+/* ============================================================================
+ * SugarJS Date.prototype extensions (SUGAR_RAMDA_NATIVE.md). English/ISO,
+ * local-time, IMMUTABLE (producers return a NEW Date -- documented divergence
+ * from Sugar's mutation). No untrusted-string parsing here (Date.create's NLP
+ * parser + per-locale formatting are deferred); every arg is coerced to a C
+ * local first (reentrancy-safe, no native handle held); no DoS loops.
+ * ========================================================================== */
+
+static const char * const js_date_month_full[12] = {
+    "January","February","March","April","May","June",
+    "July","August","September","October","November","December" };
+static const char * const js_date_month_abbr[12] = {
+    "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec" };
+static const char * const js_date_day_full[7] = {
+    "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday" };
+static const char * const js_date_day_abbr[7] = {
+    "Sun","Mon","Tue","Wed","Thu","Fri","Sat" };
+
+/* fields (local): [y, mon0-11, day1-31, h, m, s, ms, wd0-6, tz]. Returns
+ * 0 ok, 1 NaN-date, -1 exception. */
+static int date_this_fields(JSContext *ctx, JSValueConst this_val, double f[9])
+{
+    int r = get_date_fields(ctx, this_val, f, 1, 0);
+    if (r < 0) return -1;
+    return r ? 0 : 1;
+}
+
+static int date_now_fields(JSContext *ctx, double f[9])
+{
+    JSValue nd = JS_NewDate(ctx, (double)date_now());
+    int r;
+    if (JS_IsException(nd)) return -1;
+    r = get_date_fields(ctx, nd, f, 1, 0);
+    JS_FreeValue(ctx, nd);
+    return r > 0 ? 0 : -1;
+}
+
+static int date_day_of_year(int y, int mon, int day)   /* 1-based */
+{
+    int i, n = day;
+    for (i = 0; i < mon; i++) {
+        n += month_days[i];
+        if (i == 1) n += (int)(days_in_year(y) - 365);
+    }
+    return n;
+}
+
+/* days since the epoch for a local Y/M/D (for same-day comparisons). */
+static int64_t date_day_number(double y, double mon, double day)
+{
+    return days_from_year((int64_t)y) + date_day_of_year((int)y, (int)mon, (int)day) - 1;
+}
+
+/* ISO-8601 week number (1..53). */
+static int date_iso_week(int y, int mon, int day, int wd /*0=Sun*/)
+{
+    int iso_wd = wd == 0 ? 7 : wd;                 /* 1=Mon..7=Sun */
+    int doy = date_day_of_year(y, mon, day);
+    int week = (doy - iso_wd + 10) / 7;
+    if (week < 1)                                  /* last week of previous year */
+        return date_iso_week(y - 1, 11, 31, (int)math_mod(wd - 1, 7));
+    if (week > 52) {
+        int last_doy = (int)days_in_year(y);
+        int wd_dec31 = (int)math_mod(wd + (last_doy - doy), 7);
+        int iso_dec31 = wd_dec31 == 0 ? 7 : wd_dec31;
+        if (iso_dec31 < 4) return 1;               /* belongs to next year's week 1 */
+    }
+    return week;
+}
+
+enum {   /* js_date_ext_pred; DOW_BASE+wd for day, MON_BASE+idx for month */
+    DP_VALID, DP_TODAY, DP_YESTERDAY, DP_TOMORROW, DP_FUTURE, DP_PAST,
+    DP_WEEKDAY, DP_WEEKEND, DP_LEAP,
+    DP_DOW_BASE = 100, DP_MON_BASE = 200,
+};
+
+static JSValue js_date_ext_pred(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv, int magic)
+{
+    double f[9], now[9], ms, nowms;
+    int st;
+    BOOL r = FALSE;
+    (void)argc; (void)argv;
+    st = date_this_fields(ctx, this_val, f);
+    if (st < 0) return JS_EXCEPTION;
+    if (magic == DP_VALID) return JS_NewBool(ctx, st == 0);
+    if (st == 1) return JS_FALSE;                  /* invalid date: all others false */
+    if (magic >= DP_MON_BASE) return JS_NewBool(ctx, (int)f[1] == magic - DP_MON_BASE);
+    if (magic >= DP_DOW_BASE) return JS_NewBool(ctx, (int)f[7] == magic - DP_DOW_BASE);
+    switch (magic) {
+    case DP_WEEKDAY: r = (f[7] != 0 && f[7] != 6); break;
+    case DP_WEEKEND: r = (f[7] == 0 || f[7] == 6); break;
+    case DP_LEAP:    r = days_in_year((int64_t)f[0]) == 366; break;
+    case DP_FUTURE:
+    case DP_PAST:
+        if (JS_ThisTimeValue(ctx, &ms, this_val)) return JS_EXCEPTION;
+        nowms = (double)date_now();
+        r = (magic == DP_FUTURE) ? (ms > nowms) : (ms < nowms);
+        break;
+    case DP_TODAY:
+    case DP_YESTERDAY:
+    case DP_TOMORROW:
+        if (date_now_fields(ctx, now) < 0) return JS_EXCEPTION;
+        {
+            int64_t a = (int64_t)date_day_number(f[0], f[1], f[2]);
+            int64_t b = (int64_t)date_day_number(now[0], now[1], now[2]);
+            int64_t diff = a - b;
+            r = (magic == DP_TODAY) ? (diff == 0)
+              : (magic == DP_YESTERDAY) ? (diff == -1) : (diff == 1);
+        }
+        break;
+    }
+    return JS_NewBool(ctx, r);
+}
+
+enum { DQ_WEEKDAY, DQ_ISOWEEK, DQ_DAYSINMONTH };
+
+static JSValue js_date_ext_query(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv, int magic)
+{
+    double f[9];
+    int st, mdays;
+    (void)argc; (void)argv;
+    st = date_this_fields(ctx, this_val, f);
+    if (st < 0) return JS_EXCEPTION;
+    if (st == 1) return JS_NewFloat64(ctx, NAN);
+    switch (magic) {
+    case DQ_WEEKDAY:  return JS_NewInt32(ctx, (int)f[7]);
+    case DQ_ISOWEEK:  return JS_NewInt32(ctx, date_iso_week((int)f[0], (int)f[1], (int)f[2], (int)f[7]));
+    default:
+        mdays = month_days[(int)f[1]];
+        if ((int)f[1] == 1) mdays += (int)(days_in_year((int64_t)f[0]) - 365);
+        return JS_NewInt32(ctx, mdays);
+    }
+}
+
+enum { DC_BEFORE, DC_AFTER, DC_BETWEEN };
+
+static JSValue js_date_ext_cmp(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv, int magic)
+{
+    double ms, a, b;
+    if (JS_ThisTimeValue(ctx, &ms, this_val)) return JS_EXCEPTION;
+    if (JS_ToFloat64(ctx, &a, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+    if (magic == DC_BETWEEN) {
+        if (JS_ToFloat64(ctx, &b, argc > 1 ? argv[1] : JS_UNDEFINED)) return JS_EXCEPTION;
+        if (a > b) { double t = a; a = b; b = t; }
+        return JS_NewBool(ctx, ms >= a && ms <= b);
+    }
+    if (isnan(ms) || isnan(a)) return JS_FALSE;
+    return JS_NewBool(ctx, magic == DC_BEFORE ? ms < a : ms > a);
+}
+
+/* diff units in ms (months/years handled by calendar math, sentinel 0). */
+static const double js_date_unit_ms[8] = {
+    1.0, 1000.0, 60000.0, 3600000.0, 86400000.0, 604800000.0, 0.0, 0.0,
+};
+enum { DU_MS, DU_S, DU_MIN, DU_H, DU_D, DU_W, DU_MON, DU_Y };
+enum { DM_SINCE, DM_UNTIL, DM_AGO, DM_FROMNOW };
+
+/* calendar months between two field sets (b - a), with day-of-month adjust. */
+static double date_month_diff(const double a[9], const double b[9])
+{
+    double m = (b[0] - a[0]) * 12 + (b[1] - a[1]);
+    if (m > 0 && b[2] < a[2]) m -= 1;
+    else if (m < 0 && b[2] > a[2]) m += 1;
+    return m;
+}
+
+static JSValue js_date_ext_diff(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv, int magic)
+{
+    int unit = magic / 4, mode = magic % 4;
+    double self_ms, other_ms, from_ms, to_ms, d;
+    if (JS_ThisTimeValue(ctx, &self_ms, this_val)) return JS_EXCEPTION;
+    if (mode == DM_AGO || mode == DM_FROMNOW) {
+        other_ms = (double)date_now();
+    } else {
+        if (JS_ToFloat64(ctx, &other_ms, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+    }
+    if (isnan(self_ms) || isnan(other_ms)) return JS_NewFloat64(ctx, NAN);
+    /* diff = to - from.  Since(o)=this-o, FromNow=this-now (both to=this);
+     * Until(o)=o-this, Ago=now-this (both to=other). */
+    if (mode == DM_SINCE || mode == DM_FROMNOW) { from_ms = other_ms; to_ms = self_ms; }
+    else                                        { from_ms = self_ms;  to_ms = other_ms; }
+    if (unit == DU_MON || unit == DU_Y) {
+        double fa[9], fb[9], mdiff;
+        JSValue da = JS_NewDate(ctx, from_ms), db = JS_NewDate(ctx, to_ms);
+        int ok = !JS_IsException(da) && !JS_IsException(db)
+                 && get_date_fields(ctx, da, fa, 1, 0) > 0
+                 && get_date_fields(ctx, db, fb, 1, 0) > 0;
+        JS_FreeValue(ctx, da); JS_FreeValue(ctx, db);
+        if (!ok) return JS_NewFloat64(ctx, NAN);
+        mdiff = date_month_diff(fa, fb);
+        return JS_NewFloat64(ctx, unit == DU_Y ? trunc(mdiff / 12) : trunc(mdiff));
+    }
+    d = (to_ms - from_ms) / js_date_unit_ms[unit];
+    return JS_NewFloat64(ctx, trunc(d));
+}
+
+static JSValue js_date_ext_add(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv, int magic)
+{
+    double n, ms, f[9];
+    int st;
+    if (JS_ToFloat64(ctx, &n, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+    if (magic == DU_MON || magic == DU_Y) {
+        st = date_this_fields(ctx, this_val, f);
+        if (st < 0) return JS_EXCEPTION;
+        if (st == 1) return JS_NewDate(ctx, NAN);
+        if (magic == DU_Y) f[0] += n; else f[1] += n;
+        return JS_NewDate(ctx, set_date_fields(f, 1));
+    }
+    if (JS_ThisTimeValue(ctx, &ms, this_val)) return JS_EXCEPTION;
+    return JS_NewDate(ctx, ms + n * js_date_unit_ms[magic]);
+}
+
+enum { DB_DAY, DB_WEEK, DB_MONTH, DB_YEAR };
+
+static JSValue js_date_ext_boundary(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    int unit = magic / 2, end = magic % 2;
+    double f[9];
+    int st;
+    (void)argc; (void)argv;
+    st = date_this_fields(ctx, this_val, f);
+    if (st < 0) return JS_EXCEPTION;
+    if (st == 1) return JS_NewDate(ctx, NAN);
+    if (unit == DB_YEAR)  { f[1] = end ? 11 : 0; }
+    if (unit == DB_YEAR || unit == DB_MONTH) { f[2] = 1; }
+    if (unit == DB_WEEK)  { f[2] -= f[7]; }         /* back to Sunday */
+    if (end) {
+        if (unit == DB_WEEK)  f[2] += 6;
+        if (unit == DB_MONTH) { f[2] = month_days[(int)f[1]] + ((int)f[1] == 1 ? (int)(days_in_year((int64_t)f[0]) - 365) : 0); }
+        if (unit == DB_YEAR)  f[2] = 31;
+        f[3] = 23; f[4] = 59; f[5] = 59; f[6] = 999;
+    } else {
+        f[3] = f[4] = f[5] = f[6] = 0;
+    }
+    return JS_NewDate(ctx, set_date_fields(f, 1));
+}
+
+/* advance/rewind({years,months,weeks,days,hours,minutes,seconds,milliseconds}).
+ * magic 1 = rewind (negate). */
+static JSValue js_date_ext_advance(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv, int magic)
+{
+    static const char * const keys[8] = {
+        "years","months","weeks","days","hours","minutes","seconds","milliseconds" };
+    double f[9];
+    int st, i, sign = magic ? -1 : 1;
+    JSValueConst spec = argc > 0 ? argv[0] : JS_UNDEFINED;
+    double vals[8] = {0,0,0,0,0,0,0,0};
+    for (i = 0; i < 8; i++) {
+        JSValue v = JS_GetPropertyStr(ctx, spec, keys[i]);
+        if (JS_IsException(v)) return JS_EXCEPTION;
+        if (!JS_IsUndefined(v)) { if (JS_ToFloat64(ctx, &vals[i], v)) { JS_FreeValue(ctx, v); return JS_EXCEPTION; } }
+        JS_FreeValue(ctx, v);
+    }
+    st = date_this_fields(ctx, this_val, f);
+    if (st < 0) return JS_EXCEPTION;
+    if (st == 1) return JS_NewDate(ctx, NAN);
+    f[0] += sign * vals[0];                          /* years  */
+    f[1] += sign * vals[1];                          /* months */
+    f[2] += sign * (vals[2] * 7 + vals[3]);          /* weeks + days */
+    f[3] += sign * vals[4];                          /* hours */
+    f[4] += sign * vals[5];                          /* minutes */
+    f[5] += sign * vals[6];                          /* seconds */
+    f[6] += sign * vals[7];                          /* ms */
+    return JS_NewDate(ctx, set_date_fields(f, 1));
+}
+
+static JSValue js_date_ext_clone(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    double ms;
+    (void)argc; (void)argv;
+    if (JS_ThisTimeValue(ctx, &ms, this_val)) return JS_EXCEPTION;
+    return JS_NewDate(ctx, ms);
+}
+
+/* format(mask) — {token} substitution (yyyy yy MM M dd d HH H hh h mm m ss s
+ * SSS Mon Month dow Weekday tt TT). No mask -> ISO-ish default. */
+static JSValue js_date_ext_format(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv, int magic)
+{
+    double f[9];
+    int st, y, mo, d, h, mi, s, ms, wd, h12;
+    const char *mask = NULL;
+    char def[40];
+    StringBuffer b_s, *b = &b_s;
+    const char *p;
+    (void)magic;
+    st = date_this_fields(ctx, this_val, f);
+    if (st < 0) return JS_EXCEPTION;
+    if (st == 1) return js_new_string8(ctx, "Invalid Date");
+    y = (int)f[0]; mo = (int)f[1]; d = (int)f[2]; h = (int)f[3];
+    mi = (int)f[4]; s = (int)f[5]; ms = (int)f[6]; wd = (int)f[7];
+    h12 = h % 12; if (h12 == 0) h12 = 12;
+    if (argc > 0 && !JS_IsUndefined(argv[0])) {
+        mask = JS_ToCString(ctx, argv[0]);
+        if (!mask) return JS_EXCEPTION;
+    } else {
+        snprintf(def, sizeof(def), "%04d-%02d-%02d %02d:%02d:%02d", y, mo + 1, d, h, mi, s);
+        return js_new_string8(ctx, def);
+    }
+    if (string_buffer_init(ctx, b, (int)strlen(mask))) { JS_FreeCString(ctx, mask); return JS_EXCEPTION; }
+    p = mask;
+    while (*p) {
+        if (*p == '{') {
+            const char *e = strchr(p, '}');
+            char tok[16], out[32];
+            const char *rep = NULL;
+            int tn;
+            if (!e) { if (string_buffer_putc8(b, '{')) goto fail; p++; continue; }
+            tn = (int)(e - p - 1);
+            if (tn <= 0 || tn >= (int)sizeof(tok)) { p = e + 1; continue; }
+            memcpy(tok, p + 1, tn); tok[tn] = 0;
+            out[0] = 0;
+            if      (!strcmp(tok, "yyyy")) snprintf(out, sizeof(out), "%04d", y);
+            else if (!strcmp(tok, "yy"))   snprintf(out, sizeof(out), "%02d", ((y % 100) + 100) % 100);
+            else if (!strcmp(tok, "MM"))   snprintf(out, sizeof(out), "%02d", mo + 1);
+            else if (!strcmp(tok, "M"))    snprintf(out, sizeof(out), "%d", mo + 1);
+            else if (!strcmp(tok, "dd"))   snprintf(out, sizeof(out), "%02d", d);
+            else if (!strcmp(tok, "d"))    snprintf(out, sizeof(out), "%d", d);
+            else if (!strcmp(tok, "HH"))   snprintf(out, sizeof(out), "%02d", h);
+            else if (!strcmp(tok, "H"))    snprintf(out, sizeof(out), "%d", h);
+            else if (!strcmp(tok, "hh"))   snprintf(out, sizeof(out), "%02d", h12);
+            else if (!strcmp(tok, "h"))    snprintf(out, sizeof(out), "%d", h12);
+            else if (!strcmp(tok, "mm"))   snprintf(out, sizeof(out), "%02d", mi);
+            else if (!strcmp(tok, "m"))    snprintf(out, sizeof(out), "%d", mi);
+            else if (!strcmp(tok, "ss"))   snprintf(out, sizeof(out), "%02d", s);
+            else if (!strcmp(tok, "s"))    snprintf(out, sizeof(out), "%d", s);
+            else if (!strcmp(tok, "SSS"))  snprintf(out, sizeof(out), "%03d", ms);
+            else if (!strcmp(tok, "tt"))   rep = (h < 12) ? "am" : "pm";
+            else if (!strcmp(tok, "TT"))   rep = (h < 12) ? "AM" : "PM";
+            else if (!strcmp(tok, "Mon"))     rep = js_date_month_abbr[mo];
+            else if (!strcmp(tok, "Month"))   rep = js_date_month_full[mo];
+            else if (!strcmp(tok, "dow"))     rep = js_date_day_abbr[wd];
+            else if (!strcmp(tok, "Weekday")) rep = js_date_day_full[wd];
+            if (!rep) rep = out;
+            if (string_buffer_puts8(b, rep)) goto fail;
+            p = e + 1;
+        } else {
+            if (string_buffer_putc8(b, (uint8_t)*p)) goto fail;
+            p++;
+        }
+    }
+    JS_FreeCString(ctx, mask);
+    return string_buffer_end(b);
+ fail:
+    string_buffer_free(b);
+    JS_FreeCString(ctx, mask);
+    return JS_EXCEPTION;
+}
+
+/* relative() — English "N units ago" / "in N units" / "just now". */
+static JSValue js_date_ext_relative(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    static const struct { double ms; const char *name; } U[] = {
+        { 31557600000.0, "year" }, { 2629800000.0, "month" }, { 604800000.0, "week" },
+        { 86400000.0, "day" }, { 3600000.0, "hour" }, { 60000.0, "minute" }, { 1000.0, "second" },
+    };
+    double ms, delta, ad;
+    long long n;
+    unsigned i;
+    int past;
+    char out[64];
+    (void)argc; (void)argv; (void)magic;
+    if (JS_ThisTimeValue(ctx, &ms, this_val)) return JS_EXCEPTION;
+    if (isnan(ms)) return js_new_string8(ctx, "Invalid Date");
+    delta = (double)date_now() - ms;
+    past = delta >= 0;
+    ad = fabs(delta);
+    if (ad < 1000.0) return js_new_string8(ctx, "just now");
+    for (i = 0; i < countof(U) - 1; i++) if (ad >= U[i].ms) break;
+    n = (long long)(ad / U[i].ms);
+    snprintf(out, sizeof(out), past ? "%lld %s%s ago" : "in %lld %s%s",
+             n, U[i].name, n == 1 ? "" : "s");
+    return js_new_string8(ctx, out);
+}
+
+static JSValue js_date_ext_iso(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+{
+    (void)argc; (void)argv;
+    return get_date_string(ctx, this_val, 0, NULL, 0x23);   /* toISOString */
+}
+
+static const JSCFunctionListEntry js_date_ext_funcs[] = {
+    /* predicates */
+    JS_CFUNC_MAGIC_DEF("isValid",     0, js_date_ext_pred, DP_VALID ),
+    JS_CFUNC_MAGIC_DEF("isToday",     0, js_date_ext_pred, DP_TODAY ),
+    JS_CFUNC_MAGIC_DEF("isYesterday", 0, js_date_ext_pred, DP_YESTERDAY ),
+    JS_CFUNC_MAGIC_DEF("isTomorrow",  0, js_date_ext_pred, DP_TOMORROW ),
+    JS_CFUNC_MAGIC_DEF("isFuture",    0, js_date_ext_pred, DP_FUTURE ),
+    JS_CFUNC_MAGIC_DEF("isPast",      0, js_date_ext_pred, DP_PAST ),
+    JS_CFUNC_MAGIC_DEF("isWeekday",   0, js_date_ext_pred, DP_WEEKDAY ),
+    JS_CFUNC_MAGIC_DEF("isWeekend",   0, js_date_ext_pred, DP_WEEKEND ),
+    JS_CFUNC_MAGIC_DEF("isLeapYear",  0, js_date_ext_pred, DP_LEAP ),
+    JS_CFUNC_MAGIC_DEF("isSunday",    0, js_date_ext_pred, DP_DOW_BASE + 0 ),
+    JS_CFUNC_MAGIC_DEF("isMonday",    0, js_date_ext_pred, DP_DOW_BASE + 1 ),
+    JS_CFUNC_MAGIC_DEF("isTuesday",   0, js_date_ext_pred, DP_DOW_BASE + 2 ),
+    JS_CFUNC_MAGIC_DEF("isWednesday", 0, js_date_ext_pred, DP_DOW_BASE + 3 ),
+    JS_CFUNC_MAGIC_DEF("isThursday",  0, js_date_ext_pred, DP_DOW_BASE + 4 ),
+    JS_CFUNC_MAGIC_DEF("isFriday",    0, js_date_ext_pred, DP_DOW_BASE + 5 ),
+    JS_CFUNC_MAGIC_DEF("isSaturday",  0, js_date_ext_pred, DP_DOW_BASE + 6 ),
+    JS_CFUNC_MAGIC_DEF("isJanuary",   0, js_date_ext_pred, DP_MON_BASE + 0 ),
+    JS_CFUNC_MAGIC_DEF("isFebruary",  0, js_date_ext_pred, DP_MON_BASE + 1 ),
+    JS_CFUNC_MAGIC_DEF("isMarch",     0, js_date_ext_pred, DP_MON_BASE + 2 ),
+    JS_CFUNC_MAGIC_DEF("isApril",     0, js_date_ext_pred, DP_MON_BASE + 3 ),
+    JS_CFUNC_MAGIC_DEF("isMay",       0, js_date_ext_pred, DP_MON_BASE + 4 ),
+    JS_CFUNC_MAGIC_DEF("isJune",      0, js_date_ext_pred, DP_MON_BASE + 5 ),
+    JS_CFUNC_MAGIC_DEF("isJuly",      0, js_date_ext_pred, DP_MON_BASE + 6 ),
+    JS_CFUNC_MAGIC_DEF("isAugust",    0, js_date_ext_pred, DP_MON_BASE + 7 ),
+    JS_CFUNC_MAGIC_DEF("isSeptember", 0, js_date_ext_pred, DP_MON_BASE + 8 ),
+    JS_CFUNC_MAGIC_DEF("isOctober",   0, js_date_ext_pred, DP_MON_BASE + 9 ),
+    JS_CFUNC_MAGIC_DEF("isNovember",  0, js_date_ext_pred, DP_MON_BASE + 10 ),
+    JS_CFUNC_MAGIC_DEF("isDecember",  0, js_date_ext_pred, DP_MON_BASE + 11 ),
+    /* query */
+    JS_CFUNC_MAGIC_DEF("getWeekday",   0, js_date_ext_query, DQ_WEEKDAY ),
+    JS_CFUNC_MAGIC_DEF("getISOWeek",   0, js_date_ext_query, DQ_ISOWEEK ),
+    JS_CFUNC_MAGIC_DEF("daysInMonth",  0, js_date_ext_query, DQ_DAYSINMONTH ),
+    /* compare */
+    JS_CFUNC_MAGIC_DEF("isBefore",  1, js_date_ext_cmp, DC_BEFORE ),
+    JS_CFUNC_MAGIC_DEF("isAfter",   1, js_date_ext_cmp, DC_AFTER ),
+    JS_CFUNC_MAGIC_DEF("isBetween", 2, js_date_ext_cmp, DC_BETWEEN ),
+    /* diffs: unit*4 + mode {Since,Until,Ago,FromNow} */
+    JS_CFUNC_MAGIC_DEF("millisecondsSince",   1, js_date_ext_diff, DU_MS*4 + DM_SINCE ),
+    JS_CFUNC_MAGIC_DEF("millisecondsUntil",   1, js_date_ext_diff, DU_MS*4 + DM_UNTIL ),
+    JS_CFUNC_MAGIC_DEF("millisecondsAgo",     0, js_date_ext_diff, DU_MS*4 + DM_AGO ),
+    JS_CFUNC_MAGIC_DEF("millisecondsFromNow", 0, js_date_ext_diff, DU_MS*4 + DM_FROMNOW ),
+    JS_CFUNC_MAGIC_DEF("secondsSince",   1, js_date_ext_diff, DU_S*4 + DM_SINCE ),
+    JS_CFUNC_MAGIC_DEF("secondsUntil",   1, js_date_ext_diff, DU_S*4 + DM_UNTIL ),
+    JS_CFUNC_MAGIC_DEF("secondsAgo",     0, js_date_ext_diff, DU_S*4 + DM_AGO ),
+    JS_CFUNC_MAGIC_DEF("secondsFromNow", 0, js_date_ext_diff, DU_S*4 + DM_FROMNOW ),
+    JS_CFUNC_MAGIC_DEF("minutesSince",   1, js_date_ext_diff, DU_MIN*4 + DM_SINCE ),
+    JS_CFUNC_MAGIC_DEF("minutesUntil",   1, js_date_ext_diff, DU_MIN*4 + DM_UNTIL ),
+    JS_CFUNC_MAGIC_DEF("minutesAgo",     0, js_date_ext_diff, DU_MIN*4 + DM_AGO ),
+    JS_CFUNC_MAGIC_DEF("minutesFromNow", 0, js_date_ext_diff, DU_MIN*4 + DM_FROMNOW ),
+    JS_CFUNC_MAGIC_DEF("hoursSince",   1, js_date_ext_diff, DU_H*4 + DM_SINCE ),
+    JS_CFUNC_MAGIC_DEF("hoursUntil",   1, js_date_ext_diff, DU_H*4 + DM_UNTIL ),
+    JS_CFUNC_MAGIC_DEF("hoursAgo",     0, js_date_ext_diff, DU_H*4 + DM_AGO ),
+    JS_CFUNC_MAGIC_DEF("hoursFromNow", 0, js_date_ext_diff, DU_H*4 + DM_FROMNOW ),
+    JS_CFUNC_MAGIC_DEF("daysSince",   1, js_date_ext_diff, DU_D*4 + DM_SINCE ),
+    JS_CFUNC_MAGIC_DEF("daysUntil",   1, js_date_ext_diff, DU_D*4 + DM_UNTIL ),
+    JS_CFUNC_MAGIC_DEF("daysAgo",     0, js_date_ext_diff, DU_D*4 + DM_AGO ),
+    JS_CFUNC_MAGIC_DEF("daysFromNow", 0, js_date_ext_diff, DU_D*4 + DM_FROMNOW ),
+    JS_CFUNC_MAGIC_DEF("weeksSince",   1, js_date_ext_diff, DU_W*4 + DM_SINCE ),
+    JS_CFUNC_MAGIC_DEF("weeksUntil",   1, js_date_ext_diff, DU_W*4 + DM_UNTIL ),
+    JS_CFUNC_MAGIC_DEF("weeksAgo",     0, js_date_ext_diff, DU_W*4 + DM_AGO ),
+    JS_CFUNC_MAGIC_DEF("weeksFromNow", 0, js_date_ext_diff, DU_W*4 + DM_FROMNOW ),
+    JS_CFUNC_MAGIC_DEF("monthsSince",   1, js_date_ext_diff, DU_MON*4 + DM_SINCE ),
+    JS_CFUNC_MAGIC_DEF("monthsUntil",   1, js_date_ext_diff, DU_MON*4 + DM_UNTIL ),
+    JS_CFUNC_MAGIC_DEF("monthsAgo",     0, js_date_ext_diff, DU_MON*4 + DM_AGO ),
+    JS_CFUNC_MAGIC_DEF("monthsFromNow", 0, js_date_ext_diff, DU_MON*4 + DM_FROMNOW ),
+    JS_CFUNC_MAGIC_DEF("yearsSince",   1, js_date_ext_diff, DU_Y*4 + DM_SINCE ),
+    JS_CFUNC_MAGIC_DEF("yearsUntil",   1, js_date_ext_diff, DU_Y*4 + DM_UNTIL ),
+    JS_CFUNC_MAGIC_DEF("yearsAgo",     0, js_date_ext_diff, DU_Y*4 + DM_AGO ),
+    JS_CFUNC_MAGIC_DEF("yearsFromNow", 0, js_date_ext_diff, DU_Y*4 + DM_FROMNOW ),
+    /* add (immutable) */
+    JS_CFUNC_MAGIC_DEF("addMilliseconds", 1, js_date_ext_add, DU_MS ),
+    JS_CFUNC_MAGIC_DEF("addSeconds",      1, js_date_ext_add, DU_S ),
+    JS_CFUNC_MAGIC_DEF("addMinutes",      1, js_date_ext_add, DU_MIN ),
+    JS_CFUNC_MAGIC_DEF("addHours",        1, js_date_ext_add, DU_H ),
+    JS_CFUNC_MAGIC_DEF("addDays",         1, js_date_ext_add, DU_D ),
+    JS_CFUNC_MAGIC_DEF("addWeeks",        1, js_date_ext_add, DU_W ),
+    JS_CFUNC_MAGIC_DEF("addMonths",       1, js_date_ext_add, DU_MON ),
+    JS_CFUNC_MAGIC_DEF("addYears",        1, js_date_ext_add, DU_Y ),
+    /* boundaries: unit*2 + end */
+    JS_CFUNC_MAGIC_DEF("beginningOfDay",   0, js_date_ext_boundary, DB_DAY*2 + 0 ),
+    JS_CFUNC_MAGIC_DEF("endOfDay",         0, js_date_ext_boundary, DB_DAY*2 + 1 ),
+    JS_CFUNC_MAGIC_DEF("beginningOfWeek",  0, js_date_ext_boundary, DB_WEEK*2 + 0 ),
+    JS_CFUNC_MAGIC_DEF("endOfWeek",        0, js_date_ext_boundary, DB_WEEK*2 + 1 ),
+    JS_CFUNC_MAGIC_DEF("beginningOfMonth", 0, js_date_ext_boundary, DB_MONTH*2 + 0 ),
+    JS_CFUNC_MAGIC_DEF("endOfMonth",       0, js_date_ext_boundary, DB_MONTH*2 + 1 ),
+    JS_CFUNC_MAGIC_DEF("beginningOfYear",  0, js_date_ext_boundary, DB_YEAR*2 + 0 ),
+    JS_CFUNC_MAGIC_DEF("endOfYear",        0, js_date_ext_boundary, DB_YEAR*2 + 1 ),
+    /* manipulate + format */
+    JS_CFUNC_MAGIC_DEF("advance", 1, js_date_ext_advance, 0 ),
+    JS_CFUNC_MAGIC_DEF("rewind",  1, js_date_ext_advance, 1 ),
+    JS_CFUNC_DEF("clone",    0, js_date_ext_clone ),
+    JS_CFUNC_MAGIC_DEF("format", 1, js_date_ext_format, 0 ),
+    JS_CFUNC_MAGIC_DEF("relative", 0, js_date_ext_relative, 0 ),
+    JS_CFUNC_DEF("iso",      0, js_date_ext_iso ),
+};
+
 static const JSCFunctionListEntry js_date_proto_funcs[] = {
     JS_CFUNC_DEF("valueOf", 0, js_date_getTime ),
     JS_CFUNC_MAGIC_DEF("toString", 0, get_date_string, 0x13 ),
@@ -1153,6 +1642,9 @@ int JS_AddIntrinsicDate(JSContext *ctx)
                                     0);
     if (JS_IsException(obj))
         return -1;
+    /* SugarJS Date.prototype extensions (SUGAR_RAMDA_NATIVE.md), non-enumerable. */
+    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_DATE],
+                               js_date_ext_funcs, countof(js_date_ext_funcs));
     JS_FreeValue(ctx, obj);
     return 0;
 }
