@@ -1288,14 +1288,35 @@ static JSValue js_array_ext_mapval(JSContext *ctx, JSValueConst map,
     }
 }
 
-/* Match a Sugar/Ramda "matcher" against an element: a function -> ToBool(fn(el));
- * otherwise SameValueZero(matcher, el). Returns 1, 0, or -1 (exception). */
+/* Match a Sugar/Ramda "matcher" against an element (overloaded dispatch shared
+ * by every matcher method — _count/_none/_any/_all/_partition/_reject/_takeWhile
+ * /_dropWhile/...). Kinds: a function -> ToBool(fn(el)); a RegExp -> tests the
+ * element coerced to a string (Sugar overload); otherwise SameValueZero(matcher,
+ * el). Returns 1, 0, or -1 (exception). */
 static int js_array_ext_match(JSContext *ctx, JSValueConst match,
                               JSValueConst el)
 {
     if (JS_IsFunction(ctx, match)) {
         JSValue r = JS_Call(ctx, match, JS_UNDEFINED, 1, &el);
         int b;
+        if (JS_IsException(r))
+            return -1;
+        b = JS_ToBool(ctx, r);
+        JS_FreeValue(ctx, r);
+        return b;
+    }
+    if (JS_VALUE_GET_TAG(match) == JS_TAG_OBJECT &&
+        JS_VALUE_GET_OBJ(match)->class_id == JS_CLASS_REGEXP) {
+        JSValue str, testfn, r;
+        int b;
+        str = JS_ToString(ctx, el);
+        if (JS_IsException(str))
+            return -1;
+        testfn = JS_GetPropertyStr(ctx, match, "test");
+        if (JS_IsException(testfn)) { JS_FreeValue(ctx, str); return -1; }
+        r = JS_Call(ctx, testfn, match, 1, (JSValueConst *)&str);
+        JS_FreeValue(ctx, testfn);
+        JS_FreeValue(ctx, str);
         if (JS_IsException(r))
             return -1;
         b = JS_ToBool(ctx, r);

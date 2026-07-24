@@ -360,4 +360,17 @@ eq(b10, [3, 1, 2], "batch-10 methods do not mutate the receiver");
     assert(hits === 1, "_median coerces the element once");
 }
 
+/* ---- overloaded matcher dispatch: RegExp matcher across all matcher methods ---- */
+eq(["apple", "banana", "cherry", "avocado"]._count(/^a/), 2, "_count(regex) tests each element");
+eq(["apple", "banana", "cherry"]._reject(/^a/), ["banana", "cherry"], "_reject(regex)");
+eq([1, 22, 333, 4444]._partition(/../), [[22, 333, 4444], [1]], "_partition(regex) coerces to string");
+assert(["ab", "cd"]._any(/c/) === true, "_any(regex)");
+assert(["ab", "cd"]._all(/[a-d]/) === true, "_all(regex)");
+assert(["ab", "cd"]._none(/z/) === true, "_none(regex)");
+eq(["a1", "a2", "b3"]._takeWhile(/^a/), ["a1", "a2"], "_takeWhile(regex)");
+eq(["a1", "a2", "b3"]._dropWhile(/^a/), ["b3"], "_dropWhile(regex)");
+/* a function matcher and a value matcher still dispatch correctly (no regression) */
+eq([1, 2, 3, 4]._count(x => x > 2), 2, "matcher still accepts a predicate fn");
+eq([1, 2, 2, 3]._count(2), 2, "matcher still accepts a value (SameValueZero)");
+
 print("test_array_ext: all tests passed (" + n + " assertions)");
