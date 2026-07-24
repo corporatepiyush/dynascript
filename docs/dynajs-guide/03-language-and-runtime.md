@@ -1,8 +1,9 @@
 # Chapter 3 — The Language & the Runtime
 
-DynaJS runs modern JavaScript. This chapter pins down exactly *which* JavaScript, then covers the
-runtime-level facilities that are not modules: deterministic resource disposal, the `std`/`os`
-system modules, workers, and BigInt.
+Good news first: if you know modern JavaScript, you already know most of DynaJS. This chapter pins
+down exactly *which* JavaScript you can rely on, then walks through the runtime-level pieces that
+aren't modules — deterministic resource disposal, the `std`/`os` system modules, workers, and
+BigInt. Think of it as "the parts of the platform you get before you `import` anything."
 
 ## 3.1 The ECMAScript baseline
 
@@ -58,7 +59,7 @@ The **disposable protocol** from TC39 is fully present as a library:
 - `SuppressedError` — the error type that correctly folds a disposer failure together with an
   in-flight error (so you never silently lose one).
 
-Every native `dyna:*` resource object (a `FileWriter`, an `HttpServerAsync`, a `Hasher`, a
+Every native `dyna:*` resource object (a `FileWriter`, an `App` server, a `Hasher`, a
 `Heap`) implements `[Symbol.dispose]()` and a matching `close()`. You release them explicitly:
 
 ```js

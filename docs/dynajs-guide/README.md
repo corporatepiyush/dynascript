@@ -2,6 +2,11 @@
 
 *A complete book on the DynaJS runtime — for beginners, for experienced engineers, and for AI coding agents.*
 
+Welcome! Whether you're kicking the tires for a weekend project, evaluating DynaJS for production, or
+teaching an AI agent to write against it, this guide is here to get you productive fast — and to be
+honest with you about the trade-offs along the way. No hype, no hidden gaps: where a feature is
+landed we show it running; where something is planned, we say so.
+
 DynaJS is a small, fast, batteries-included JavaScript runtime. It began as a fork of
 Fabrice Bellard's **QuickJS** (release `2026-06-04`) and grew into a runtime with a native,
 SIMD-accelerated standard library under the `dyna:` namespace. It is written in C11 as a
@@ -86,9 +91,10 @@ A full runtime-vs-runtime chapter would age badly; here is the durable summary. 
 trying to beat V8 on a long numeric hot loop — a tracing JIT wins there, and DynaJS answers with
 native SIMD kernels instead. Where DynaJS *does* win is **startup** (microseconds, no JIT warmup),
 **memory** (a few MB idle, flat RSS via reference counting + deterministic native disposal),
-**I/O concurrency** (a single-thread kqueue/epoll/io_uring reactor — ~172× a thread-pool server at
-500 connections in the project's own benchmark), and **batteries** (a curated, dependency-free,
-SIMD-accelerated standard library — no `node_modules`, no supply chain).
+**I/O concurrency** (a single-thread kqueue/epoll/io_uring reactor that the `App` server runs your
+handlers on — ~172× a thread-pool server at 500 connections in the project's own static
+microbenchmark), and **batteries** (a curated, dependency-free, SIMD-accelerated standard library —
+no `node_modules`, no supply chain).
 
 | | **DynaJS** | **Node 26** | **Bun** | **Go** |
 |---|---|---|---|---|

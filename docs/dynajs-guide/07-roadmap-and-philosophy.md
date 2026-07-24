@@ -1,5 +1,9 @@
 # Chapter 7 — Roadmap & Philosophy
 
+One last chapter — where DynaJS is headed, and the principles steering it there. If you're deciding
+whether to bet on the project, this is the honest map: what's firmly decided, what's actively being
+built, and what we've deliberately chosen *not* to do.
+
 ## 7.1 Node.js compatibility will not be implemented
 
 State it plainly: **DynaJS will not implement Node.js compatibility. Ever. It is not on the

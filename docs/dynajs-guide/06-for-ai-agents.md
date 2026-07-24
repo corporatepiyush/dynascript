@@ -40,7 +40,7 @@ Import strings are always `dyna:<name>`.
 | `structures` | classes `Vector HashMap` |
 | `file` | classes `FileReader FileWriter`, functions `readFile writeFile` |
 | `uring` | `readFile readFileSync checksum` (Linux io_uring) |
-| `http` | classes `HttpClient HttpServer HttpServerAsync` |
+| `http` | classes `App` (`rpc static upload ws start .port`), `HttpClient`, `HttpServerAsync`, `HttpServer` |
 | `netip` | `parseAddr parsePrefix contains masked canonical isValid compareAddr` |
 | `sys` | `stat lstat exists readDir makeDir remove removeAll rename symlink readLink realPath chmod glob tempDir makeTempDir makeTempFile env getEnv setEnv args cwd chDir platform pid hostName homeDir` |
 | `semver` | `parse isValid clean compare gt gte lt lte eq neq sort major minor patch prerelease inc satisfies maxSatisfying minSatisfying coerce` |
@@ -57,7 +57,7 @@ Chapter 4 has a worked example for every one of these.
 
 ## 6.4 Invariants you must respect
 
-1. **Resource classes must be released.** `FileReader`, `FileWriter`, `HttpClient`,
+1. **Resource classes must be released.** `App`, `FileReader`, `FileWriter`, `HttpClient`,
    `HttpServerAsync`, `Hasher`, `Heap`, `List`, `Ring`, `Vector`, `HashMap`, `LinearRegression`,
    `LogisticRegression`, `KMeans`, `Random` all own native memory. Call `.close()` when done (or use
    a `DisposableStack`, or `[Symbol.dispose]()`). Wrap usage in `try { … } finally { x.close(); }`.
@@ -86,9 +86,17 @@ Chapter 4 has a worked example for every one of these.
 - **`gemm(C, A, B, m, n, k, alpha, beta)`** writes into `C` (an m×n `Float32Array` you preallocate)
   and returns it; `A` is m×k, `B` is k×n. `gemv(y, A, x, m, n, beta)` and in-place ops like
   `scale(a, s)` / `axpy(y, a, x)` / `softmax(a)` mutate their first typed-array argument.
-- **The HTTP reactor is single-threaded.** Do not put a long CPU loop inside a request handler —
-  offload to an `os.Worker`.
-- **`dyna:uring` is Linux-only.** On macOS use `dyna:file`.
+- **To write server logic, use `App`, not `HttpServerAsync`.** `HttpServerAsync` maps paths to
+  fixed responses only — it never runs JavaScript. Business logic goes in `App.rpc(path, methods)`
+  (JSON-RPC 2.0), with `App.static` / `App.upload` / `App.ws` for files, uploads, and WebSockets.
+  There is no raw request handler by design.
+- **The HTTP reactor is single-threaded.** Do not put a long CPU loop inside an `App` handler —
+  offload to an `os.Worker`. And do not call your own `App` with a same-thread blocking `HttpClient`
+  (the loop can't serve and wait at once) — drive an `App` from another process.
+- **Give `App` an explicit port.** `App.port` reports the configured port, so `port: 0` is *not*
+  resolved to an OS-assigned one (that trick works for `HttpServerAsync`, not `App`).
+- **`dyna:uring` is Linux-only.** On macOS use `dyna:file`. (Importing it elsewhere throws "could
+  not load module".)
 
 ## 6.6 How to verify your own output
 

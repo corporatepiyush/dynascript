@@ -1,7 +1,8 @@
 # DynaJS API Reference
 
-Complete, per-function documentation for every `dyna:*` standard-library module. For a
-tutorial-style tour with runnable programs, see [Chapter 4](04-standard-library.md).
+Complete, per-function documentation for every `dyna:*` standard-library module — the page to keep
+open in a tab while you code. If you'd rather learn by example first, [Chapter 4](04-standard-library.md)
+is the tutorial-style tour; this is the look-up-the-exact-signature companion.
 
 ## Conventions used in this reference
 
@@ -1185,11 +1186,13 @@ io_uring support; on other platforms use `dyna:file`.
 
 # http
 
-`import { HttpClient, HttpServer, HttpServerAsync } from "dyna:http";`
+`import { App, HttpClient, HttpServerAsync, HttpServer } from "dyna:http";`
 
-An HTTP/1.1 client and two server implementations. `HttpServerAsync` is a single-thread event-loop
-reactor (kqueue on macOS; epoll or io_uring on Linux) that scales to thousands of connections on
-one thread.
+An HTTP/1.1 client (`HttpClient`), an application server (`App`), and two low-level static server
+implementations (`HttpServerAsync`, `HttpServer`). **`App` is the server you build on** — it runs
+your JavaScript handlers on a single-thread event-loop reactor (kqueue on macOS; epoll or io_uring
+on Linux). `HttpServerAsync` is the bare reactor: it serves fixed responses only and never enters
+the JavaScript world.
 
 ### `class HttpClient`
 
@@ -1206,9 +1209,56 @@ one thread.
 
 **`Response`** = `{ status: number, headers: object, body: string }`.
 
+### `class App`
+
+The application server. You register **typed routes** — there is deliberately no raw request
+handler — and `App` runs your handlers on the single-thread event-loop reactor. A resource: call
+`.close()` when done.
+
+**`new App(config)`**
+
+| Field | Type | Description |
+|---|---|---|
+| `config.port` | `number` | The listen port. **Required in practice** — unlike `HttpServerAsync`, `.port` reports this value, so `port: 0` is not resolved to an OS-assigned port. |
+
+| Member | Signature | Description |
+|---|---|---|
+| `.rpc(path, methods)` | `(string, object) → void` | Register a strict **JSON-RPC 2.0** endpoint. `methods` maps a method name to `(params) => result`. See below. |
+| `.static(prefix, dir, opts?)` | `(string, string, object?) → void` | Serve files under `prefix` from `dir` via zero-copy `sendfile`. `opts`: `{ maxFileSize?: number, allow?: string[] }` where `allow` is a whitelist of `.ext`s or MIME types. |
+| `.upload(path, opts, handler)` | `(string, object, function) → void` | Stream an upload to disk, then call `handler(savedPath, meta)`. `opts`: `{ dir (required), maxFileSize?, allow? }`; `meta` is `{ size, contentType }`. |
+| `.ws(path, handlers)` | `(string, object) → void` | Register an **RFC 6455** WebSocket endpoint. `handlers`: `{ open(ws), message(ws, data, isBinary), close(ws, code, reason) }`. |
+| `.start()` | `() → void` | Bind, listen, and fold the reactor into this thread's event loop. |
+| `.port` | `number` (getter) | The configured port. |
+| `.close()` | `() → void` | Stop and release. Also `[Symbol.dispose]()`. |
+
+**RPC contract.** Each method receives the request's JSON-RPC `params` as its single argument and
+returns the `result`. Throwing produces a JSON-RPC error object (code `-32000`); an unknown method
+yields `-32601`; a malformed request yields `-32600`/`-32700`. A method may return a value
+synchronously *or* a `Promise` for a **single** request; a **batch** request requires synchronous
+methods (an async handler in a batch is rejected).
+
+**WebSocket connection (`ws`).** The object passed to the handlers has `.send(data)` — a `string`
+is sent as a text frame, an `ArrayBuffer` as a binary frame — and `.close()`, which sends a close
+frame and tears the connection down.
+
+**Threading.** Handlers run on the JS thread, so they share your program's heap with no
+cross-thread copy — but a blocking handler stalls the whole reactor (offload heavy CPU work to an
+`os.Worker`), and a same-thread blocking `HttpClient` cannot call the same process's `App`. Drive an
+`App` from another process.
+
+```js
+const app = new App({ port: 8080 });
+app.rpc("/rpc", { add: ([a, b]) => a + b });
+app.static("/assets", "/var/www", { allow: [".css", ".png"] });
+app.start();
+// curl -sd '{"jsonrpc":"2.0","id":1,"method":"add","params":[2,3]}' :8080/rpc
+//   → {"jsonrpc":"2.0","result":5,"id":1}
+```
+
 ### `class HttpServerAsync`
 
-A reactor-based server.
+A low-level reactor that maps paths to **fixed responses** — it never runs JavaScript, so it is not
+a substitute for `App`. Useful for static content and for exercising the reactor's raw concurrency.
 
 **`new HttpServerAsync(config)`**
 
@@ -1223,8 +1273,8 @@ A reactor-based server.
 | `.stop()` | `() → void` | Stop and release. |
 | `.port` | `number` (getter) | The bound port. |
 
-Because the reactor is single-threaded, a route handler must not block it with heavy CPU work —
-offload that to an `os.Worker`.
+Routes are fixed at construction; there are no callbacks to run, so nothing user-supplied executes
+per request. (For dynamic behavior, use `App`.)
 
 ```js
 const s = new HttpServerAsync({ port: 0, routes: { "/": "hello\n" } });
@@ -1253,7 +1303,7 @@ IPv4/IPv6 address and CIDR-prefix parsing and reasoning (modeled on Go `net/neti
 |---|---|---|
 | `s` | `string` | An IPv4 dotted-quad, an IPv6 address (compressed or full), or an IPv4-mapped IPv6 address. |
 
-**Returns** `{ is4: boolean, is6: boolean, bytes: Uint8Array, string: string }` — `bytes` is 4 or 16 bytes; `string` is the canonical form. **Throws** `SyntaxError` on an invalid address.
+**Returns** `{ is4: boolean, is6: boolean, bytes: Uint8Array, string: string }` — `bytes` is 4 or 16 bytes; `string` is the canonical form. **Throws** `SyntaxError` on an invalid address. Note: an IPv4-mapped IPv6 address (`"::ffff:1.2.3.4"`) parses as an **IPv6** value (`is4: false`, 16 bytes); the classifiers below unmap it first.
 
 ### `parsePrefix(s)`
 

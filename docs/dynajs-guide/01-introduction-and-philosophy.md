@@ -1,5 +1,10 @@
 # Chapter 1 — Introduction & Philosophy
 
+Before you write a line of code, it helps to know what DynaJS is *for* — and, just as importantly,
+what it isn't. This chapter is the "why." It's short, it's opinionated, and it'll save you from
+picking the wrong tool for the job. If you'd rather just start building, jump straight to
+[Chapter 2](02-installation-and-first-steps.md) and come back for the philosophy later.
+
 ## 1.1 What DynaJS is, in one paragraph
 
 DynaJS is a JavaScript runtime built on a fork of Fabrice Bellard's **QuickJS** engine (the
@@ -66,7 +71,7 @@ Being explicit about non-goals is part of the design.
 
 - **No Node.js compatibility.** No `require()`, no CommonJS, no `node:fs`/`node:http`/`node:crypto`
   shims, no attempt to load npm packages. DynaJS modules live under `dyna:` and have their own,
-  often nicer, APIs. (See §1.6 and Chapter 9.)
+  often nicer, APIs. (See §1.6 and [Chapter 7](07-roadmap-and-philosophy.md).)
 - **No JIT (today).** DynaJS is an interpreter. It wins on startup, memory, and predictability, not
   on multi-minute numeric hot loops where a tracing JIT eventually pulls ahead. Where raw compute
   matters, DynaJS gives you **native SIMD kernels** (`dyna:simd`, `dyna:ml`) instead of hoping a
@@ -76,7 +81,7 @@ Being explicit about non-goals is part of the design.
 - **No re-skinning of JavaScript built-ins.** DynaJS does not ship a `strconv` module to duplicate
   `parseInt`, or a `unicode` module to duplicate `/\p{L}/u`, or an `os.readFile` that duplicates the
   file module. A native module has to earn its place by filling a *real* gap or delivering *real*
-  performance. This curation bar is enforced (Chapter 9).
+  performance. This curation bar is enforced ([Chapter 7](07-roadmap-and-philosophy.md)).
 
 ## 1.5 Where DynaJS shines (and where it doesn't) — the honest version
 
@@ -150,8 +155,8 @@ print(dot(new Float32Array([1,2,3,4]), new Float32Array([5,6,7,8])));
 //   70
 
 // IP/CIDR reasoning that JavaScript simply has no built-in for.
-print(contains("10.0.0.0/8", "10.1.2.3"));   // true
-print(parseAddr("::ffff:127.0.0.1").is4);     // true (IPv4-mapped IPv6)
+print(contains("10.0.0.0/8", "10.1.2.3"));    // true
+print(parseAddr("::ffff:127.0.0.1").is6);      // true — a canonical IPv4-mapped IPv6 address
 ```
 
 Save that as `taste.js` and run `dynajs taste.js`. No install step, no `package.json`, no build.

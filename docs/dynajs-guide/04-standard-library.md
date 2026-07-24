@@ -1,8 +1,10 @@
 # Chapter 4 — The Standard Library, Module by Module
 
-This is the heart of DynaJS. Everything here is native (C11), compiled into the binary with
-`CONFIG_NATIVE_MODULES=y`, imported under `dyna:`, and dependency-free. Every example below was
-run against the real modules.
+This is the fun part — the heart of DynaJS. Everything here is native (C11), compiled into the
+binary with `CONFIG_NATIVE_MODULES=y`, imported under `dyna:`, and completely dependency-free. You
+don't need to read it front to back; skim the headings, find the capability you want, and steal the
+example. Every snippet below was run against the real modules while writing this book, so what you
+see is what you get.
 
 ## 4.0 How modules are shaped
 
@@ -308,7 +310,7 @@ m.close();
 ```
 
 `Map` and `Array` cover most needs; `structures` exists for cases where a native, contiguous
-backing store or specific memory behavior matters. (By the curation bar of Chapter 9 these overlap
+backing store or specific memory behavior matters. (By the curation bar of Chapter 7 these overlap
 built-ins the most — they are here for the native-memory story, not to replace `Map`/`Array`.)
 
 ---
@@ -383,38 +385,119 @@ block, so large sequential reads saturate the device. On non-Linux builds, use `
 
 ## 4.6 Networking
 
-### `dyna:http` — client and async server
+### `dyna:http` — a client, an application server, and a static reactor
 
-An HTTP client and a **single-thread reactor** server (`HttpServerAsync`) built on kqueue (macOS) /
-epoll / io_uring (Linux). The reactor design gives it dramatic concurrency headroom over a
-thread-per-connection model (Chapter 5 §5.4).
+`dyna:http` gives you three tools that share one foundation. There's a synchronous **`HttpClient`**,
+a full application server (**`App`**) where *you* write the handlers, and a lower-level static-only
+reactor (`HttpServerAsync`). All three sit on the same single-thread event-loop reactor — kqueue on
+macOS, epoll or io_uring on Linux — so they scale to thousands of connections on one thread
+(Chapter 5 §5.4).
+
+**The client** is the simplest piece — a blocking request/response object:
+
+```js
+import { HttpClient } from "dyna:http";
+
+const client = new HttpClient();
+try {
+  const r = client.get("http://example.com/");
+  print(r.status);                       // 200
+  print(r.headers["Content-Type"]);      // e.g. "text/html; charset=UTF-8"
+  print(r.body.length, "bytes");
+} finally {
+  client.close();
+}
+```
+
+A response is a plain `{ status, headers, body }` object. `client.post(url, body, headers?)` and the
+general `client.request(url, { method, headers, body })` round it out.
+
+**`App` is the server you actually build on.** You never touch raw HTTP — you register a handful of
+*typed routes* and DynaJS takes care of the wire protocol, parsing, and connection lifecycle. There
+are four kinds of route, each doing one job well:
+
+- **`app.rpc(path, methods)`** — a strict **JSON-RPC 2.0** endpoint. This is where your business
+  logic goes. Each method is just `(params) => result`; DynaJS parses the request, calls the right
+  one, and serializes the reply (including proper JSON-RPC error objects). No REST guesswork.
+- **`app.static(prefix, dir, { maxFileSize, allow })`** — serve files from a directory over a
+  zero-copy `sendfile` path. `allow` is a whitelist of `.ext`s or MIME types.
+- **`app.upload(path, { dir, maxFileSize, allow }, handler)`** — stream an upload straight to disk,
+  then call `handler(savedPath, meta)` with where it landed (`meta` has `size` and `contentType`).
+- **`app.ws(path, { open, message, close })`** — a full **RFC 6455 WebSocket** endpoint.
+
+```js
+import { App } from "dyna:http";
+
+const app = new App({ port: 8080 });
+
+// Business logic — a JSON-RPC 2.0 service:
+app.rpc("/rpc", {
+  add:   ([a, b]) => a + b,
+  greet: ({ name }) => `hello ${name}`,
+});
+
+// Static files, extension-whitelisted:
+app.static("/assets", "/var/www/assets", { maxFileSize: 8 << 20, allow: [".css", ".js", ".png"] });
+
+// Uploads streamed to disk, then handed to you:
+app.upload("/upload", { dir: "/var/uploads", maxFileSize: 32 << 20, allow: ["image/png"] },
+  (savedPath, meta) => print("saved", meta.size, "bytes to", savedPath));
+
+// A WebSocket echo endpoint:
+app.ws("/ws", {
+  open:    (ws) => ws.send("welcome"),
+  message: (ws, data, isBinary) => ws.send(isBinary ? data : "echo: " + data),
+  close:   (ws) => {},
+});
+
+app.start();
+print("serving on", app.port);
+```
+
+Because the server runs on *this program's* event loop, you drive it from another process. From a
+shell (this is a real, verified round-trip):
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"add","params":[2,3]}' \
+  http://127.0.0.1:8080/rpc
+#   {"jsonrpc":"2.0","result":5,"id":1}
+```
+
+A few things worth knowing:
+
+- **Handlers run on the JS thread**, right on the reactor loop — so a handler shares the same heap
+  as the rest of your program (no cross-thread copying), and a request arrives as a zero-copy view.
+  The catch: **don't block the loop.** A CPU-heavy handler stalls every other connection — push that
+  work to an `os.Worker` (Chapter 3 §3.4). For the same reason, a *same-thread* blocking `HttpClient`
+  can't call your own `App` (one thread can't both wait and serve) — drive it from outside.
+- **Give `App` an explicit port.** Unlike `HttpServerAsync`, `app.port` reports the port you asked
+  for, so `port: 0` is not resolved to an OS-assigned one — pick a real port.
+- An RPC method may return a value synchronously *or* a `Promise` (for single requests; a *batched*
+  JSON-RPC call needs synchronous methods).
+
+**`HttpServerAsync` is the bare static reactor underneath.** It maps paths to fixed responses and
+serves them without ever entering the JavaScript world — great for static content and for showing
+off the reactor's raw concurrency, but it **cannot run your code.** For anything with logic, use
+`App` above.
 
 ```js
 import { HttpServerAsync, HttpClient } from "dyna:http";
 
-// A reactor-based server. `port: 0` picks a free port.
-const server = new HttpServerAsync({ port: 0, routes: {
+const server = new HttpServerAsync({ port: 0, routes: {   // port 0 → a free OS port
   "/":     "hello world\n",
   "/json": { status: 200, contentType: "application/json", body: '{"a":1}' },
 }});
 server.start();
 
 const client = new HttpClient();
-const r = client.get(`http://127.0.0.1:${server.port}/json`);
-print(r.status);                                  // 200
-print(r.headers["Content-Type"]);                 // "application/json"
-print(r.body);                                    // '{"a":1}'
-
-const p = client.post(`http://127.0.0.1:${server.port}/`, "payload", { "Content-Type": "text/plain" });
-print(p.status);                                  // 200
-
+print(client.get(`http://127.0.0.1:${server.port}/json`).status);   // 200
+client.close();
 server.stop();
 ```
 
-The client returns a response object with `.status`, `.headers`, and `.body`. The server routes map
-paths to either a string body or a `{ status, contentType, body }` object. Because the server is a
-single-threaded reactor, it handles thousands of concurrent connections on one thread without the
-memory and context-switch cost of a thread pool.
+(`HttpServer` is an older thread-pool variant with the same `start`/`stop`/`port` shape; prefer the
+reactor.)
 
 ### `dyna:netip` — IP addresses & CIDR (Go's `net/netip`)
 
@@ -422,10 +505,11 @@ Parsing and reasoning about IPv4/IPv6 addresses and CIDR prefixes — a capabili
 entirely.
 
 ```js
-import { parseAddr, parsePrefix, contains, masked, canonical, isValid } from "dyna:netip";
+import { parseAddr, contains, masked, canonical, isValid, isLoopback } from "dyna:netip";
 
 const a = parseAddr("::ffff:127.0.0.1");
-print(a.is4, a.is6);                     // true false   (IPv4-mapped is treated as v4)
+print(a.is4, a.is6);                     // false true   (a mapped address is an IPv6 value)
+print(isLoopback("::ffff:127.0.0.1"));   // true         (classifiers unmap the IPv4-in-IPv6 first)
 print(canonical("2001:0db8:0000:0000:0000:0000:0000:0001")); // "2001:db8::1" (RFC 5952)
 print(contains("10.0.0.0/8", "10.1.2.3"));                   // true
 print(contains("192.168.0.0/16", "10.0.0.1"));               // false
@@ -433,9 +517,12 @@ print(masked("192.168.5.130/24"));                           // "192.168.5.0"
 print(isValid("999.1.1.1"));                                 // false
 ```
 
-`canonical` produces the RFC 5952 form (longest zero-run compressed, lowercase). `contains` does
-the masked-prefix comparison at any bit boundary. This is the module for allow-lists, subnet
-routing, and address classification.
+A small but important detail: `parseAddr("::ffff:127.0.0.1")` is an **IPv6** value (`is4` is
+`false`) — the raw parse keeps the 16-byte form. The *classifiers* (`isLoopback`, `isPrivate`, …)
+unmap an IPv4-in-IPv6 address first, so `isLoopback("::ffff:127.0.0.1")` is `true`. `canonical`
+produces the RFC 5952 form (longest zero-run compressed, lowercase); `contains` does the
+masked-prefix comparison at any bit boundary. This is the module for allow-lists, subnet routing,
+and address classification.
 
 ---
 
@@ -565,7 +652,7 @@ const km = new KMeans(2);
 try {
   km.fit([[0, 0], [0.1, 0], [10, 10], [10.1, 10]]);
   print(km.predict([[0.05, 0], [10, 10]]));  // [clusterA, clusterB]
-  print("inertia:", km.inertia().toFixed(3));
+  print("inertia:", km.inertia.toFixed(3));  // .inertia is a getter, not a method
 } finally {
   km.close();
 }
@@ -586,7 +673,7 @@ import { gzip, gunzip } from "dyna:compress";
 
 const original = "the quick brown fox ".repeat(100);        // 2000 bytes
 const packed = gzip(original);                               // real DEFLATE
-print(original.length, "→", packed.length, "bytes");        // 2000 → ~48 bytes
+print(original.length, "→", packed.length, "bytes");        // 2000 → 56 bytes
 print(gunzip(packed).length === original.length);           // round-trips
 ```
 
@@ -736,7 +823,7 @@ prerelease at the same `major.minor.patch`).
 | `structures` | (native collections) | vector/hashmap with native backing |
 | `file` | Node `fs` | buffered I/O + OS fast paths |
 | `uring` | (Linux io_uring) | high-QD async bulk reads |
-| `http` | Node `http` | reactor server + client |
+| `http` | Node `http` | `App` server (rpc/static/upload/ws) + client |
 | `netip` | Go `net/netip` | IP/CIDR parsing & reasoning |
 | `time` | Go `time` | durations/monotonic/RFC3339 |
 | `sys` | Node `fs`+`os`, `glob`/`rimraf` | unified filesystem + process + glob |

@@ -1,7 +1,7 @@
 # Chapter 5 — Performance Architecture
 
-DynaJS's performance story is not "our interpreter beats V8's JIT on a hot loop" — it does not, and
-this book will not pretend otherwise. The story is architectural: **fast startup, flat memory,
+Let's talk speed — honestly. DynaJS's performance story is *not* "our interpreter beats V8's JIT on a
+hot loop." It does not, and this book will not pretend otherwise. The story is architectural: **fast startup, flat memory,
 native SIMD where compute matters, and a reactor I/O model that scales connections cheaply.** This
 chapter explains each, with the numbers that were actually measured in the project.
 
@@ -88,28 +88,34 @@ to out-JIT V8.
 
 ## 5.4 The async I/O reactor
 
-DynaJS's HTTP server (`HttpServerAsync`) is a **single-threaded event-loop reactor** built on the
-platform's readiness API — **kqueue** on macOS, **epoll** or **io_uring** on Linux. One thread
-multiplexes thousands of connections via non-blocking sockets and a readiness queue.
+DynaJS's networking is built on **one single-threaded event-loop reactor** over the platform's
+readiness API — **kqueue** on macOS, **epoll** or **io_uring** on Linux. One thread multiplexes
+thousands of connections via non-blocking sockets and a readiness queue, and the **`App`** server
+(Chapter 4 §4.6) runs your JavaScript route handlers directly on that loop — no per-request thread,
+no cross-thread copy of the request.
 
-Contrast the two server models the project benchmarked:
+Why a reactor beats a thread-per-connection design is the classic C10k story:
 
 - **Thread-per-connection / thread pool**: each connection costs a thread's stack and scheduler
   attention; at high concurrency, context-switching and memory dominate.
-- **Reactor (Model A)**: one thread, non-blocking sockets, O(ready) work per loop turn.
+- **Reactor**: one thread, non-blocking sockets, O(ready) work per loop turn. Per-connection
+  overhead is a file descriptor and a small state struct, not a thread — so the advantage *grows*
+  with concurrency.
 
-At 500 concurrent connections, the reactor measured **~172× the throughput** of the thread-pool
-model in the project's internal benchmark. That is the classic C10k result: the reactor's advantage
-grows with concurrency because its per-connection overhead is a file descriptor and a small state
-struct, not a thread.
+To size that gap, the project benchmarked the reactor against a thread-pool server on **fixed static
+responses** (the reactor serving without entering the JS world): at 500 concurrent connections the
+reactor did **~172× the throughput** of the thread pool. Read that number for what it is — a
+demonstration of the reactor *model's* concurrency headroom, not a benchmark of your JavaScript
+handlers. The `App` server inherits that same reactor; end-to-end throughput of an `App` also depends
+on what your handlers do (JSON-RPC parse, call, serialize).
 
 The I/O layer also uses the cheap, correct OS levers where they pay: `TCP_NODELAY` is on for latency;
 file I/O uses `F_RDAHEAD`/`F_PREALLOCATE`/`F_FULLFSYNC` on macOS and `fadvise`/`fallocate`/io_uring on
 Linux (`dyna:file`, `dyna:uring`).
 
-> A concurrency caveat the project is explicit about: the reactor is single-threaded, so a handler
-> must not block it. CPU-heavy per-request work belongs in a worker (Chapter 3 §3.4), not inline in
-> the reactor thread.
+> A concurrency caveat the project is explicit about: the reactor is single-threaded, so an `App`
+> handler must not block it. CPU-heavy per-request work belongs in a worker (Chapter 3 §3.4), not
+> inline in the reactor thread.
 
 ## 5.5 The optimizer program (`meta@`) — making plain code fast automatically
 
@@ -138,7 +144,7 @@ The directive surface shrinks as the engine gets smarter. This is a feedback loo
 | Startup latency | interpreter, no JIT warmup, tiny baseline | **wins** vs V8/JSC |
 | Idle / peak memory | refcount GC + deterministic native disposal | **wins**, flat RSS |
 | Vector/number crunch | native multi-ISA SIMD kernels | **wins** vs scalar JS; competitive with addons |
-| Connection concurrency | single-thread reactor (kqueue/epoll/io_uring) | **wins** vs thread-per-conn (~172× @500) |
+| Connection concurrency | single-thread reactor (kqueue/epoll/io_uring), `App` handlers on the loop | **wins** vs thread-per-conn (~172× @500, static microbench) |
 | Long hot scalar loop | token-threaded interpreter | **loses** to a tracing JIT — use SIMD instead |
 | Bulk disk read (Linux) | io_uring high-QD reads | **wins** vs blocking read loop |
 

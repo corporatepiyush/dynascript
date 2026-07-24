@@ -1,5 +1,10 @@
 # Chapter 2 — Installation & First Steps
 
+Time to get your hands dirty. By the end of this chapter you'll have a working `dynajs` binary, a
+feel for the CLI and REPL, and a couple of real programs under your belt — all in a few minutes.
+Everything here is copy-paste-runnable; if a command doesn't do what the book says, that's a bug in
+the book, not in you.
+
 ## 2.1 Building from source
 
 DynaJS is a C11 project with no external dependencies for the core. You need a C compiler
@@ -208,8 +213,8 @@ console.log("orig/packed:", rec.originalBytes, "→", rec.packedBytes, "bytes");
 ```sh
 dynajs bigger.js
 #   id:         019f8f...-7...   (a v7 UUID)
-#   sha256:     9c1185a5c5e9fc54612808977ee8f548b2258d31   ...
-#   orig/packed: 2000 → 48 bytes
+#   sha256:     e706ce82e8497c352c70f15711f5c43daabb6adca7ea66dbb65b2fc8b2e8c2d2
+#   orig/packed: 2000 → 56 bytes
 ```
 
 You now have a working DynaJS and a feel for its shape: standard JavaScript at the top, native
