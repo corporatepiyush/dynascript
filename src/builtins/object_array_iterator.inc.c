@@ -1288,16 +1288,43 @@ static JSValue js_array_ext_mapval(JSContext *ctx, JSValueConst map,
     }
 }
 
-/* Match a Sugar/Ramda "matcher" against an element (overloaded dispatch shared
- * by every matcher method — _count/_none/_any/_all/_partition/_reject/_takeWhile
- * /_dropWhile/...). Kinds: a function -> ToBool(fn(el)); a RegExp -> tests the
- * element coerced to a string (Sugar overload); otherwise SameValueZero(matcher,
- * el). Returns 1, 0, or -1 (exception). */
-static int js_array_ext_match(JSContext *ctx, JSValueConst match,
-                              JSValueConst el)
+/* Prepared "matcher" — the overloaded dispatch shared by every matcher method
+ * (_count/_none/_any/_all/_partition/_reject/_takeWhile/_dropWhile/...). The
+ * matcher KIND is resolved ONCE (js_ext_matcher_begin) so the per-element test
+ * has no re-resolution cost; in particular a RegExp's `.test` method is looked
+ * up a single time, not once per element. Kinds: a function -> ToBool(fn(el));
+ * a RegExp -> regex.test(String(el)) (Sugar overload) — detected by class id so
+ * a duck-typed {test(){}} is NOT a regex; otherwise SameValueZero(matcher,el). */
+typedef struct JSExtMatcher {
+    JSValueConst matcher;   /* borrowed */
+    JSValue regex_test;     /* owned; JS_UNDEFINED unless kind == 2 */
+    int kind;               /* 0 = value, 1 = function, 2 = RegExp */
+} JSExtMatcher;
+
+static int js_ext_matcher_begin(JSContext *ctx, JSExtMatcher *pm,
+                                JSValueConst matcher)
 {
-    if (JS_IsFunction(ctx, match)) {
-        JSValue r = JS_Call(ctx, match, JS_UNDEFINED, 1, &el);
+    pm->matcher = matcher;
+    pm->regex_test = JS_UNDEFINED;
+    if (JS_IsFunction(ctx, matcher)) {
+        pm->kind = 1;
+    } else if (JS_VALUE_GET_TAG(matcher) == JS_TAG_OBJECT &&
+               JS_VALUE_GET_OBJ(matcher)->class_id == JS_CLASS_REGEXP) {
+        pm->kind = 2;
+        pm->regex_test = JS_GetPropertyStr(ctx, matcher, "test");
+        if (JS_IsException(pm->regex_test)) { pm->regex_test = JS_UNDEFINED; return -1; }
+    } else {
+        pm->kind = 0;
+    }
+    return 0;
+}
+
+/* Returns 1 (match), 0 (no match), or -1 (exception). */
+static int js_ext_matcher_test(JSContext *ctx, JSExtMatcher *pm, JSValueConst el)
+{
+    switch (pm->kind) {
+    case 1: {
+        JSValue r = JS_Call(ctx, pm->matcher, JS_UNDEFINED, 1, &el);
         int b;
         if (JS_IsException(r))
             return -1;
@@ -1305,17 +1332,12 @@ static int js_array_ext_match(JSContext *ctx, JSValueConst match,
         JS_FreeValue(ctx, r);
         return b;
     }
-    if (JS_VALUE_GET_TAG(match) == JS_TAG_OBJECT &&
-        JS_VALUE_GET_OBJ(match)->class_id == JS_CLASS_REGEXP) {
-        JSValue str, testfn, r;
+    case 2: {
+        JSValue str = JS_ToString(ctx, el), r;
         int b;
-        str = JS_ToString(ctx, el);
         if (JS_IsException(str))
             return -1;
-        testfn = JS_GetPropertyStr(ctx, match, "test");
-        if (JS_IsException(testfn)) { JS_FreeValue(ctx, str); return -1; }
-        r = JS_Call(ctx, testfn, match, 1, (JSValueConst *)&str);
-        JS_FreeValue(ctx, testfn);
+        r = JS_Call(ctx, pm->regex_test, pm->matcher, 1, (JSValueConst *)&str);
         JS_FreeValue(ctx, str);
         if (JS_IsException(r))
             return -1;
@@ -1323,7 +1345,15 @@ static int js_array_ext_match(JSContext *ctx, JSValueConst match,
         JS_FreeValue(ctx, r);
         return b;
     }
-    return JS_SameValueZero(ctx, match, el) ? 1 : 0;
+    default:
+        return JS_SameValueZero(ctx, pm->matcher, el) ? 1 : 0;
+    }
+}
+
+static void js_ext_matcher_end(JSContext *ctx, JSExtMatcher *pm)
+{
+    JS_FreeValue(ctx, pm->regex_test);
+    pm->regex_test = JS_UNDEFINED;
 }
 
 /* _count(match?) -> length with no argument; else the number of elements the
@@ -1332,6 +1362,7 @@ static JSValue js_array_ext_count(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
     JSValue obj, ret = JS_EXCEPTION;
+    JSExtMatcher pm = { JS_UNDEFINED, JS_UNDEFINED, 0 };
     int64_t len, i, c = 0;
     obj = JS_ToObject(ctx, this_val);
     if (js_get_length64(ctx, &len, obj))
@@ -1340,12 +1371,14 @@ static JSValue js_array_ext_count(JSContext *ctx, JSValueConst this_val,
         ret = JS_NewInt64(ctx, len);
         goto done;
     }
+    if (js_ext_matcher_begin(ctx, &pm, argv[0]))
+        goto done;
     for (i = 0; i < len; i++) {
         JSValue el;
         int m;
         if (js_array_ext_getel(ctx, obj, i, &el))
             goto done;
-        m = js_array_ext_match(ctx, argv[0], el);
+        m = js_ext_matcher_test(ctx, &pm, el);
         JS_FreeValue(ctx, el);
         if (m < 0)
             goto done;
@@ -1353,6 +1386,7 @@ static JSValue js_array_ext_count(JSContext *ctx, JSValueConst this_val,
     }
     ret = JS_NewInt64(ctx, c);
  done:
+    js_ext_matcher_end(ctx, &pm);
     JS_FreeValue(ctx, obj);
     return ret;
 }
@@ -1362,17 +1396,20 @@ static JSValue js_array_ext_quantify(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv, int magic)
 {
     JSValue obj, ret = JS_EXCEPTION;
+    JSExtMatcher pm = { JS_UNDEFINED, JS_UNDEFINED, 0 };
     int64_t len, i;
     JSValueConst match = argc > 0 ? argv[0] : JS_UNDEFINED;
     obj = JS_ToObject(ctx, this_val);
     if (js_get_length64(ctx, &len, obj))
+        goto done;
+    if (js_ext_matcher_begin(ctx, &pm, match))
         goto done;
     for (i = 0; i < len; i++) {
         JSValue el;
         int m;
         if (js_array_ext_getel(ctx, obj, i, &el))
             goto done;
-        m = js_array_ext_match(ctx, match, el);
+        m = js_ext_matcher_test(ctx, &pm, el);
         JS_FreeValue(ctx, el);
         if (m < 0)
             goto done;
@@ -1382,6 +1419,7 @@ static JSValue js_array_ext_quantify(JSContext *ctx, JSValueConst this_val,
     }
     ret = (magic == 1) ? JS_FALSE : JS_TRUE; /* any->false, none/all->true */
  done:
+    js_ext_matcher_end(ctx, &pm);
     JS_FreeValue(ctx, obj);
     return ret;
 }
@@ -2178,10 +2216,13 @@ static JSValue js_array_ext_partition(JSContext *ctx, JSValueConst this_val,
 {
     JSValue obj, yes = JS_UNDEFINED, no = JS_UNDEFINED, result, ret = JS_EXCEPTION;
     JSValueConst matcher = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSExtMatcher pm = { JS_UNDEFINED, JS_UNDEFINED, 0 };
     int64_t len, i, jy = 0, jn = 0;
 
     obj = JS_ToObject(ctx, this_val);
     if (js_get_length64(ctx, &len, obj))
+        goto done;
+    if (js_ext_matcher_begin(ctx, &pm, matcher))
         goto done;
     yes = JS_NewArray(ctx);
     no = JS_NewArray(ctx);
@@ -2191,7 +2232,7 @@ static JSValue js_array_ext_partition(JSContext *ctx, JSValueConst this_val,
         JSValue el;
         int m;
         if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
-        m = js_array_ext_match(ctx, matcher, el);
+        m = js_ext_matcher_test(ctx, &pm, el);
         if (m < 0) { JS_FreeValue(ctx, el); goto done; }
         if (JS_DefinePropertyValueInt64(ctx, m ? yes : no, m ? jy++ : jn++, el, JS_PROP_C_W_E) < 0)
             goto done;
@@ -2203,6 +2244,7 @@ static JSValue js_array_ext_partition(JSContext *ctx, JSValueConst this_val,
     yes = no = JS_UNDEFINED;
     ret = result;
  done:
+    js_ext_matcher_end(ctx, &pm);
     JS_FreeValue(ctx, yes);
     JS_FreeValue(ctx, no);
     JS_FreeValue(ctx, obj);
@@ -2548,15 +2590,17 @@ static JSValue js_array_ext_whilst(JSContext *ctx, JSValueConst this_val,
 {
     JSValue obj, ret = JS_EXCEPTION;
     JSValueConst matcher = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSExtMatcher pm = { JS_UNDEFINED, JS_UNDEFINED, 0 };
     int64_t len, i = 0;
     obj = JS_ToObject(ctx, this_val);
     if (js_get_length64(ctx, &len, obj)) goto done;
+    if (js_ext_matcher_begin(ctx, &pm, matcher)) goto done;
     if (magic < 2) {                        /* scan from the front */
         for (i = 0; i < len; i++) {
             JSValue el;
             int m;
             if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
-            m = js_array_ext_match(ctx, matcher, el);
+            m = js_ext_matcher_test(ctx, &pm, el);
             JS_FreeValue(ctx, el);
             if (m < 0) goto done;
             if (!m) break;
@@ -2568,7 +2612,7 @@ static JSValue js_array_ext_whilst(JSContext *ctx, JSValueConst this_val,
             JSValue el;
             int m;
             if (js_array_ext_getel(ctx, obj, i - 1, &el)) goto done;
-            m = js_array_ext_match(ctx, matcher, el);
+            m = js_ext_matcher_test(ctx, &pm, el);
             JS_FreeValue(ctx, el);
             if (m < 0) goto done;
             if (!m) break;
@@ -2577,6 +2621,7 @@ static JSValue js_array_ext_whilst(JSContext *ctx, JSValueConst this_val,
                            : js_array_ext_build_range(ctx, obj, 0, i);
     }
  done:
+    js_ext_matcher_end(ctx, &pm);
     JS_FreeValue(ctx, obj);
     return ret;
 }
@@ -2636,27 +2681,31 @@ static JSValue js_array_ext_prepend(JSContext *ctx, JSValueConst this_val,
 static JSValue js_array_ext_reject(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv)
 {
-    JSValue obj, result, ret = JS_EXCEPTION;
+    JSValue obj, result = JS_UNDEFINED, ret = JS_EXCEPTION;
     JSValueConst matcher = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSExtMatcher pm = { JS_UNDEFINED, JS_UNDEFINED, 0 };
     int64_t len, i, j = 0;
     obj = JS_ToObject(ctx, this_val);
     if (js_get_length64(ctx, &len, obj)) goto done;
+    if (js_ext_matcher_begin(ctx, &pm, matcher)) goto done;
     result = JS_NewArray(ctx);
-    if (JS_IsException(result)) goto done;
+    if (JS_IsException(result)) { result = JS_UNDEFINED; goto done; }
     for (i = 0; i < len; i++) {
         JSValue el;
         int m;
-        if (js_array_ext_getel(ctx, obj, i, &el)) { JS_FreeValue(ctx, result); goto done; }
-        m = js_array_ext_match(ctx, matcher, el);
-        if (m < 0) { JS_FreeValue(ctx, el); JS_FreeValue(ctx, result); goto done; }
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
+        m = js_ext_matcher_test(ctx, &pm, el);
+        if (m < 0) { JS_FreeValue(ctx, el); goto done; }
         if (!m) {
-            if (JS_DefinePropertyValueInt64(ctx, result, j++, el, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, result); goto done; }
+            if (JS_DefinePropertyValueInt64(ctx, result, j++, el, JS_PROP_C_W_E) < 0) goto done;
         } else {
             JS_FreeValue(ctx, el);
         }
     }
-    ret = result;
+    ret = result; result = JS_UNDEFINED;
  done:
+    js_ext_matcher_end(ctx, &pm);
+    JS_FreeValue(ctx, result);
     JS_FreeValue(ctx, obj);
     return ret;
 }
