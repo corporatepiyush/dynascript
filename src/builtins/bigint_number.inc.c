@@ -288,6 +288,11 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
         return -1;
     ctx->array_ctor = obj;
 
+    /* SugarJS/RamdaJS non-ECMAScript `_`-prefixed methods (see
+     * SUGAR_RAMDA_NATIVE.md), installed non-enumerable on Array.prototype. */
+    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_ARRAY],
+                               js_array_ext_funcs, countof(js_array_ext_funcs));
+
     {
         JSObject *p = JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]);
         p->is_std_array_prototype = TRUE;
