@@ -5409,23 +5409,28 @@ static JSValue js_string_ext_fromto(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
-/* chars() -> array of single code-unit strings. */
+/* chars() -> array of single code-unit strings. Pre-sized fast array + direct
+ * buffer write (no per-element property dispatch). */
 static JSValue js_string_ext_chars(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv)
 {
     JSValue val, result, ret = JS_EXCEPTION;
     JSString *p;
-    uint32_t i;
+    JSValue *dst;
+    uint32_t i, len;
     (void)argc; (void)argv;
     val = JS_ToStringCheckObject(ctx, this_val);
     if (JS_IsException(val)) return val;
     p = JS_VALUE_GET_STRING(val);
-    result = JS_NewArray(ctx);
+    len = p->len;
+    if (len == 0) { ret = JS_NewArray(ctx); goto done; }
+    result = js_allocate_fast_array(ctx, len);   /* slots pre-filled UNDEFINED */
     if (JS_IsException(result)) goto done;
-    for (i = 0; i < p->len; i++) {
+    dst = JS_VALUE_GET_OBJ(result)->u.array.u.values;
+    for (i = 0; i < len; i++) {
         JSValue s = js_new_string_char(ctx, string_get(p, i));
         if (JS_IsException(s)) { JS_FreeValue(ctx, result); goto done; }
-        if (JS_DefinePropertyValueInt64(ctx, result, i, s, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, result); goto done; }
+        dst[i] = s;
     }
     ret = result;
  done:
@@ -5433,24 +5438,25 @@ static JSValue js_string_ext_chars(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
-/* codes() -> array of UTF-16 code-unit values. */
+/* codes() -> array of UTF-16 code-unit values (pre-sized fast array). */
 static JSValue js_string_ext_codes(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv)
 {
     JSValue val, result, ret = JS_EXCEPTION;
     JSString *p;
-    uint32_t i;
+    JSValue *dst;
+    uint32_t i, len;
     (void)argc; (void)argv;
     val = JS_ToStringCheckObject(ctx, this_val);
     if (JS_IsException(val)) return val;
     p = JS_VALUE_GET_STRING(val);
-    result = JS_NewArray(ctx);
+    len = p->len;
+    if (len == 0) { ret = JS_NewArray(ctx); goto done; }
+    result = js_allocate_fast_array(ctx, len);
     if (JS_IsException(result)) goto done;
-    for (i = 0; i < p->len; i++) {
-        if (JS_DefinePropertyValueInt64(ctx, result, i, JS_NewInt32(ctx, string_get(p, i)), JS_PROP_C_W_E) < 0) {
-            JS_FreeValue(ctx, result); goto done;
-        }
-    }
+    dst = JS_VALUE_GET_OBJ(result)->u.array.u.values;
+    for (i = 0; i < len; i++)
+        dst[i] = JS_NewInt32(ctx, string_get(p, i));
     ret = result;
  done:
     JS_FreeValue(ctx, val);
