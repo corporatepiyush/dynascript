@@ -53,7 +53,7 @@
  *     utc=false asks the OS for the LOCAL zone's offset at that instant via
  *     localtime_r()+tm_gmtoff -- the same mechanism this engine's own
  *     Date.prototype.getTimezoneOffset() uses (see
- *     src/builtins/object_array_iterator.inc.c) -- and renders "+HH:MM" /
+ *     src/builtins/date_timezone.inc.c) -- and renders "+HH:MM" /
  *     "-HH:MM"; the civil fields themselves are still produced by OUR OWN
  *     algorithm, so only the offset value depends on the OS tzdata.
  *   - formatUnix(sec, layout) always renders the UTC breakdown and supports
@@ -199,7 +199,7 @@ static void dyn_time_norm_month(int64_t *y, int64_t *mo)
 
 /* int64_t -> time_t, clamped on the (only theoretical, on this repo's 64-bit
  * targets) 32-bit time_t platform -- mirrors the same defensive clamp this
- * engine's own getTimezoneOffset() applies (object_array_iterator.inc.c). */
+ * engine's own getTimezoneOffset() applies (date_timezone.inc.c). */
 static time_t dyn_time_to_time_t(int64_t sec)
 {
     if (sizeof(time_t) == 4) {
