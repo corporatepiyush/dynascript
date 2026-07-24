@@ -2610,6 +2610,202 @@ static JSValue js_array_ext_prepend(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* _reject(matcher) -> the elements the matcher REJECTS (complement of filter);
+ * matcher is a predicate function or a value (SameValueZero). */
+static JSValue js_array_ext_reject(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj, result, ret = JS_EXCEPTION;
+    JSValueConst matcher = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, i, j = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue el;
+        int m;
+        if (js_array_ext_getel(ctx, obj, i, &el)) { JS_FreeValue(ctx, result); goto done; }
+        m = js_array_ext_match(ctx, matcher, el);
+        if (m < 0) { JS_FreeValue(ctx, el); JS_FreeValue(ctx, result); goto done; }
+        if (!m) {
+            if (JS_DefinePropertyValueInt64(ctx, result, j++, el, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, result); goto done; }
+        } else {
+            JS_FreeValue(ctx, el);
+        }
+    }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _insert(idx, elt) -> a copy with elt inserted at idx; an idx outside [0,len)
+ * appends (Ramda insert). */
+static JSValue js_array_ext_insert(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValueConst elt = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValue *srcp, *dst;
+    JSObject *rp;
+    uint32_t scount;
+    int64_t len, idx, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (JS_ToInt64Sat(ctx, &idx, argc > 0 ? argv[0] : JS_UNDEFINED)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    if (idx < 0 || idx > len) idx = len;
+    result = js_allocate_fast_array(ctx, len + 1);
+    if (JS_IsException(result)) goto done;
+    rp = JS_VALUE_GET_OBJ(result);
+    dst = rp->u.array.u.values;
+    if (js_get_fast_array(ctx, obj, &srcp, &scount) && (int64_t)scount >= len) {
+        for (i = 0; i < idx; i++)   dst[i] = JS_DupValue(ctx, srcp[i]);
+        dst[idx] = JS_DupValue(ctx, elt);
+        for (i = idx; i < len; i++) dst[i + 1] = JS_DupValue(ctx, srcp[i]);
+    } else {
+        for (i = 0; i < idx; i++)   if (js_array_ext_getel(ctx, obj, i, &dst[i])) goto done;
+        dst[idx] = JS_DupValue(ctx, elt);
+        for (i = idx; i < len; i++) if (js_array_ext_getel(ctx, obj, i, &dst[i + 1])) goto done;
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _insertAll(idx, elts) -> a copy with every element of elts inserted at idx;
+ * an idx outside [0,len) appends (Ramda insertAll). */
+static JSValue js_array_ext_insertall(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue obj, elts, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSObject *rp;
+    JSValue *dst;
+    int64_t len, elen, idx, i, w = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (JS_ToInt64Sat(ctx, &idx, argc > 0 ? argv[0] : JS_UNDEFINED)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    elts = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(elts)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &elen, elts)) goto done;
+    if (idx < 0 || idx > len) idx = len;
+    result = js_allocate_fast_array(ctx, len + elen);
+    if (JS_IsException(result)) goto done;
+    rp = JS_VALUE_GET_OBJ(result);
+    dst = rp->u.array.u.values;
+    for (i = 0; i < idx; i++)   if (js_array_ext_getel(ctx, obj, i, &dst[w++])) goto done;
+    for (i = 0; i < elen; i++)  if (js_array_ext_getel(ctx, elts, i, &dst[w++])) goto done;
+    for (i = idx; i < len; i++) if (js_array_ext_getel(ctx, obj, i, &dst[w++])) goto done;
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, elts);
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _removeAt(idx) -> a copy without the element at idx (negative from the end);
+ * out-of-range returns an unchanged copy. */
+static JSValue js_array_ext_removeat(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValue obj, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValue *srcp, *dst;
+    JSObject *rp;
+    uint32_t scount;
+    int64_t len, idx, i, w = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (JS_ToInt64Sat(ctx, &idx, argc > 0 ? argv[0] : JS_UNDEFINED)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    if (idx < 0) idx += len;
+    if (idx < 0 || idx >= len) {          /* out of range -> unchanged copy */
+        ret = js_array_ext_build_range(ctx, obj, 0, len);
+        goto done;
+    }
+    result = js_allocate_fast_array(ctx, len - 1);
+    if (JS_IsException(result)) goto done;
+    rp = JS_VALUE_GET_OBJ(result);
+    dst = rp->u.array.u.values;
+    if (js_get_fast_array(ctx, obj, &srcp, &scount) && (int64_t)scount >= len) {
+        for (i = 0; i < len; i++) if (i != idx) dst[w++] = JS_DupValue(ctx, srcp[i]);
+    } else {
+        for (i = 0; i < len; i++) if (i != idx) { if (js_array_ext_getel(ctx, obj, i, &dst[w++])) goto done; }
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _zipObj(values) -> an object mapping this[i] (as key) to values[i], truncated
+ * to the shorter length (Ramda zipObj). */
+static JSValue js_array_ext_zipobj(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj, vals, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    int64_t klen, vlen, n, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &klen, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    vals = JS_ToObject(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(vals)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &vlen, vals)) goto done;
+    n = klen < vlen ? klen : vlen;
+    result = JS_NewObject(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < n; i++) {
+        JSValue k, v;
+        JSAtom a;
+        if (js_array_ext_getel(ctx, obj, i, &k)) goto done;
+        a = JS_ValueToAtom(ctx, k);
+        JS_FreeValue(ctx, k);
+        if (a == JS_ATOM_NULL) goto done;
+        if (js_array_ext_getel(ctx, vals, i, &v)) { JS_FreeAtom(ctx, a); goto done; }
+        if (JS_DefinePropertyValue(ctx, result, a, v, JS_PROP_C_W_E) < 0) { JS_FreeAtom(ctx, a); goto done; }
+        JS_FreeAtom(ctx, a);
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, vals);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _fromPairs() -> an object built from [key, value] pairs (Ramda fromPairs);
+ * later pairs win on duplicate keys. */
+static JSValue js_array_ext_frompairs(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue obj, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    int64_t len, i;
+    (void)argc; (void)argv;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    result = JS_NewObject(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue pair, k, v;
+        JSAtom a;
+        if (js_array_ext_getel(ctx, obj, i, &pair)) goto done;
+        if (js_array_ext_getel(ctx, pair, 0, &k)) { JS_FreeValue(ctx, pair); goto done; }
+        a = JS_ValueToAtom(ctx, k);
+        JS_FreeValue(ctx, k);
+        if (a == JS_ATOM_NULL) { JS_FreeValue(ctx, pair); goto done; }
+        if (js_array_ext_getel(ctx, pair, 1, &v)) { JS_FreeAtom(ctx, a); JS_FreeValue(ctx, pair); goto done; }
+        JS_FreeValue(ctx, pair);
+        if (JS_DefinePropertyValue(ctx, result, a, v, JS_PROP_C_W_E) < 0) { JS_FreeAtom(ctx, a); goto done; }
+        JS_FreeAtom(ctx, a);
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("_isEmpty", 0, js_array_ext_isEmpty ),
     JS_CFUNC_DEF("_first", 0, js_array_ext_first ),
@@ -2665,6 +2861,12 @@ static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_MAGIC_DEF("_dropLastWhile", 1, js_array_ext_whilst, 3 ),
     JS_CFUNC_DEF("_append", 1, js_array_ext_append ),
     JS_CFUNC_DEF("_prepend", 1, js_array_ext_prepend ),
+    JS_CFUNC_DEF("_reject", 1, js_array_ext_reject ),
+    JS_CFUNC_DEF("_insert", 2, js_array_ext_insert ),
+    JS_CFUNC_DEF("_insertAll", 2, js_array_ext_insertall ),
+    JS_CFUNC_DEF("_removeAt", 1, js_array_ext_removeat ),
+    JS_CFUNC_DEF("_zipObj", 1, js_array_ext_zipobj ),
+    JS_CFUNC_DEF("_fromPairs", 0, js_array_ext_frompairs ),
 };
 
 static const JSCFunctionListEntry js_array_proto_funcs[] = {

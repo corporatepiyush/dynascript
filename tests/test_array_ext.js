@@ -291,4 +291,40 @@ eq(b8, [1, 2, 3], "batch-8 methods do not mutate the receiver");
 /* array-like via `this` */
 eq(Array.prototype._tail.call({ 0: "a", 1: "b", 2: "c", length: 3 }), ["b", "c"], "_tail on array-like");
 
+/* ---- batch 9: _reject / _insert / _insertAll / _removeAt / _zipObj / _fromPairs ---- */
+eq([1, 2, 3, 4]._reject(x => x % 2 === 0), [1, 3], "_reject(pred) complement of filter");
+eq([1, 2, 1, 3, 1]._reject(1), [2, 3], "_reject(value) via SameValueZero");
+eq([1, 2, 3]._reject(x => false), [1, 2, 3], "_reject none → all");
+eq([1, 2, 3]._reject(x => true), [], "_reject all → []");
+eq([1, 2, 3, 4]._insert(2, "x"), [1, 2, "x", 3, 4], "_insert(idx, elt)");
+eq([1, 2, 3]._insert(0, "x"), ["x", 1, 2, 3], "_insert at front");
+eq([1, 2, 3]._insert(3, "x"), [1, 2, 3, "x"], "_insert at len → append");
+eq([1, 2, 3]._insert(99, "x"), [1, 2, 3, "x"], "_insert idx>len → append (Ramda)");
+eq([1, 2, 3]._insert(-1, "x"), [1, 2, 3, "x"], "_insert idx<0 → append (Ramda)");
+eq([1, 2, 3, 4]._insertAll(2, ["x", "y"]), [1, 2, "x", "y", 3, 4], "_insertAll(idx, elts)");
+eq([1, 2, 3]._insertAll(0, ["a"]), ["a", 1, 2, 3], "_insertAll at front");
+eq([1, 2, 3]._insertAll(9, ["a", "b"]), [1, 2, 3, "a", "b"], "_insertAll idx>len → append");
+eq([1, 2, 3]._insertAll(1, []), [1, 2, 3], "_insertAll empty elts → copy");
+eq([1, 2, 3, 4]._removeAt(1), [1, 3, 4], "_removeAt(idx)");
+eq([1, 2, 3, 4]._removeAt(-1), [1, 2, 3], "_removeAt(-1) from end");
+eq([1, 2, 3]._removeAt(9), [1, 2, 3], "_removeAt OOB → unchanged copy");
+eq([5]._removeAt(0), [], "_removeAt sole element → []");
+eq(["a", "b", "c"]._zipObj([1, 2, 3]), { a: 1, b: 2, c: 3 }, "_zipObj(values)");
+eq(["a", "b", "c"]._zipObj([1, 2]), { a: 1, b: 2 }, "_zipObj truncates to shorter");
+eq([]._zipObj([1, 2]), {}, "_zipObj no keys → {}");
+eq([["a", 1], ["b", 2]]._fromPairs(), { a: 1, b: 2 }, "_fromPairs");
+eq([["a", 1], ["a", 2]]._fromPairs(), { a: 2 }, "_fromPairs later key wins");
+eq([]._fromPairs(), {}, "_fromPairs of empty → {}");
+/* non-mutation */
+const b9 = [1, 2, 3];
+b9._reject(x => true); b9._insert(1, 9); b9._insertAll(1, [9]); b9._removeAt(0); b9._zipObj([7, 8, 9]);
+eq(b9, [1, 2, 3], "batch-9 methods do not mutate the receiver");
+/* re-entrancy: a {valueOf} idx to _insert/_removeAt must not corrupt the receiver */
+{
+    const arr = [10, 20, 30];
+    eq(arr._insert({ valueOf() { return 1; } }, 99), [10, 99, 20, 30], "_insert with valueOf idx");
+    eq(arr._removeAt({ valueOf() { return 0; } }), [20, 30], "_removeAt with valueOf idx");
+    eq(arr, [10, 20, 30], "receiver intact after valueOf-arg calls");
+}
+
 print("test_array_ext: all tests passed (" + n + " assertions)");
