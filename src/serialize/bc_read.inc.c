@@ -1527,6 +1527,470 @@ exception:
     return res;
 }
 
+/* --- SugarJS 2.0 + Ramda 0.32 static Object utilities (SUGAR_RAMDA_NATIVE.md,
+ * phase 4). Installed non-enumerable on the Object CONSTRUCTOR — NEVER on
+ * Object.prototype (that would pollute every object and break test262). These
+ * are pure data helpers: enumeration may trigger user getters (ordinary JS
+ * semantics), but they hold no native handle, so there is no UAF hazard. Names
+ * are all non-colliding with the ES `Object.*` statics. */
+
+enum {
+    OTYPE_UNDEFINED, OTYPE_NULL, OTYPE_BOOLEAN, OTYPE_NUMBER, OTYPE_STRING,
+    OTYPE_SYMBOL, OTYPE_BIGINT, OTYPE_FUNCTION, OTYPE_ARRAY, OTYPE_DATE,
+    OTYPE_REGEXP, OTYPE_ERROR, OTYPE_SET, OTYPE_MAP, OTYPE_ARGUMENTS,
+    OTYPE_OBJECT,
+};
+
+static const char * const js_otype_names[] = {
+    "Undefined", "Null", "Boolean", "Number", "String", "Symbol", "BigInt",
+    "Function", "Array", "Date", "RegExp", "Error", "Set", "Map", "Arguments",
+    "Object",
+};
+
+/* Ramda `type`-style tag, from the internal class (does NOT consult
+ * Symbol.toStringTag — a deliberate, cheaper divergence). Number/Boolean/String
+ * wrapper objects report the same tag as their primitives, matching Sugar. */
+static int js_value_type_code(JSContext *ctx, JSValueConst v)
+{
+    int tag = JS_VALUE_GET_NORM_TAG(v);
+    switch (tag) {
+    case JS_TAG_UNDEFINED:     return OTYPE_UNDEFINED;
+    case JS_TAG_NULL:          return OTYPE_NULL;
+    case JS_TAG_BOOL:          return OTYPE_BOOLEAN;
+    case JS_TAG_INT:
+    case JS_TAG_FLOAT64:       return OTYPE_NUMBER;
+    case JS_TAG_STRING:        return OTYPE_STRING;
+    case JS_TAG_SYMBOL:        return OTYPE_SYMBOL;
+    case JS_TAG_BIG_INT:
+    case JS_TAG_SHORT_BIG_INT: return OTYPE_BIGINT;
+    case JS_TAG_OBJECT: {
+        JSObject *p = JS_VALUE_GET_OBJ(v);
+        if (JS_IsFunction(ctx, v)) return OTYPE_FUNCTION;
+        switch (p->class_id) {
+        case JS_CLASS_ARRAY:            return OTYPE_ARRAY;
+        case JS_CLASS_DATE:             return OTYPE_DATE;
+        case JS_CLASS_REGEXP:           return OTYPE_REGEXP;
+        case JS_CLASS_ERROR:            return OTYPE_ERROR;
+        case JS_CLASS_SET:              return OTYPE_SET;
+        case JS_CLASS_MAP:              return OTYPE_MAP;
+        case JS_CLASS_ARGUMENTS:
+        case JS_CLASS_MAPPED_ARGUMENTS: return OTYPE_ARGUMENTS;
+        case JS_CLASS_NUMBER:           return OTYPE_NUMBER;
+        case JS_CLASS_BOOLEAN:          return OTYPE_BOOLEAN;
+        case JS_CLASS_STRING:           return OTYPE_STRING;
+        default:                        return OTYPE_OBJECT;
+        }
+    }
+    default:                   return OTYPE_OBJECT;
+    }
+}
+
+/* Type guards: Object.isNumber/isString/... — magic is the target OTYPE_*. */
+static JSValue js_object_ext_istype(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst v = argc > 0 ? argv[0] : JS_UNDEFINED;
+    return JS_NewBool(ctx, js_value_type_code(ctx, v) == magic);
+}
+
+/* isArray uses the real Array check so a Proxy-of-Array reports true. */
+static JSValue js_object_ext_isArray(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    int r = JS_IsArray(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (r < 0) return JS_EXCEPTION;
+    return JS_NewBool(ctx, r);
+}
+
+/* Ramda isNil / isNotNil — magic 0=isNil, 1=isNotNil. */
+static JSValue js_object_ext_isNil(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst v = argc > 0 ? argv[0] : JS_UNDEFINED;
+    BOOL nil = JS_IsNull(v) || JS_IsUndefined(v);
+    return JS_NewBool(ctx, magic ? !nil : nil);
+}
+
+/* Ramda type(v) -> "Number" | "String" | "Object" | ... */
+static JSValue js_object_ext_type(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv)
+{
+    int t = js_value_type_code(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    return js_new_string8(ctx, js_otype_names[t]);
+}
+
+/* Ramda defaultTo(d, v) -> v unless v is null/undefined/NaN, then d. */
+static JSValue js_object_ext_defaultTo(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    JSValueConst d = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst v = argc > 1 ? argv[1] : JS_UNDEFINED;
+    BOOL use_d = JS_IsNull(v) || JS_IsUndefined(v);
+    if (!use_d && JS_IsNumber(v)) {
+        double dv;
+        JS_ToFloat64(ctx, &dv, v);   /* cannot fail / run JS for a number */
+        if (isnan(dv)) use_d = TRUE;
+    }
+    return JS_DupValue(ctx, use_d ? d : v);
+}
+
+/* Sugar size / isEmpty — count of own enumerable string keys. */
+static JSValue js_object_ext_size(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv, int magic)
+{
+    JSValue obj;
+    JSPropertyEnum *props;
+    uint32_t len;
+    obj = JS_ToObject(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(obj)) return obj;
+    if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, JS_VALUE_GET_OBJ(obj),
+                                       JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK)) {
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
+    JS_FreePropertyEnum(ctx, props, len);
+    JS_FreeValue(ctx, obj);
+    return magic ? JS_NewBool(ctx, len == 0) : JS_NewInt64(ctx, len);
+}
+
+/* Sugar invert / Ramda invertObj — swap keys and values (last value wins).
+ * Values become property keys via ToPropertyKey; keys become string values. */
+static JSValue js_object_ext_invert(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue obj, res = JS_UNDEFINED;
+    JSPropertyEnum *props = NULL;
+    uint32_t len, i;
+    obj = JS_ToObject(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(obj)) return obj;
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) goto fail;
+    if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, JS_VALUE_GET_OBJ(obj),
+                                       JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK))
+        goto fail;
+    for (i = 0; i < len; i++) {
+        JSValue v = JS_GetProperty(ctx, obj, props[i].atom);
+        JSAtom vkey;
+        if (JS_IsException(v)) goto fail;
+        vkey = JS_ValueToAtom(ctx, v);
+        JS_FreeValue(ctx, v);
+        if (vkey == JS_ATOM_NULL) goto fail;
+        if (JS_DefinePropertyValue(ctx, res, vkey,
+                                   JS_AtomToString(ctx, props[i].atom),
+                                   JS_PROP_C_W_E) < 0) {
+            JS_FreeAtom(ctx, vkey);
+            goto fail;
+        }
+        JS_FreeAtom(ctx, vkey);
+    }
+    JS_FreePropertyEnum(ctx, props, len);
+    JS_FreeValue(ctx, obj);
+    return res;
+ fail:
+    if (props) JS_FreePropertyEnum(ctx, props, len);
+    JS_FreeValue(ctx, res);
+    JS_FreeValue(ctx, obj);
+    return JS_EXCEPTION;
+}
+
+/* Ramda objOf(k, v) -> { [k]: v }. */
+static JSValue js_object_ext_objOf(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue res;
+    JSAtom a;
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) return res;
+    a = JS_ValueToAtom(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (a == JS_ATOM_NULL) { JS_FreeValue(ctx, res); return JS_EXCEPTION; }
+    if (JS_DefinePropertyValue(ctx, res, a,
+                               JS_DupValue(ctx, argc > 1 ? argv[1] : JS_UNDEFINED),
+                               JS_PROP_C_W_E) < 0) {
+        JS_FreeAtom(ctx, a);
+        JS_FreeValue(ctx, res);
+        return JS_EXCEPTION;
+    }
+    JS_FreeAtom(ctx, a);
+    return res;
+}
+
+/* Ramda pick(keys, o) -> new object with the listed keys that exist in o
+ * (via the `in` operator, so inherited keys are included). */
+static JSValue js_object_ext_pick(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv)
+{
+    JSValueConst keys = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue src, res = JS_UNDEFINED;
+    int64_t klen, i;
+    src = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(src)) return src;
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) goto fail;
+    if (js_get_length64(ctx, &klen, keys)) goto fail;
+    for (i = 0; i < klen; i++) {
+        JSValue k = JS_GetPropertyInt64(ctx, keys, i);
+        JSAtom a;
+        int has;
+        if (JS_IsException(k)) goto fail;
+        a = JS_ValueToAtom(ctx, k);
+        JS_FreeValue(ctx, k);
+        if (a == JS_ATOM_NULL) goto fail;
+        has = JS_HasProperty(ctx, src, a);
+        if (has < 0) { JS_FreeAtom(ctx, a); goto fail; }
+        if (has) {
+            JSValue v = JS_GetProperty(ctx, src, a);
+            if (JS_IsException(v)) { JS_FreeAtom(ctx, a); goto fail; }
+            if (JS_DefinePropertyValue(ctx, res, a, v, JS_PROP_C_W_E) < 0) {
+                JS_FreeAtom(ctx, a); goto fail;
+            }
+        }
+        JS_FreeAtom(ctx, a);
+    }
+    JS_FreeValue(ctx, src);
+    return res;
+ fail:
+    JS_FreeValue(ctx, res);
+    JS_FreeValue(ctx, src);
+    return JS_EXCEPTION;
+}
+
+/* Ramda omit(keys, o) -> own enumerable string props of o not in keys. */
+static JSValue js_object_ext_omit(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv)
+{
+    JSValueConst keys = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue src, res = JS_UNDEFINED;
+    JSPropertyEnum *props = NULL;
+    JSAtom *skip = NULL;
+    uint32_t len = 0, i;
+    int64_t klen = 0, j;
+    src = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(src)) return src;
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) goto fail;
+    if (js_get_length64(ctx, &klen, keys)) goto fail;
+    if (klen > 0) {
+        skip = js_malloc(ctx, sizeof(JSAtom) * klen);
+        if (!skip) goto fail;
+        for (j = 0; j < klen; j++) skip[j] = JS_ATOM_NULL;
+        for (j = 0; j < klen; j++) {
+            JSValue k = JS_GetPropertyInt64(ctx, keys, j);
+            if (JS_IsException(k)) goto fail;
+            skip[j] = JS_ValueToAtom(ctx, k);
+            JS_FreeValue(ctx, k);
+            if (skip[j] == JS_ATOM_NULL) goto fail;
+        }
+    }
+    if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, JS_VALUE_GET_OBJ(src),
+                                       JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK))
+        goto fail;
+    for (i = 0; i < len; i++) {
+        JSAtom a = props[i].atom;
+        BOOL omit = FALSE;
+        JSValue v;
+        for (j = 0; j < klen; j++) if (skip[j] == a) { omit = TRUE; break; }
+        if (omit) continue;
+        v = JS_GetProperty(ctx, src, a);
+        if (JS_IsException(v)) goto fail;
+        if (JS_DefinePropertyValue(ctx, res, a, v, JS_PROP_C_W_E) < 0) goto fail;
+    }
+    JS_FreePropertyEnum(ctx, props, len);
+    for (j = 0; j < klen; j++) JS_FreeAtom(ctx, skip[j]);
+    js_free(ctx, skip);
+    JS_FreeValue(ctx, src);
+    return res;
+ fail:
+    if (props) JS_FreePropertyEnum(ctx, props, len);
+    if (skip) { for (j = 0; j < klen; j++) JS_FreeAtom(ctx, skip[j]); js_free(ctx, skip); }
+    JS_FreeValue(ctx, res);
+    JS_FreeValue(ctx, src);
+    return JS_EXCEPTION;
+}
+
+/* Ramda pickBy(pred, o) -> props where pred(value, key) is truthy. */
+static JSValue js_object_ext_pickBy(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValueConst pred = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue src, res = JS_UNDEFINED;
+    JSPropertyEnum *props = NULL;
+    uint32_t len = 0, i;
+    src = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(src)) return src;
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) goto fail;
+    if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, JS_VALUE_GET_OBJ(src),
+                                       JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK))
+        goto fail;
+    for (i = 0; i < len; i++) {
+        JSAtom a = props[i].atom;
+        JSValue v, ret, cargs[2];
+        int keep;
+        v = JS_GetProperty(ctx, src, a);
+        if (JS_IsException(v)) goto fail;
+        cargs[0] = v;
+        cargs[1] = JS_AtomToString(ctx, a);
+        ret = JS_Call(ctx, pred, JS_UNDEFINED, 2, (JSValueConst *)cargs);
+        JS_FreeValue(ctx, cargs[1]);
+        if (JS_IsException(ret)) { JS_FreeValue(ctx, v); goto fail; }
+        keep = JS_ToBool(ctx, ret);
+        JS_FreeValue(ctx, ret);
+        if (keep) {
+            if (JS_DefinePropertyValue(ctx, res, a, v, JS_PROP_C_W_E) < 0) goto fail;
+        } else {
+            JS_FreeValue(ctx, v);
+        }
+    }
+    JS_FreePropertyEnum(ctx, props, len);
+    JS_FreeValue(ctx, src);
+    return res;
+ fail:
+    if (props) JS_FreePropertyEnum(ctx, props, len);
+    JS_FreeValue(ctx, res);
+    JS_FreeValue(ctx, src);
+    return JS_EXCEPTION;
+}
+
+/* Ramda toPairs(o) -> [[k, v], ...] (own enumerable string entries). */
+static JSValue js_object_ext_toPairs(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    return JS_GetOwnPropertyNames2(ctx, argc > 0 ? argv[0] : JS_UNDEFINED,
+                                   JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK,
+                                   JS_ITERATOR_KIND_KEY_AND_VALUE);
+}
+
+/* Ramda fromPairs(pairs) -> object built from an array of [k, v] pairs. */
+static JSValue js_object_ext_fromPairs(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    JSValueConst pairs = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue res;
+    int64_t len, i;
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) return res;
+    if (js_get_length64(ctx, &len, pairs)) goto fail;
+    for (i = 0; i < len; i++) {
+        JSValue pair = JS_GetPropertyInt64(ctx, pairs, i);
+        JSValue k, v;
+        JSAtom a;
+        if (JS_IsException(pair)) goto fail;
+        k = JS_GetPropertyUint32(ctx, pair, 0);
+        v = JS_GetPropertyUint32(ctx, pair, 1);
+        JS_FreeValue(ctx, pair);
+        if (JS_IsException(k) || JS_IsException(v)) {
+            JS_FreeValue(ctx, k); JS_FreeValue(ctx, v); goto fail;
+        }
+        a = JS_ValueToAtom(ctx, k);
+        JS_FreeValue(ctx, k);
+        if (a == JS_ATOM_NULL) { JS_FreeValue(ctx, v); goto fail; }
+        if (JS_DefinePropertyValue(ctx, res, a, v, JS_PROP_C_W_E) < 0) {
+            JS_FreeAtom(ctx, a); goto fail;
+        }
+        JS_FreeAtom(ctx, a);
+    }
+    return res;
+ fail:
+    JS_FreeValue(ctx, res);
+    return JS_EXCEPTION;
+}
+
+/* Ramda assoc(k, v, o) -> shallow copy of o with k set to v. */
+static JSValue js_object_ext_assoc(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue src, res = JS_UNDEFINED;
+    JSAtom a;
+    src = JS_ToObject(ctx, argc > 2 ? argv[2] : JS_UNDEFINED);
+    if (JS_IsException(src)) return src;
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) goto fail;
+    if (JS_CopyDataProperties(ctx, res, src, JS_UNDEFINED, TRUE)) goto fail;
+    a = JS_ValueToAtom(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (a == JS_ATOM_NULL) goto fail;
+    if (JS_DefinePropertyValue(ctx, res, a,
+                               JS_DupValue(ctx, argc > 1 ? argv[1] : JS_UNDEFINED),
+                               JS_PROP_C_W_E) < 0) {
+        JS_FreeAtom(ctx, a); goto fail;
+    }
+    JS_FreeAtom(ctx, a);
+    JS_FreeValue(ctx, src);
+    return res;
+ fail:
+    JS_FreeValue(ctx, res);
+    JS_FreeValue(ctx, src);
+    return JS_EXCEPTION;
+}
+
+/* Ramda dissoc(k, o) -> shallow copy of o without k. */
+static JSValue js_object_ext_dissoc(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue src, res = JS_UNDEFINED;
+    JSAtom a;
+    src = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(src)) return src;
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) goto fail;
+    if (JS_CopyDataProperties(ctx, res, src, JS_UNDEFINED, TRUE)) goto fail;
+    a = JS_ValueToAtom(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (a == JS_ATOM_NULL) goto fail;
+    if (JS_DeleteProperty(ctx, res, a, 0) < 0) { JS_FreeAtom(ctx, a); goto fail; }
+    JS_FreeAtom(ctx, a);
+    JS_FreeValue(ctx, src);
+    return res;
+ fail:
+    JS_FreeValue(ctx, res);
+    JS_FreeValue(ctx, src);
+    return JS_EXCEPTION;
+}
+
+/* Ramda tap(fn, x) -> call fn(x) for its side effect, return x. */
+static JSValue js_object_ext_tap(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    JSValueConst fn = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst x = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValue ret = JS_Call(ctx, fn, JS_UNDEFINED, 1, (JSValueConst *)&x);
+    if (JS_IsException(ret)) return JS_EXCEPTION;
+    JS_FreeValue(ctx, ret);
+    return JS_DupValue(ctx, x);
+}
+
+static const JSCFunctionListEntry js_object_ext_funcs[] = {
+    /* Sugar type guards + Ramda type/nil */
+    JS_CFUNC_MAGIC_DEF("isObject",    1, js_object_ext_istype, OTYPE_OBJECT ),
+    JS_CFUNC_DEF("isArray",           1, js_object_ext_isArray ),
+    JS_CFUNC_MAGIC_DEF("isBoolean",   1, js_object_ext_istype, OTYPE_BOOLEAN ),
+    JS_CFUNC_MAGIC_DEF("isNumber",    1, js_object_ext_istype, OTYPE_NUMBER ),
+    JS_CFUNC_MAGIC_DEF("isString",    1, js_object_ext_istype, OTYPE_STRING ),
+    JS_CFUNC_MAGIC_DEF("isFunction",  1, js_object_ext_istype, OTYPE_FUNCTION ),
+    JS_CFUNC_MAGIC_DEF("isDate",      1, js_object_ext_istype, OTYPE_DATE ),
+    JS_CFUNC_MAGIC_DEF("isRegExp",    1, js_object_ext_istype, OTYPE_REGEXP ),
+    JS_CFUNC_MAGIC_DEF("isError",     1, js_object_ext_istype, OTYPE_ERROR ),
+    JS_CFUNC_MAGIC_DEF("isSet",       1, js_object_ext_istype, OTYPE_SET ),
+    JS_CFUNC_MAGIC_DEF("isMap",       1, js_object_ext_istype, OTYPE_MAP ),
+    JS_CFUNC_MAGIC_DEF("isArguments", 1, js_object_ext_istype, OTYPE_ARGUMENTS ),
+    JS_CFUNC_MAGIC_DEF("isNil",       1, js_object_ext_isNil, 0 ),
+    JS_CFUNC_MAGIC_DEF("isNotNil",    1, js_object_ext_isNil, 1 ),
+    JS_CFUNC_DEF("type",              1, js_object_ext_type ),
+    JS_CFUNC_DEF("defaultTo",         2, js_object_ext_defaultTo ),
+    /* Sugar/Ramda shallow structural helpers */
+    JS_CFUNC_MAGIC_DEF("size",        1, js_object_ext_size, 0 ),
+    JS_CFUNC_MAGIC_DEF("isEmpty",     1, js_object_ext_size, 1 ),
+    JS_CFUNC_DEF("invert",            1, js_object_ext_invert ),
+    JS_CFUNC_DEF("invertObj",         1, js_object_ext_invert ),
+    JS_CFUNC_DEF("objOf",             2, js_object_ext_objOf ),
+    JS_CFUNC_DEF("pick",              2, js_object_ext_pick ),
+    JS_CFUNC_DEF("omit",              2, js_object_ext_omit ),
+    JS_CFUNC_DEF("pickBy",            2, js_object_ext_pickBy ),
+    JS_CFUNC_DEF("toPairs",           1, js_object_ext_toPairs ),
+    JS_CFUNC_DEF("fromPairs",         1, js_object_ext_fromPairs ),
+    JS_CFUNC_DEF("assoc",             3, js_object_ext_assoc ),
+    JS_CFUNC_DEF("dissoc",            2, js_object_ext_dissoc ),
+    JS_CFUNC_DEF("tap",               2, js_object_ext_tap ),
+};
+
 static const JSCFunctionListEntry js_object_funcs[] = {
     JS_CFUNC_DEF("create", 2, js_object_create ),
     JS_CFUNC_MAGIC_DEF("getPrototypeOf", 1, js_object_getPrototypeOf, 0 ),

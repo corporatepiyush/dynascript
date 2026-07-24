@@ -367,8 +367,12 @@ int JS_AddIntrinsicBaseObjects(JSContext *ctx)
                               JS_NEW_CTOR_PROTO_EXIST);
     if (JS_IsException(obj1))
         return -1;
+    /* SugarJS/RamdaJS static Object utilities (SUGAR_RAMDA_NATIVE.md, phase 4),
+     * installed non-enumerable on the Object constructor (never on the proto). */
+    JS_SetPropertyFunctionList(ctx, obj1, js_object_ext_funcs,
+                               countof(js_object_ext_funcs));
     JS_FreeValue(ctx, obj1);
-    
+
     /* Function */
     ft.generic_magic = js_function_constructor;
     obj1 = JS_NewCConstructor(ctx, JS_CLASS_BYTECODE_FUNCTION, "Function",

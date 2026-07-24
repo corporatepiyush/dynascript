@@ -678,6 +678,7 @@ test: dynajs$(EXE)
 	$(WINE) ./dynajs$(EXE) tests/test_typedarray_ext.js
 	$(WINE) ./dynajs$(EXE) tests/test_string_ext.js
 	$(WINE) ./dynajs$(EXE) tests/test_number_ext.js
+	$(WINE) ./dynajs$(EXE) tests/test_object_ext.js
 	$(WINE) ./dynajs$(EXE) tests/test_meta.js
 	$(WINE) ./dynajs$(EXE) tests/test_optimizer.js
 	$(WINE) ./dynajs$(EXE) tests/test_loop.js
