@@ -73,4 +73,44 @@ assert(typeof "x".slice === "function" && "abc".slice(1) === "bc", "ES slice unt
 eq("hello".first({ valueOf() { return 2; } }), "he", "first coerces an object arg");
 eq(String.prototype.first.call("world", 3), "wor", "first via .call on a primitive");
 
+/* ---- batch 2: reverse / insert / remove / removeAll / compact ---- */
+eq("hello".reverse(), "olleh", "reverse");
+eq("".reverse(), "", "reverse of empty");
+eq("a".reverse(), "a", "reverse single");
+eq("café".reverse(), "éfac", "reverse BMP wide string (accents fine)");
+eq("abcabc".reverse(), "cbacba", "reverse repeats");
+
+eq("hello".insert("!"), "hello!", "insert() appends by default");
+eq("hello".insert(" world", 5), "hello world", "insert(str, index)");
+eq("hello".insert("X", 0), "Xhello", "insert at front");
+eq("hello".insert("X", -1), "hellXo", "insert negative index from end");
+eq("hello".insert("X", 99), "helloX", "insert index>len clamps to end");
+eq("hi".insert(5), "hi5", "insert coerces a non-string arg");
+
+eq("hello".remove("l"), "helo", "remove first occurrence");
+eq("hello world".remove("o"), "hell world", "remove first o");
+eq("hello".remove("z"), "hello", "remove no match → unchanged");
+eq("hello".remove(""), "hello", "remove empty needle → unchanged");
+eq("aXbXc".removeAll("X"), "abc", "removeAll");
+eq("aaa".removeAll("a"), "", "removeAll everything");
+eq("ababab".removeAll("ab"), "", "removeAll multi-char");
+eq("aaaa".removeAll("aa"), "", "removeAll non-overlapping (2 matches)");
+eq("banana".remove("na"), "bana", "remove multi-char first");
+
+eq("  hello   world  ".compact(), "hello world", "compact trims + collapses");
+eq("a\t\n b".compact(), "a b", "compact assorted whitespace → single space");
+eq("   ".compact(), "", "compact all-whitespace → ''");
+eq("nospace".compact(), "nospace", "compact no whitespace unchanged");
+eq("".compact(), "", "compact empty");
+
+/* wide + rope */
+{
+    let r = ""; for (let i = 0; i < 40; i++) r += "ab ";
+    eq(r.compact().length, 119, "compact on a rope-built string");   /* "ab "*40 → "ab ...ab" */
+    eq("café crème".remove("è"), "café crme", "remove on a wide string");
+    eq("café".insert("!", 2), "ca!fé", "insert into a wide string");
+}
+/* reentrant valueOf/toString args must not corrupt the result */
+eq("hello".insert({ toString() { return "!" } }, { valueOf() { return 2 } }), "he!llo", "insert with object args");
+
 print("test_string_ext: all tests passed (" + n + " assertions)");

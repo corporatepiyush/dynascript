@@ -5457,6 +5457,130 @@ static JSValue js_string_ext_codes(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* reverse() -> the string with its code units reversed (astral pairs, like
+ * "".split('').reverse().join(''), are split — code-unit semantics). */
+static JSValue js_string_ext_reverse(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    int i;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    if (string_buffer_init2(ctx, b, p->len, p->is_wide_char)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    for (i = (int)p->len - 1; i >= 0; i--)
+        string_buffer_putc16(b, string_get(p, i));
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* insert(str, index=end) -> a copy with str inserted at the code-unit index
+ * (negative counts from the end; out of range clamps). */
+static JSValue js_string_ext_insert(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue val, sval, ret = JS_EXCEPTION;
+    JSString *p, *sp;
+    StringBuffer b_s, *b = &b_s;
+    int64_t idx, len;
+    BOOL have_idx = (argc > 1 && !JS_IsUndefined(argv[1]));
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    sval = JS_ToString(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(sval)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    len = JS_VALUE_GET_STRING(val)->len;
+    idx = len;                        /* default: append */
+    if (have_idx && JS_ToInt64Sat(ctx, &idx, argv[1])) { JS_FreeValue(ctx, sval); JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    p = JS_VALUE_GET_STRING(val);
+    sp = JS_VALUE_GET_STRING(sval);
+    if (idx < 0) idx += len;
+    if (idx < 0) idx = 0;
+    if (idx > len) idx = len;
+    if (string_buffer_init(ctx, b, p->len + sp->len)) goto done;
+    string_buffer_concat(b, p, 0, (uint32_t)idx);
+    string_buffer_concat(b, sp, 0, sp->len);
+    string_buffer_concat(b, p, (uint32_t)idx, (uint32_t)len);
+    ret = string_buffer_end(b);
+ done:
+    JS_FreeValue(ctx, sval);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* remove(str) / removeAll(str) -> a copy with the first / every (non-overlapping)
+ * occurrence of the substring str removed. magic 0/1. (String patterns; RegExp
+ * patterns are a later batch.) */
+static JSValue js_string_ext_remove(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    JSValue val, sval, ret = JS_EXCEPTION;
+    JSString *p, *sp;
+    StringBuffer b_s, *b = &b_s;
+    int pos, from, slen, plen;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    sval = JS_ToString(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(sval)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    p = JS_VALUE_GET_STRING(val);
+    sp = JS_VALUE_GET_STRING(sval);
+    plen = p->len; slen = sp->len;
+    if (slen == 0 || (pos = string_indexof(p, sp, 0)) < 0) {
+        ret = JS_DupValue(ctx, val);      /* empty needle or no match -> unchanged */
+        goto done;
+    }
+    if (string_buffer_init(ctx, b, plen)) goto done;
+    from = 0;
+    for (;;) {
+        string_buffer_concat(b, p, from, pos);   /* clean run before the match */
+        from = pos + slen;                        /* skip the match */
+        if (magic == 0) break;                    /* remove: first occurrence only */
+        pos = string_indexof(p, sp, from);
+        if (pos < 0) break;
+    }
+    string_buffer_concat(b, p, from, plen);       /* tail */
+    ret = string_buffer_end(b);
+ done:
+    JS_FreeValue(ctx, sval);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* compact() -> trims the ends and collapses every internal whitespace run to a
+ * single space (whitespace per lre_is_space, matching trim()). */
+static JSValue js_string_ext_compact(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    uint32_t i, len;
+    int in_ws = 0, wrote = 0;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    for (i = 0; i < len; i++) {
+        int c = string_get(p, i);
+        if (lre_is_space(c)) {
+            in_ws = 1;
+        } else {
+            if (in_ws && wrote) string_buffer_putc8(b, ' ');
+            in_ws = 0;
+            string_buffer_putc16(b, c);
+            wrote = 1;
+        }
+    }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("isEmpty", 0, js_string_ext_isEmpty ),
     JS_CFUNC_DEF("isBlank", 0, js_string_ext_isBlank ),
@@ -5466,6 +5590,11 @@ static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_MAGIC_DEF("to", 1, js_string_ext_fromto, 1 ),
     JS_CFUNC_DEF("chars", 0, js_string_ext_chars ),
     JS_CFUNC_DEF("codes", 0, js_string_ext_codes ),
+    JS_CFUNC_DEF("reverse", 0, js_string_ext_reverse ),
+    JS_CFUNC_DEF("insert", 2, js_string_ext_insert ),
+    JS_CFUNC_MAGIC_DEF("remove", 1, js_string_ext_remove, 0 ),
+    JS_CFUNC_MAGIC_DEF("removeAll", 1, js_string_ext_remove, 1 ),
+    JS_CFUNC_DEF("compact", 0, js_string_ext_compact ),
 };
 
 static const JSCFunctionListEntry js_string_proto_funcs[] = {
