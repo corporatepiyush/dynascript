@@ -198,4 +198,97 @@ eq([]._transpose(), [], "_transpose of empty → []");
 /* non-mutation */
 const zSrc = [1, 2, 3]; zSrc._flatten(); zSrc._intersperse(0); eq(zSrc, [1, 2, 3], "structural methods do not mutate");
 
+/* ---- batch 7: _xprod / _aperture / _splitEvery / _splitAt / _adjust / _update / _move / _swap ---- */
+eq([1, 2]._xprod(["a", "b"]), [[1, "a"], [1, "b"], [2, "a"], [2, "b"]], "_xprod cross product");
+eq([1, 2, 3]._xprod([]), [], "_xprod with empty other → []");
+eq([]._xprod([1, 2]), [], "_xprod from empty → []");
+eq([1, 2, 3, 4, 5]._aperture(2), [[1, 2], [2, 3], [3, 4], [4, 5]], "_aperture(2)");
+eq([1, 2, 3]._aperture(3), [[1, 2, 3]], "_aperture(len) → one window");
+eq([1, 2, 3]._aperture(4), [], "_aperture(n>len) → []");
+eq([1, 2, 3]._aperture(0), [[], [], [], []], "_aperture(0) → len+1 empties (Ramda)");
+eq([1, 2, 3, 4, 5, 6, 7]._splitEvery(3), [[1, 2, 3], [4, 5, 6], [7]], "_splitEvery(3)");
+eq([1, 2, 3, 4]._splitEvery(2), [[1, 2], [3, 4]], "_splitEvery even");
+eq([]._splitEvery(3), [], "_splitEvery of empty → []");
+let threw = false; try { [1, 2, 3]._splitEvery(0); } catch (e) { threw = e instanceof RangeError; }
+assert(threw, "_splitEvery(0) throws RangeError");
+eq([1, 2, 3]._splitAt(1), [[1], [2, 3]], "_splitAt(1)");
+eq([1, 2, 3]._splitAt(0), [[], [1, 2, 3]], "_splitAt(0)");
+eq([1, 2, 3]._splitAt(-1), [[1, 2], [3]], "_splitAt(-1) from end");
+eq([1, 2, 3]._splitAt(9), [[1, 2, 3], []], "_splitAt(n>len)");
+eq([1, 2, 3]._adjust(1, x => x * 10), [1, 20, 3], "_adjust(idx, fn)");
+eq([1, 2, 3]._adjust(-1, x => x * 10), [1, 2, 30], "_adjust negative idx");
+eq([1, 2, 3]._adjust(9, x => x * 10), [1, 2, 3], "_adjust OOB → unchanged copy");
+eq([1, 2, 3]._update(1, 99), [1, 99, 3], "_update(idx, val)");
+eq([1, 2, 3]._update(-1, 99), [1, 2, 99], "_update negative idx");
+eq([1, 2, 3]._update(9, 99), [1, 2, 3], "_update OOB → unchanged copy");
+eq([1, 2, 3, 4]._move(0, 2), [2, 3, 1, 4], "_move(from, to)");
+eq([1, 2, 3, 4]._move(-1, 0), [4, 1, 2, 3], "_move negative indices");
+eq([1, 2, 3, 4]._move(2, 2), [1, 2, 3, 4], "_move(i, i) → unchanged");
+eq([1, 2, 3]._move(9, 0), [1, 2, 3], "_move OOB → unchanged copy");
+eq([1, 2, 3, 4]._swap(0, 3), [4, 2, 3, 1], "_swap(0, 3)");
+eq([1, 2, 3, 4]._swap(-1, 0), [4, 2, 3, 1], "_swap negative idx");
+eq([1, 2, 3]._swap(1, 1), [1, 2, 3], "_swap(i, i) → unchanged");
+eq([1, 2, 3]._swap(9, 0), [1, 2, 3], "_swap OOB → unchanged copy");
+/* non-mutation of the receiver */
+const b7 = [1, 2, 3, 4];
+b7._xprod([9]); b7._aperture(2); b7._splitEvery(2); b7._splitAt(2);
+b7._adjust(0, x => x * 100); b7._update(0, 100); b7._move(0, 3); b7._swap(0, 3);
+eq(b7, [1, 2, 3, 4], "batch-7 methods do not mutate the receiver");
+/* re-entrancy: a {valueOf} index arg must not corrupt the result */
+{
+    const arr = [10, 20, 30];
+    let hits = 0;
+    const eviltoInt = { valueOf() { hits++; return 1; } };
+    eq(arr._adjust(eviltoInt, x => x + 1), [10, 21, 30], "_adjust with valueOf idx");
+    eq(arr._update(eviltoInt, 99), [10, 99, 30], "_update with valueOf idx");
+    eq(arr._splitAt(eviltoInt), [[10], [20, 30]], "_splitAt with valueOf idx");
+    assert(hits === 3, "valueOf coerced exactly once per call");
+    eq(arr, [10, 20, 30], "receiver intact after valueOf-arg calls");
+}
+/* works on array-likes via `this` */
+eq(Array.prototype._splitAt.call({ 0: "a", 1: "b", 2: "c", length: 3 }, 2), [["a", "b"], ["c"]], "_splitAt on array-like");
+
+/* ---- batch 8: _nth / _init / _tail / _head / while-variants / _append / _prepend ---- */
+eq([10, 20, 30]._nth(1), 20, "_nth(1)");
+eq([10, 20, 30]._nth(-1), 30, "_nth(-1) from end");
+eq([10, 20, 30]._nth(9), undefined, "_nth OOB → undefined");
+eq([10, 20, 30]._nth(-9), undefined, "_nth negative OOB → undefined");
+eq([1, 2, 3, 4]._init(), [1, 2, 3], "_init drops last");
+eq([1]._init(), [], "_init of singleton → []");
+eq([]._init(), [], "_init of empty → []");
+eq([1, 2, 3, 4]._tail(), [2, 3, 4], "_tail drops first");
+eq([1]._tail(), [], "_tail of singleton → []");
+eq([]._tail(), [], "_tail of empty → []");
+eq([1, 2, 3]._head(), 1, "_head alias of _first");
+eq([1, 2, 3, 4, 1]._takeWhile(x => x < 3), [1, 2], "_takeWhile(pred)");
+eq([1, 2, 3]._takeWhile(x => x > 9), [], "_takeWhile none");
+eq([1, 2, 3]._takeWhile(x => true), [1, 2, 3], "_takeWhile all");
+eq([1, 1, 2, 1]._takeWhile(1), [1, 1], "_takeWhile(value) via SameValueZero");
+eq([1, 2, 3, 4, 1]._dropWhile(x => x < 3), [3, 4, 1], "_dropWhile(pred)");
+eq([1, 2, 3]._dropWhile(x => true), [], "_dropWhile all");
+eq([1, 2, 3, 4]._takeLastWhile(x => x > 2), [3, 4], "_takeLastWhile(pred)");
+eq([1, 2, 3, 4]._takeLastWhile(x => x > 9), [], "_takeLastWhile none");
+eq([1, 2, 3, 4]._dropLastWhile(x => x > 2), [1, 2], "_dropLastWhile(pred)");
+eq([1, 2, 3, 4]._dropLastWhile(x => x > 9), [1, 2, 3, 4], "_dropLastWhile none → all");
+eq([1, 2, 3]._append(4), [1, 2, 3, 4], "_append");
+eq([]._append(1), [1], "_append to empty");
+eq([1, 2, 3]._prepend(0), [0, 1, 2, 3], "_prepend");
+eq([]._prepend(1), [1], "_prepend to empty");
+eq([[1]]._append([2]), [[1], [2]], "_append keeps element as-is (no spread)");
+eq([[1]]._prepend([2]), [[2], [1]], "_prepend keeps element as-is (no spread)");
+/* non-mutation */
+const b8 = [1, 2, 3];
+b8._init(); b8._tail(); b8._takeWhile(x => true); b8._dropWhile(x => false);
+b8._takeLastWhile(x => true); b8._dropLastWhile(x => false); b8._append(9); b8._prepend(0);
+eq(b8, [1, 2, 3], "batch-8 methods do not mutate the receiver");
+/* re-entrancy: a {valueOf} index arg to _nth must not corrupt the receiver */
+{
+    const arr = [10, 20, 30];
+    const ev = { valueOf() { return -1; } };
+    eq(arr._nth(ev), 30, "_nth with valueOf idx");
+    eq(arr, [10, 20, 30], "receiver intact after _nth valueOf");
+}
+/* array-like via `this` */
+eq(Array.prototype._tail.call({ 0: "a", 1: "b", 2: "c", length: 3 }), ["b", "c"], "_tail on array-like");
+
 print("test_array_ext: all tests passed (" + n + " assertions)");

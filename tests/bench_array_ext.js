@@ -80,6 +80,23 @@ row("_union",
     () => dup._union(other),
     () => [...new Set([...dup, ...other])]);
 
+/* ---- batch 7: structural transforms (fast-array bulk-copy path) vs JS ---- */
+row("_splitEvery",
+    () => nums._splitEvery(1000),
+    () => { const r = []; for (let i = 0; i < nums.length; i += 1000) r.push(nums.slice(i, i + 1000)); return r; });
+row("_aperture",
+    () => nums._aperture(3),
+    () => { const r = []; for (let i = 0; i + 3 <= nums.length; i++) r.push(nums.slice(i, i + 3)); return r; });
+row("_splitAt",
+    () => nums._splitAt(N / 2),
+    () => [nums.slice(0, N / 2), nums.slice(N / 2)]);
+row("_update",
+    () => nums._update(N - 1, 42),
+    () => { const c = nums.slice(); c[N - 1] = 42; return c; });
+row("_move",
+    () => nums._move(0, N - 1),
+    () => { const c = nums.slice(); const [x] = c.splice(0, 1); c.splice(N - 1, 0, x); return c; });
+
 /* ---- TypedArray SIMD reductions vs a scalar JS loop over the buffer ---- */
 print("=== TypedArray `_` SIMD reductions vs JS loop, N=" + N + " ===");
 const f64 = new Float64Array(N);
