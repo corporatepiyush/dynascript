@@ -35,6 +35,12 @@ static const uint16_t js_malloc_block_sizes[JS_MALLOC_BLOCK_SIZE_COUNT] = {
     512,
 };
 
+/* Number of fully-empty arenas kept as spares per size class. One is enough to
+   eliminate the arena malloc+freelist-init churn of alloc-one/free-one workloads
+   (e.g. short-lived closures/objects); the bounded extra RSS is <= one arena per
+   active size class. */
+#define JS_MALLOC_MAX_EMPTY_ARENAS 1
+
 static int get_block_size_index(size_t size)
 {
     if (size <= 16) {
@@ -72,6 +78,26 @@ static void js_malloc_init(JSMallocContext *s)
 static void *get_arena_block(JSMallocArena *ar, unsigned int idx, unsigned int block_size)
 {
     return ar->blocks + idx * block_size;
+}
+
+/* Release every fully-empty arena retained as a spare (see n_empty_arenas).
+   Must run after all user blocks are freed at runtime teardown so no arena is
+   leaked; empty arenas always sit on free_arena_list. */
+static void js_malloc_release_empty_arenas(JSMallocContext *s)
+{
+    struct list_head *el, *el1;
+    int i;
+    for (i = 0; i < JS_MALLOC_BLOCK_SIZE_COUNT; i++) {
+        list_for_each_safe(el, el1, &s->free_arena_list[i]) {
+            JSMallocArena *ar = list_entry(el, JSMallocArena, free_link);
+            if (ar->n_used_blocks == 0) {
+                list_del(&ar->link);
+                list_del(&ar->free_link);
+                s->mf.js_free(&s->malloc_state, ar);
+            }
+        }
+        s->n_empty_arenas[i] = 0;
+    }
 }
 
 static inline JSMallocBlockHeader *js_rc(void *ptr)
@@ -158,6 +184,8 @@ static void *__js_malloc(JSMallocContext *s, size_t size)
                     return NULL;
             } else {
                 ar = list_entry(el, JSMallocArena, free_link);
+                if (ar->n_used_blocks == 0)      /* reusing a retained spare */
+                    s->n_empty_arenas[block_size_idx]--;
             }
             block_idx = ar->first_free_block;
             b = get_arena_block(ar, ar->first_free_block, block_size);
@@ -211,9 +239,16 @@ static void __js_free(JSMallocContext *s, void *ptr)
         }
         ar->n_used_blocks--;
         if (unlikely(ar->n_used_blocks == 0)) {
-            list_del(&ar->link);
-            list_del(&ar->free_link);
-            s->mf.js_free(&s->malloc_state, ar);
+            /* Keep a bounded number of empty arenas as spares (it stays on both
+               lists, freelist intact, ready for immediate reuse) instead of
+               returning it to the OS only to re-malloc+re-init it next alloc. */
+            if (s->n_empty_arenas[block_size_idx] < JS_MALLOC_MAX_EMPTY_ARENAS) {
+                s->n_empty_arenas[block_size_idx]++;
+            } else {
+                list_del(&ar->link);
+                list_del(&ar->free_link);
+                s->mf.js_free(&s->malloc_state, ar);
+            }
         }
     }
 }
@@ -1330,6 +1365,9 @@ void JS_FreeRuntime(JSRuntime *rt)
     js_free_rt(rt, rt->atom_array);
     js_free_rt(rt, rt->atom_hash);
     js_free_rt(rt, rt->shape_hash);
+    /* free the retained empty-arena spares so nothing is leaked and the
+       leak accounting below sees a clean slate. */
+    js_malloc_release_empty_arenas(&rt->malloc_ctx);
 #ifdef DUMP_LEAKS
     if (!list_empty(&rt->string_list)) {
         if (rt->rt_info) {

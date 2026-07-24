@@ -329,6 +329,9 @@ typedef struct {
 typedef struct {
     struct list_head arena_list[JS_MALLOC_BLOCK_SIZE_COUNT]; /* list of JSMallocArena.link (all arenas) */
     struct list_head free_arena_list[JS_MALLOC_BLOCK_SIZE_COUNT]; /* list of JSMallocArena.free_link (arenas where n_used_blocks < n_blocks) */
+    /* number of fully-empty arenas retained per size class as spares (hysteresis:
+       avoids malloc+freelist-init churn under alloc-one/free-one workloads). */
+    uint16_t n_empty_arenas[JS_MALLOC_BLOCK_SIZE_COUNT];
 #ifdef JS_MALLOC_USE_ITER
     struct list_head large_block_list; /* list of JSMallocLargeBlockHeader.link */
 #endif
