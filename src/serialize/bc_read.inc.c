@@ -4661,6 +4661,330 @@ static const JSCFunctionListEntry js_function_ext_funcs[] = {
     JS_CFUNC_MAGIC_DEF("thunkify",     0, js_function_ext_thunkify, 0 ),
 };
 
+/* ===== RamdaJS Function STATICS (SUGAR_RAMDA_NATIVE.md) — installed
+ * non-enumerable on the Function CONSTRUCTOR (never the prototype). `this_val`
+ * here is the Function ctor, so every combinator captures its operands from
+ * argv, not from `this`. Names are non-colliding with ES (Function has no
+ * static methods besides length/name/prototype). ===== */
+
+/* always: fd[0] = x -> (...) => x. */
+static JSValue js_fn_always_call(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv, int magic, JSValue *fd)
+{
+    (void)this_val; (void)argc; (void)argv; (void)magic;
+    return JS_DupValue(ctx, fd[0]);
+}
+
+/* cond: fd[0] = pairs (array of [pred, transform]). Apply the transform of the
+ * first pair whose predicate is truthy for the args; undefined if none match. */
+static JSValue js_fn_cond_call(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv, int magic, JSValue *fd)
+{
+    JSValueConst pairs = fd[0];
+    int64_t n, i;
+    (void)magic;
+    if (js_get_length64(ctx, &n, pairs))
+        return JS_EXCEPTION;
+    for (i = 0; i < n; i++) {
+        JSValue pair, pred, xf, p;
+        int b;
+        pair = JS_GetPropertyInt64(ctx, pairs, i);
+        if (JS_IsException(pair)) return JS_EXCEPTION;
+        pred = JS_GetPropertyInt64(ctx, pair, 0);
+        if (JS_IsException(pred)) { JS_FreeValue(ctx, pair); return JS_EXCEPTION; }
+        p = JS_Call(ctx, pred, this_val, argc, argv);
+        JS_FreeValue(ctx, pred);
+        if (JS_IsException(p)) { JS_FreeValue(ctx, pair); return JS_EXCEPTION; }
+        b = JS_ToBool(ctx, p);
+        JS_FreeValue(ctx, p);
+        if (b) {
+            xf = JS_GetPropertyInt64(ctx, pair, 1);
+            JS_FreeValue(ctx, pair);
+            if (JS_IsException(xf)) return JS_EXCEPTION;
+            {
+                JSValue r = JS_Call(ctx, xf, this_val, argc, argv);
+                JS_FreeValue(ctx, xf);
+                return r;
+            }
+        }
+        JS_FreeValue(ctx, pair);
+    }
+    return JS_UNDEFINED;
+}
+
+/* uncurryN: fd[0] = depth (int), fd[1] = fn. Distributes the received args
+ * across the nested curried chain, using each intermediate function's .length
+ * to slice, and passing all remaining args at the final depth (Ramda). */
+static JSValue js_fn_uncurryN_call(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv, int magic, JSValue *fd)
+{
+    int depth = JS_VALUE_GET_INT(fd[0]);
+    JSValue value = JS_DupValue(ctx, fd[1]);   /* owned; current chain value */
+    int cur = 1, idx = 0;
+    (void)magic;
+    while (cur <= depth && JS_IsFunction(ctx, value)) {
+        int end, n;
+        JSValue nv;
+        if (cur == depth) {
+            end = argc;
+        } else {
+            JSValue lv = JS_GetProperty(ctx, value, JS_ATOM_length);
+            int32_t fl;
+            if (JS_IsException(lv)) { JS_FreeValue(ctx, value); return JS_EXCEPTION; }
+            if (JS_ToInt32(ctx, &fl, lv)) { JS_FreeValue(ctx, lv); JS_FreeValue(ctx, value); return JS_EXCEPTION; }
+            JS_FreeValue(ctx, lv);
+            end = idx + (fl < 0 ? 0 : fl);
+        }
+        if (end > argc) end = argc;
+        if (end < idx) end = idx;
+        n = end - idx;
+        nv = JS_Call(ctx, value, this_val, n, argv + idx);
+        JS_FreeValue(ctx, value);
+        if (JS_IsException(nv)) return JS_EXCEPTION;
+        value = nv;
+        cur++;
+        idx = end;
+    }
+    return value;
+}
+
+#define FN_LIFT_MAX 10000000   /* cartesian-product cap for lift/liftN */
+
+/* lift: fd[0] = arity (int), fd[1] = fn. Applies fn across the cartesian product
+ * of its list arguments (Ramda lift = liftN(fn.length, fn)). */
+static JSValue js_fn_lift_call(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv, int magic, JSValue *fd)
+{
+    int arity = JS_VALUE_GET_INT(fd[0]);
+    JSValueConst fn = fd[1];
+    JSValue result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValue *lists = NULL, *tuple = NULL;
+    int64_t *lens = NULL, *odom = NULL, total = 1;
+    int i;
+    int64_t out = 0;
+    (void)this_val; (void)magic;
+
+    if (arity <= 0) {                       /* degenerate: fn() once */
+        JSValue r, arr;
+        r = JS_Call(ctx, fn, JS_UNDEFINED, 0, NULL);
+        if (JS_IsException(r)) return JS_EXCEPTION;
+        arr = JS_NewArray(ctx);
+        if (JS_IsException(arr)) { JS_FreeValue(ctx, r); return JS_EXCEPTION; }
+        if (JS_SetPropertyInt64(ctx, arr, 0, r) < 0) { JS_FreeValue(ctx, arr); return JS_EXCEPTION; }
+        return arr;
+    }
+    lists = js_mallocz(ctx, sizeof(JSValue) * arity);
+    lens  = js_mallocz(ctx, sizeof(int64_t) * arity);
+    odom  = js_mallocz(ctx, sizeof(int64_t) * arity);
+    tuple = js_mallocz(ctx, sizeof(JSValue) * arity);
+    if (!lists || !lens || !odom || !tuple) { JS_ThrowOutOfMemory(ctx); goto done; }
+    for (i = 0; i < arity; i++) lists[i] = JS_UNDEFINED;
+    for (i = 0; i < arity; i++) {
+        lists[i] = JS_ToObject(ctx, i < argc ? argv[i] : JS_UNDEFINED);
+        if (JS_IsException(lists[i])) { lists[i] = JS_UNDEFINED; goto done; }
+        if (js_get_length64(ctx, &lens[i], lists[i])) goto done;
+        if (lens[i] == 0) { total = 0; break; }
+        if (total > FN_LIFT_MAX / lens[i]) { JS_ThrowRangeError(ctx, "lift: product of list lengths too large"); goto done; }
+        total *= lens[i];
+    }
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) { result = JS_UNDEFINED; goto done; }
+    while (total > 0) {
+        JSValue r;
+        int filled = 0;
+        for (i = 0; i < arity; i++) {
+            tuple[i] = JS_GetPropertyInt64(ctx, lists[i], odom[i]);
+            if (JS_IsException(tuple[i])) goto tuple_fail;
+            filled = i + 1;
+        }
+        r = JS_Call(ctx, fn, JS_UNDEFINED, arity, (JSValueConst *)tuple);
+        for (i = 0; i < arity; i++) JS_FreeValue(ctx, tuple[i]);
+        if (JS_IsException(r)) goto done;
+        if (JS_SetPropertyInt64(ctx, result, out++, r) < 0) goto done;
+        /* advance the odometer (last axis fastest) */
+        for (i = arity - 1; i >= 0; i--) {
+            if (++odom[i] < lens[i]) break;
+            odom[i] = 0;
+            if (i == 0) { total = 0; }   /* wrapped the most-significant axis: done */
+        }
+        continue;
+    tuple_fail:
+        for (i = 0; i < filled; i++) JS_FreeValue(ctx, tuple[i]);
+        goto done;
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    if (lists) { for (i = 0; i < arity; i++) JS_FreeValue(ctx, lists[i]); js_free(ctx, lists); }
+    js_free(ctx, lens); js_free(ctx, odom); js_free(ctx, tuple);
+    JS_FreeValue(ctx, result);
+    return ret;
+}
+
+/* ap S-combinator form: fd[0] = f, fd[1] = g -> x => f(x)(g(x)). */
+static JSValue js_fn_ap_s_call(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv, int magic, JSValue *fd)
+{
+    JSValueConst f = fd[0], g = fd[1];
+    JSValueConst x = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue fx, gx, r;
+    (void)this_val; (void)magic;
+    fx = JS_Call(ctx, f, JS_UNDEFINED, 1, (JSValueConst *)&x);
+    if (JS_IsException(fx)) return fx;
+    gx = JS_Call(ctx, g, JS_UNDEFINED, 1, (JSValueConst *)&x);
+    if (JS_IsException(gx)) { JS_FreeValue(ctx, fx); return gx; }
+    r = JS_Call(ctx, fx, JS_UNDEFINED, 1, (JSValueConst *)&gx);
+    JS_FreeValue(ctx, fx); JS_FreeValue(ctx, gx);
+    return r;
+}
+
+/* Function.identity/of/not/negate/applyTo — plain (non-closure) statics.
+ * magic: 0 identity, 1 of, 2 not, 3 negate, 4 applyTo. */
+static JSValue js_function_static_plain(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst a0 = argc > 0 ? argv[0] : JS_UNDEFINED;
+    (void)this_val;
+    switch (magic) {
+    case 0:  /* identity(x) -> x */
+        return JS_DupValue(ctx, a0);
+    case 1: { /* of(x) -> [x] */
+        JSValue arr = JS_NewArray(ctx);
+        if (JS_IsException(arr)) return arr;
+        if (JS_SetPropertyInt64(ctx, arr, 0, JS_DupValue(ctx, a0)) < 0) { JS_FreeValue(ctx, arr); return JS_EXCEPTION; }
+        return arr;
+    }
+    case 2:  /* not(x) -> !x */
+        return JS_NewBool(ctx, !JS_ToBool(ctx, a0));
+    case 3: { /* negate(n) -> -n */
+        double d;
+        if (JS_ToFloat64(ctx, &d, a0)) return JS_EXCEPTION;
+        return JS_NewFloat64(ctx, -d);
+    }
+    default: /* applyTo(x, f) -> f(x) */
+        return JS_Call(ctx, argc > 1 ? argv[1] : JS_UNDEFINED, JS_UNDEFINED, 1, (JSValueConst *)&a0);
+    }
+}
+
+static JSValue js_function_static_always(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst x = argc > 0 ? argv[0] : JS_UNDEFINED;
+    (void)this_val; (void)magic;
+    return JS_NewCFunctionData(ctx, js_fn_always_call, 0, 0, 1, (JSValueConst *)&x);
+}
+
+static JSValue js_function_static_cond(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst pairs = argc > 0 ? argv[0] : JS_UNDEFINED;
+    (void)this_val; (void)magic;
+    return JS_NewCFunctionData(ctx, js_fn_cond_call, 0, 0, 1, (JSValueConst *)&pairs);
+}
+
+static JSValue js_function_static_uncurryN(JSContext *ctx, JSValueConst this_val,
+                                           int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst nd[2];
+    JSValue nv, r;
+    int depth;
+    (void)this_val; (void)magic;
+    if (JS_ToInt32(ctx, &depth, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+    if (depth < 0) depth = 0;
+    nv = JS_NewInt32(ctx, depth);
+    nd[0] = nv;
+    nd[1] = argc > 1 ? argv[1] : JS_UNDEFINED;
+    r = JS_NewCFunctionData(ctx, js_fn_uncurryN_call, depth, 0, 2, nd);
+    JS_FreeValue(ctx, nv);
+    return r;
+}
+
+/* lift(fn) = liftN(fn.length, fn). liftN(arity, fn) when magic == 1 reads the
+ * arity from argv[0] and the fn from argv[1]. */
+static JSValue js_function_static_lift(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst fn, nd[2];
+    JSValue nv, r;
+    int arity;
+    (void)this_val;
+    if (magic == 1) {
+        if (JS_ToInt32(ctx, &arity, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+        fn = argc > 1 ? argv[1] : JS_UNDEFINED;
+    } else {
+        JSValue lv;
+        fn = argc > 0 ? argv[0] : JS_UNDEFINED;
+        lv = JS_GetProperty(ctx, fn, JS_ATOM_length);
+        if (JS_IsException(lv)) return JS_EXCEPTION;
+        if (JS_ToInt32(ctx, &arity, lv)) { JS_FreeValue(ctx, lv); return JS_EXCEPTION; }
+        JS_FreeValue(ctx, lv);
+    }
+    if (arity < 0) arity = 0;
+    nv = JS_NewInt32(ctx, arity);
+    nd[0] = nv;
+    nd[1] = fn;
+    r = JS_NewCFunctionData(ctx, js_fn_lift_call, arity, 0, 2, nd);
+    JS_FreeValue(ctx, nv);
+    return r;
+}
+
+/* ap(applyF, applyX): function form -> x => applyF(x)(applyX(x)); list form ->
+ * concat of map(f, applyX) over each f in applyF (Ramda ap). */
+static JSValue js_function_static_ap(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst applyF = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst applyX = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValue fns = JS_UNDEFINED, xs = JS_UNDEFINED, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    int64_t nf, nx, fi, xi, w = 0;
+    (void)this_val; (void)magic;
+
+    if (JS_IsFunction(ctx, applyF)) {           /* S-combinator form */
+        JSValueConst nd[2];
+        nd[0] = applyF; nd[1] = applyX;
+        return JS_NewCFunctionData(ctx, js_fn_ap_s_call, 1, 0, 2, nd);
+    }
+    fns = JS_ToObject(ctx, applyF);
+    if (JS_IsException(fns)) { fns = JS_UNDEFINED; goto done; }
+    xs = JS_ToObject(ctx, applyX);
+    if (JS_IsException(xs)) { xs = JS_UNDEFINED; goto done; }
+    if (js_get_length64(ctx, &nf, fns) || js_get_length64(ctx, &nx, xs)) goto done;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) { result = JS_UNDEFINED; goto done; }
+    for (fi = 0; fi < nf; fi++) {
+        JSValue f = JS_GetPropertyInt64(ctx, fns, fi);
+        if (JS_IsException(f)) goto done;
+        for (xi = 0; xi < nx; xi++) {
+            JSValue x = JS_GetPropertyInt64(ctx, xs, xi), r;
+            if (JS_IsException(x)) { JS_FreeValue(ctx, f); goto done; }
+            r = JS_Call(ctx, f, JS_UNDEFINED, 1, (JSValueConst *)&x);
+            JS_FreeValue(ctx, x);
+            if (JS_IsException(r)) { JS_FreeValue(ctx, f); goto done; }
+            if (JS_SetPropertyInt64(ctx, result, w++, r) < 0) { JS_FreeValue(ctx, f); goto done; }
+        }
+        JS_FreeValue(ctx, f);
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, fns);
+    JS_FreeValue(ctx, xs);
+    return ret;
+}
+
+static const JSCFunctionListEntry js_function_static_ext_funcs[] = {
+    JS_CFUNC_MAGIC_DEF("identity", 1, js_function_static_plain, 0 ),
+    JS_CFUNC_MAGIC_DEF("of",       1, js_function_static_plain, 1 ),
+    JS_CFUNC_MAGIC_DEF("not",      1, js_function_static_plain, 2 ),
+    JS_CFUNC_MAGIC_DEF("negate",   1, js_function_static_plain, 3 ),
+    JS_CFUNC_MAGIC_DEF("applyTo",  2, js_function_static_plain, 4 ),
+    JS_CFUNC_MAGIC_DEF("always",   1, js_function_static_always, 0 ),
+    JS_CFUNC_MAGIC_DEF("cond",     1, js_function_static_cond, 0 ),
+    JS_CFUNC_MAGIC_DEF("uncurryN", 2, js_function_static_uncurryN, 0 ),
+    JS_CFUNC_MAGIC_DEF("lift",     1, js_function_static_lift, 0 ),
+    JS_CFUNC_MAGIC_DEF("liftN",    2, js_function_static_lift, 1 ),
+    JS_CFUNC_MAGIC_DEF("ap",       2, js_function_static_ap, 0 ),
+};
+
 /* Error class */
 
 static JSValue iterator_to_array(JSContext *ctx, JSValueConst items)

@@ -23,6 +23,14 @@ compatibility with an existing ecosystem.
 > standard library. See
 > [Chapter 7: Roadmap & Philosophy](07-roadmap-and-philosophy.md).
 
+> **Batteries on the prototypes, too.** Beyond the `dyna:*` modules, DynaJS bakes the *non-standard*
+> goodies of **SugarJS 2.0** and **Ramda 0.32** straight onto the built-in prototypes — natively, in
+> C, **non-enumerable, and with no import**. `[1,1,2,3].dropRepeats()`, `["a","b","c"].mapFromIndex(1,
+> true, s => s)`, `[[1,2],[3,4]].sequence(Array)`, `(x=>x+1).pipe(x=>x*2)`, `Object.mergeDeepRight(a,
+> b)`, `Function.cond([...])` — hundreds of methods, all present in every build, none of them ever
+> shadowing an ECMAScript method. The full catalogue lives in the
+> [**API Reference → Built-in prototype extensions**](API.md#built-in-prototype-extensions-sugarjs--ramdajs).
+
 ---
 
 ## How to read this book

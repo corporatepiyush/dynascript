@@ -292,6 +292,9 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
      * SUGAR_RAMDA_NATIVE.md), installed non-enumerable on Array.prototype. */
     JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_ARRAY],
                                js_array_ext_funcs, countof(js_array_ext_funcs));
+    /* static Array.* helpers (Array.repeat) on the Array constructor */
+    JS_SetPropertyFunctionList(ctx, ctx->array_ctor,
+                               js_array_static_ext_funcs, countof(js_array_static_ext_funcs));
 
     {
         JSObject *p = JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]);
@@ -388,6 +391,10 @@ int JS_AddIntrinsicBaseObjects(JSContext *ctx)
      * phase 5), installed non-enumerable on Function.prototype. */
     JS_SetPropertyFunctionList(ctx, ctx->function_proto, js_function_ext_funcs,
                                countof(js_function_ext_funcs));
+    /* RamdaJS Function STATICS (identity/always/cond/of/not/negate/applyTo/
+     * uncurryN/lift/liftN/ap), installed non-enumerable on the Function ctor. */
+    JS_SetPropertyFunctionList(ctx, ctx->function_ctor, js_function_static_ext_funcs,
+                               countof(js_function_static_ext_funcs));
 
     /* Iterator */
     obj2 = JS_NewCConstructor(ctx, JS_CLASS_ITERATOR, "Iterator",

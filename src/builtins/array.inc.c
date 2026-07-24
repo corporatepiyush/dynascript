@@ -2099,6 +2099,1000 @@ static JSValue js_array_ext_innerjoin(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* ============================================================================
+ * SugarJS Array *FromIndex methods (9): map/forEach/filter/find/findIndex/some/
+ * every/reduce/reduceRight, each starting at a given index with optional wrap.
+ * Faithful to Sugar's quirks: positional-by-type [loop] boolean; callbacks see
+ * the ORIGINAL element and the de-shifted original index; falsy reduce
+ * initialValue is DROPPED (seed quirk); reduceRight non-loop reports shifted
+ * indices. Matcher/mapper overloads reuse this file's documented conventions
+ * (function / RegExp.test / SameValueZero; function / single-property / identity)
+ * — Sugar's deep-equal, Date, fuzzy-object, dotted-path and array-of-paths
+ * overloads are NOT replicated (same divergence as the other ext methods).
+ * ========================================================================== */
+
+enum { FI_MAP = 0, FI_FOREACH, FI_FILTER, FI_FIND, FI_FINDINDEX,
+       FI_SOME, FI_EVERY, FI_REDUCE, FI_REDUCERIGHT };
+enum { FI_OV_FN = 0, FI_OV_REGEX, FI_OV_VALUE, FI_OV_PROP };
+
+/* getNormalizedIndex(index, length, loop) — Sugar's wrap math. */
+static int64_t js_fi_norm(int64_t index, int64_t length, int loop)
+{
+    if (index && loop && length) index = index % length;
+    if (index < 0) index += length;
+    return index;
+}
+
+/* Evaluate the resolved callback/search on one element. Returns an owned value:
+ * the mapped value (map family) or a truthy/falsy value (match family). */
+static JSValue js_fi_call(JSContext *ctx, int ov, JSValueConst fn, JSValueConst context,
+                          JSValueConst regex_test, JSAtom prop_atom,
+                          JSValueConst el, int64_t ridx, JSValueConst obj)
+{
+    switch (ov) {
+    case FI_OV_FN: {
+        JSValueConst a3[3];
+        JSValue idx = JS_NewInt64(ctx, ridx), r;
+        a3[0] = el; a3[1] = idx; a3[2] = obj;
+        r = JS_Call(ctx, fn, context, 3, a3);
+        JS_FreeValue(ctx, idx);
+        return r;
+    }
+    case FI_OV_REGEX: {
+        JSValue s = JS_ToString(ctx, el), r;
+        if (JS_IsException(s)) return s;
+        r = JS_Call(ctx, regex_test, fn, 1, (JSValueConst *)&s);
+        JS_FreeValue(ctx, s);
+        return r;
+    }
+    case FI_OV_VALUE:
+        return JS_NewBool(ctx, JS_SameValueZero(ctx, fn, el));
+    default: /* FI_OV_PROP */
+        return JS_GetProperty(ctx, el, prop_atom);
+    }
+}
+
+static JSValue js_array_fromindex(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv, int kind)
+{
+    JSValue obj, ret = JS_EXCEPTION, regex_test = JS_UNDEFINED;
+    JSValue result = JS_UNDEFINED, acc = JS_UNINITIALIZED;
+    JSValueConst fn, context = JS_UNDEFINED, lastArg = JS_UNDEFINED;
+    JSAtom prop_atom = JS_ATOM_NULL;
+    int64_t len, startIndex, i, w = 0, foundIdx = -1;
+    int ai, loop = 0, hasLast, ov, is_match, seeded, started = 0, is_right;
+
+    obj = JS_ToObject(ctx, this_val);
+    if (argc < 2) { JS_ThrowTypeError(ctx, "Argument required"); goto done; }
+    if (JS_ToInt64Sat(ctx, &startIndex, argv[0])) goto done;
+    if (js_get_length64(ctx, &len, obj)) goto done;
+
+    ai = 1;
+    if (JS_VALUE_GET_TAG(argv[ai]) == JS_TAG_BOOL) { loop = JS_VALUE_GET_INT(argv[ai]); ai++; }
+    fn = ai < argc ? argv[ai] : JS_UNDEFINED; ai++;
+    hasLast = ai < argc;
+    lastArg = hasLast ? argv[ai] : JS_UNDEFINED;
+    context = hasLast ? lastArg : JS_UNDEFINED;
+
+    is_right = (kind == FI_REDUCERIGHT);
+    is_match = (kind == FI_FILTER || kind == FI_FIND || kind == FI_FINDINDEX ||
+                kind == FI_SOME || kind == FI_EVERY);
+
+    if (startIndex < 0) startIndex += len;
+    if (is_right) { if (startIndex < -1) startIndex = -1; if (startIndex > len) startIndex = len; }
+    else          { if (startIndex < 0) startIndex = 0;   if (startIndex > len) startIndex = len; }
+
+    /* resolve the callback overload once */
+    if (JS_IsFunction(ctx, fn)) {
+        ov = FI_OV_FN;
+    } else if (is_match) {
+        if (JS_VALUE_GET_TAG(fn) == JS_TAG_OBJECT &&
+            JS_VALUE_GET_OBJ(fn)->class_id == JS_CLASS_REGEXP) {
+            ov = FI_OV_REGEX;
+            regex_test = JS_GetPropertyStr(ctx, fn, "test");
+            if (JS_IsException(regex_test)) { regex_test = JS_UNDEFINED; goto done; }
+        } else {
+            ov = FI_OV_VALUE;
+        }
+    } else if (kind == FI_MAP && JS_ToBool(ctx, fn)) {
+        ov = FI_OV_PROP;
+        prop_atom = JS_ValueToAtom(ctx, fn);
+        if (prop_atom == JS_ATOM_NULL) goto done;
+    } else {
+        /* map with falsy mapper, or forEach/reduce/reduceRight with a
+         * non-function: native throws TypeError. */
+        JS_ThrowTypeError(ctx, "callback is not a function");
+        goto done;
+    }
+
+    switch (kind) {
+    case FI_MAP: case FI_FILTER:
+        result = JS_NewArray(ctx);
+        if (JS_IsException(result)) { result = JS_UNDEFINED; goto done; }
+        break;
+    case FI_FIND:  result = JS_UNDEFINED; break;
+    default: break;
+    }
+
+    if (kind == FI_REDUCE || kind == FI_REDUCERIGHT) {
+        int64_t sl, p, total;
+        seeded = hasLast && JS_ToBool(ctx, lastArg);
+        if (seeded) acc = JS_DupValue(ctx, lastArg);
+        if (is_right) {
+            sl = startIndex + 1;
+            if (loop) sl = len;
+            if (sl < 0) sl = 0; if (sl > len) sl = len;
+            total = sl;
+        } else {
+            total = (len - startIndex) + (loop ? startIndex : 0);
+        }
+        for (p = 0; p < total; p++) {
+            int64_t vidx, ridx;
+            JSValue el, r;
+            JSValueConst a4[4];
+            JSValue idx;
+            if (is_right) {
+                int64_t si = (loop ? len : sl) - 1 - p;
+                vidx = si;
+                ridx = loop ? js_fi_norm(si + startIndex, len, 1) : (si + startIndex);
+            } else if (p < len - startIndex) {
+                vidx = ridx = startIndex + p;
+            } else {
+                vidx = ridx = p - (len - startIndex);
+            }
+            if (js_array_ext_getel(ctx, obj, vidx, &el)) goto done;
+            if (!seeded && !started) { acc = el; started = 1; continue; }
+            idx = JS_NewInt64(ctx, ridx);
+            a4[0] = acc; a4[1] = el; a4[2] = idx; a4[3] = obj;
+            r = JS_Call(ctx, fn, obj, 4, a4);
+            JS_FreeValue(ctx, idx);
+            JS_FreeValue(ctx, el);
+            JS_FreeValue(ctx, acc);
+            acc = JS_UNINITIALIZED;
+            if (JS_IsException(r)) goto done;
+            acc = r;
+        }
+        if (!seeded && !started) { JS_ThrowTypeError(ctx, "Reduce of empty array with no initial value"); goto done; }
+        ret = acc; acc = JS_UNINITIALIZED;
+        goto done;
+    }
+
+    /* iteration / map / match families (left sequence: [startIndex,len) then
+     * (loop) [0,startIndex)). */
+    {
+        int phase;
+        for (phase = 0; phase < 2; phase++) {
+            int64_t lo, hi;
+            if (phase == 0) { lo = startIndex; hi = len; }
+            else { if (!loop) break; lo = 0; hi = startIndex; }
+            for (i = lo; i < hi; i++) {
+                JSValue el, r;
+                int b;
+                if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
+                r = js_fi_call(ctx, ov, fn, context, regex_test, prop_atom, el, i, obj);
+                if (JS_IsException(r)) { JS_FreeValue(ctx, el); goto done; }
+                switch (kind) {
+                case FI_MAP:
+                    JS_FreeValue(ctx, el);
+                    if (JS_DefinePropertyValueInt64(ctx, result, w++, r, JS_PROP_C_W_E) < 0) goto done;
+                    break;
+                case FI_FOREACH:
+                    JS_FreeValue(ctx, r);
+                    JS_FreeValue(ctx, el);
+                    break;
+                case FI_FILTER:
+                    b = JS_ToBool(ctx, r); JS_FreeValue(ctx, r);
+                    if (b) { if (JS_DefinePropertyValueInt64(ctx, result, w++, el, JS_PROP_C_W_E) < 0) goto done; }
+                    else JS_FreeValue(ctx, el);
+                    break;
+                case FI_FIND:
+                    b = JS_ToBool(ctx, r); JS_FreeValue(ctx, r);
+                    if (b) { result = el; ret = result; result = JS_UNDEFINED; goto done; }
+                    JS_FreeValue(ctx, el);
+                    break;
+                case FI_FINDINDEX:
+                    b = JS_ToBool(ctx, r); JS_FreeValue(ctx, r);
+                    JS_FreeValue(ctx, el);
+                    if (b) { foundIdx = i; ret = JS_NewInt64(ctx, foundIdx); goto done; }
+                    break;
+                case FI_SOME:
+                    b = JS_ToBool(ctx, r); JS_FreeValue(ctx, r);
+                    JS_FreeValue(ctx, el);
+                    if (b) { ret = JS_TRUE; goto done; }
+                    break;
+                case FI_EVERY:
+                    b = JS_ToBool(ctx, r); JS_FreeValue(ctx, r);
+                    JS_FreeValue(ctx, el);
+                    if (!b) { ret = JS_FALSE; goto done; }
+                    break;
+                }
+            }
+        }
+    }
+    switch (kind) {
+    case FI_MAP: case FI_FILTER: ret = result; result = JS_UNDEFINED; break;
+    case FI_FIND: ret = JS_UNDEFINED; break;
+    case FI_FINDINDEX: ret = JS_NewInt64(ctx, -1); break;
+    case FI_SOME: ret = JS_FALSE; break;
+    case FI_EVERY: ret = JS_TRUE; break;
+    case FI_FOREACH: ret = JS_UNDEFINED; break;
+    default: break;
+    }
+ done:
+    if (JS_VALUE_GET_TAG(acc) != JS_TAG_UNINITIALIZED) JS_FreeValue(ctx, acc);
+    if (prop_atom != JS_ATOM_NULL) JS_FreeAtom(ctx, prop_atom);
+    JS_FreeValue(ctx, regex_test);
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* ============================================================================
+ * SUGAR_RAMDA_NATIVE.md — Array batch: startsWith/endsWith, unnest, dropRepeats
+ * family, sortWith, the predicate set-ops (unionWith/differenceWith/
+ * symmetricDifference[With]), reduceBy, and the static Array.repeat.
+ * ========================================================================== */
+
+#define ARR_EXT_MAX 100000000   /* DoS cap for count-driven builders (repeat) */
+
+/* startsWith(prefix)/endsWith(suffix): Ramda equals(take/takeLast(n,this),arg),
+ * deep-equality element-wise. magic 0 = starts, 1 = ends. */
+static JSValue js_array_ext_startsends(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv, int magic)
+{
+    JSValue obj, other, ret = JS_EXCEPTION;
+    int64_t len, olen, k;
+    int result = 1;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    other = JS_ToObject(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(other)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &olen, other)) goto done;
+    if (olen > len) { ret = JS_FALSE; goto done; }
+    for (k = 0; k < olen; k++) {
+        JSValue a, b;
+        int r;
+        if (js_array_ext_getel(ctx, obj, magic ? (len - olen + k) : k, &a)) goto done;
+        if (js_array_ext_getel(ctx, other, k, &b)) { JS_FreeValue(ctx, a); goto done; }
+        r = js_deep_equals(ctx, a, b, 0);
+        JS_FreeValue(ctx, a); JS_FreeValue(ctx, b);
+        if (r < 0) goto done;
+        if (!r) { result = 0; break; }
+    }
+    ret = JS_NewBool(ctx, result);
+ done:
+    JS_FreeValue(ctx, other);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* unnest() -> a copy flattened by exactly one level (Ramda unnest). */
+static JSValue js_array_ext_unnest(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj, result, ret = JS_EXCEPTION;
+    int64_t j = 0;
+    (void)argc; (void)argv;
+    obj = JS_ToObject(ctx, this_val);
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_array_ext_flatten_into(ctx, result, obj, 1, &j, 0)) { JS_FreeValue(ctx, result); goto done; }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* dropRepeats (magic 0, deep-equals) / dropRepeatsWith(pred) (magic 1,
+ * pred(lastKept, current)) / dropRepeatsBy(fn) (magic 2, deep-equals of the
+ * mapped values). Keeps the first of every adjacent run. */
+static JSValue js_array_ext_droprepeats(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv, int magic)
+{
+    JSValue obj, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValue prev = JS_UNINITIALIZED, prevkey = JS_UNINITIALIZED;
+    JSValueConst arg = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, i, j = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) { result = JS_UNDEFINED; goto done; }
+    for (i = 0; i < len; i++) {
+        JSValue el, curkey = JS_UNINITIALIZED;
+        int same = 0;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
+        if (magic == 2) {
+            curkey = js_array_ext_mapval(ctx, arg, el);   /* fn/prop/identity */
+            if (JS_IsException(curkey)) { JS_FreeValue(ctx, el); goto done; }
+        }
+        if (JS_VALUE_GET_TAG(prev) != JS_TAG_UNINITIALIZED) {
+            if (magic == 0) {
+                same = js_deep_equals(ctx, prev, el, 0);
+            } else if (magic == 1) {
+                JSValueConst ab[2]; JSValue r;
+                ab[0] = prev; ab[1] = el;
+                r = JS_Call(ctx, arg, JS_UNDEFINED, 2, ab);
+                if (JS_IsException(r)) same = -1; else { same = JS_ToBool(ctx, r); JS_FreeValue(ctx, r); }
+            } else {
+                same = js_deep_equals(ctx, prevkey, curkey, 0);
+            }
+            if (same < 0) { JS_FreeValue(ctx, el); JS_FreeValue(ctx, curkey); goto done; }
+        }
+        if (!same) {
+            JS_FreeValue(ctx, prev);
+            prev = JS_DupValue(ctx, el);
+            if (magic == 2) { JS_FreeValue(ctx, prevkey); prevkey = JS_DupValue(ctx, curkey); }
+            if (JS_DefinePropertyValueInt64(ctx, result, j++, el, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, curkey); goto done; }
+        } else {
+            JS_FreeValue(ctx, el);
+        }
+        JS_FreeValue(ctx, curkey);
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, prev);
+    JS_FreeValue(ctx, prevkey);
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* sortWith comparator closure: fd[0] = the array of comparator functions.
+ * Walks them in order; the first non-zero result wins (Ramda sortWith). */
+static JSValue js_fn_sortwith_cmp(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv, int magic, JSValue *fd)
+{
+    JSValueConst fns = fd[0];
+    JSValueConst a = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst b = argc > 1 ? argv[1] : JS_UNDEFINED;
+    int64_t n, i;
+    (void)this_val; (void)magic;
+    if (js_get_length64(ctx, &n, fns)) return JS_EXCEPTION;
+    for (i = 0; i < n; i++) {
+        JSValue f = JS_GetPropertyInt64(ctx, fns, i), r;
+        JSValueConst ab[2];
+        double d;
+        int e;
+        if (JS_IsException(f)) return JS_EXCEPTION;
+        ab[0] = a; ab[1] = b;
+        r = JS_Call(ctx, f, JS_UNDEFINED, 2, ab);
+        JS_FreeValue(ctx, f);
+        if (JS_IsException(r)) return JS_EXCEPTION;
+        e = JS_ToFloat64(ctx, &d, r);
+        JS_FreeValue(ctx, r);
+        if (e) return JS_EXCEPTION;
+        if (d < 0) return JS_NewInt32(ctx, -1);
+        if (d > 0) return JS_NewInt32(ctx, 1);
+    }
+    return JS_NewInt32(ctx, 0);
+}
+
+/* sortWith(comparators) -> a stable-sorted copy, comparators tried in order
+ * (reuses the engine's toSorted so reentrancy/stability match native sort). */
+static JSValue js_array_ext_sortwith(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValueConst fns = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue obj, cmp, ret;
+    obj = JS_ToObject(ctx, this_val);
+    cmp = JS_NewCFunctionData(ctx, js_fn_sortwith_cmp, 2, 0, 1, (JSValueConst *)&fns);
+    if (JS_IsException(cmp)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    ret = js_array_toSorted(ctx, obj, 1, (JSValueConst *)&cmp);
+    JS_FreeValue(ctx, cmp);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _includesWith: pred(x, list[k]) truthy for some k. 1/0/-1. x borrowed. */
+static int js_array_includes_with(JSContext *ctx, JSValueConst pred, JSValueConst x,
+                                  JSValueConst list, int64_t listLen)
+{
+    int64_t k;
+    for (k = 0; k < listLen; k++) {
+        JSValue y, r;
+        JSValueConst ab[2];
+        int b;
+        if (js_array_ext_getel(ctx, list, k, &y)) return -1;
+        ab[0] = x; ab[1] = y;
+        r = JS_Call(ctx, pred, JS_UNDEFINED, 2, ab);
+        JS_FreeValue(ctx, y);
+        if (JS_IsException(r)) return -1;
+        b = JS_ToBool(ctx, r);
+        JS_FreeValue(ctx, r);
+        if (b) return 1;
+    }
+    return 0;
+}
+
+/* Ramda differenceWith(pred, first, second): first's elements not in second (by
+ * pred) and not already emitted (self-deduped). Returns a fresh array. */
+static JSValue js_array_diffwith(JSContext *ctx, JSValueConst first, int64_t flen,
+                                 JSValueConst second, int64_t slen, JSValueConst pred)
+{
+    JSValue result = JS_NewArray(ctx);
+    int64_t i, w = 0;
+    if (JS_IsException(result)) return result;
+    for (i = 0; i < flen; i++) {
+        JSValue x;
+        int in2, out;
+        if (js_array_ext_getel(ctx, first, i, &x)) goto fail;
+        in2 = js_array_includes_with(ctx, pred, x, second, slen);
+        if (in2 < 0) { JS_FreeValue(ctx, x); goto fail; }
+        if (in2) { JS_FreeValue(ctx, x); continue; }
+        out = js_array_includes_with(ctx, pred, x, result, w);
+        if (out < 0) { JS_FreeValue(ctx, x); goto fail; }
+        if (out) { JS_FreeValue(ctx, x); continue; }
+        if (JS_DefinePropertyValueInt64(ctx, result, w++, x, JS_PROP_C_W_E) < 0) goto fail;
+    }
+    return result;
+ fail:
+    JS_FreeValue(ctx, result);
+    return JS_EXCEPTION;
+}
+
+/* differenceWith(pred, other). */
+static JSValue js_array_ext_differencewith(JSContext *ctx, JSValueConst this_val,
+                                           int argc, JSValueConst *argv)
+{
+    JSValueConst pred = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue obj, other, ret = JS_EXCEPTION;
+    int64_t len, olen;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    other = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(other)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &olen, other)) goto done;
+    ret = js_array_diffwith(ctx, obj, len, other, olen, pred);
+ done:
+    JS_FreeValue(ctx, other);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* unionWith(pred, other) = uniqWith(pred, this ++ other). */
+static JSValue js_array_ext_unionwith(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValueConst pred = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue obj, other, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    int64_t len, olen, i, w = 0, pass;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    other = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(other)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &olen, other)) goto done;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) { result = JS_UNDEFINED; goto done; }
+    for (pass = 0; pass < 2; pass++) {
+        JSValueConst src = pass == 0 ? (JSValueConst)obj : (JSValueConst)other;
+        int64_t n = pass == 0 ? len : olen;
+        for (i = 0; i < n; i++) {
+            JSValue x;
+            int dup;
+            if (js_array_ext_getel(ctx, src, i, &x)) goto done;
+            dup = js_array_includes_with(ctx, pred, x, result, w);
+            if (dup < 0) { JS_FreeValue(ctx, x); goto done; }
+            if (dup) { JS_FreeValue(ctx, x); continue; }
+            if (JS_DefinePropertyValueInt64(ctx, result, w++, x, JS_PROP_C_W_E) < 0) goto done;
+        }
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, other);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* Append `src`'s SameValueZero elements that are absent from `exclude` and not
+ * yet emitted (seen) into result at *pw. Value-equality half of symdiff. */
+static int js_array_symdiff_half(JSContext *ctx, JSValueConst result, int64_t *pw,
+                                 JSValueConst src, int64_t n,
+                                 DynValSet *exclude, DynValSet *seen)
+{
+    int64_t i;
+    for (i = 0; i < n; i++) {
+        JSValue el;
+        int added;
+        if (js_array_ext_getel(ctx, src, i, &el)) return -1;
+        if (dyn_valset_has(ctx, exclude, el)) { JS_FreeValue(ctx, el); continue; }
+        added = dyn_valset_add(ctx, seen, el);
+        if (added < 0) { JS_FreeValue(ctx, el); return -1; }
+        if (!added) { JS_FreeValue(ctx, el); continue; }
+        if (JS_DefinePropertyValueInt64(ctx, result, (*pw)++, el, JS_PROP_C_W_E) < 0) return -1;
+    }
+    return 0;
+}
+
+/* symmetricDifference(other) (magic 0, SameValueZero) /
+ * symmetricDifferenceWith(pred, other) (magic 1). = diff(this,other) ++
+ * diff(other,this). The value form uses DynValSet (consistent with our
+ * SameValueZero `difference`); the pred form uses js_array_diffwith. */
+static JSValue js_array_ext_symdiff(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    JSValue obj, other, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValueConst pred = magic ? (argc > 0 ? argv[0] : JS_UNDEFINED) : JS_UNDEFINED;
+    int64_t len, olen, w = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    other = JS_ToObject(ctx, argv && argc > (magic ? 1 : 0) ? argv[magic ? 1 : 0] : JS_UNDEFINED);
+    if (JS_IsException(other)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &olen, other)) goto done;
+
+    if (magic) {                                   /* predicate form */
+        JSValue a = js_array_diffwith(ctx, obj, len, other, olen, pred), b;
+        int64_t bn, k;
+        if (JS_IsException(a)) goto done;
+        b = js_array_diffwith(ctx, other, olen, obj, len, pred);
+        if (JS_IsException(b)) { JS_FreeValue(ctx, a); goto done; }
+        /* a already owns its slots; append b's elements onto a */
+        if (js_get_length64(ctx, &bn, b)) { JS_FreeValue(ctx, a); JS_FreeValue(ctx, b); goto done; }
+        (void)js_get_length64(ctx, &w, a);
+        for (k = 0; k < bn; k++) {
+            JSValue el = JS_GetPropertyInt64(ctx, b, k);
+            if (JS_IsException(el)) { JS_FreeValue(ctx, a); JS_FreeValue(ctx, b); goto done; }
+            if (JS_DefinePropertyValueInt64(ctx, a, w++, el, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, a); JS_FreeValue(ctx, b); goto done; }
+        }
+        JS_FreeValue(ctx, b);
+        ret = a;
+        goto done;
+    }
+    {   /* value form */
+        DynValSet setThis, setOther, seenA, seenB;
+        int64_t i;
+        result = JS_NewArray(ctx);
+        if (JS_IsException(result)) { result = JS_UNDEFINED; goto done; }
+        if (dyn_valset_init(ctx, &setOther, olen)) { JS_ThrowOutOfMemory(ctx); goto done; }
+        if (dyn_valset_init(ctx, &setThis, len)) { JS_ThrowOutOfMemory(ctx); dyn_valset_free(ctx, &setOther); goto done; }
+        if (dyn_valset_init(ctx, &seenA, len)) { JS_ThrowOutOfMemory(ctx); dyn_valset_free(ctx, &setOther); dyn_valset_free(ctx, &setThis); goto done; }
+        if (dyn_valset_init(ctx, &seenB, olen)) { JS_ThrowOutOfMemory(ctx); dyn_valset_free(ctx, &setOther); dyn_valset_free(ctx, &setThis); dyn_valset_free(ctx, &seenA); goto done; }
+        for (i = 0; i < olen; i++) { JSValue e; int r; if (js_array_ext_getel(ctx, other, i, &e)) goto vfail; r = dyn_valset_add(ctx, &setOther, e); JS_FreeValue(ctx, e); if (r < 0) goto vfail; }
+        for (i = 0; i < len;  i++) { JSValue e; int r; if (js_array_ext_getel(ctx, obj, i, &e))   goto vfail; r = dyn_valset_add(ctx, &setThis,  e); JS_FreeValue(ctx, e); if (r < 0) goto vfail; }
+        if (js_array_symdiff_half(ctx, result, &w, obj, len, &setOther, &seenA)) goto vfail;
+        if (js_array_symdiff_half(ctx, result, &w, other, olen, &setThis, &seenB)) goto vfail;
+        ret = result; result = JS_UNDEFINED;
+    vfail:
+        dyn_valset_free(ctx, &setOther); dyn_valset_free(ctx, &setThis);
+        dyn_valset_free(ctx, &seenA); dyn_valset_free(ctx, &seenB);
+    }
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, other);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* Shallow clone matching Ramda _clone(x,false): arrays -> top-level element
+ * copy, plain objects -> own enumerable data props copied, else the value. */
+static JSValue js_ext_shallow_clone(JSContext *ctx, JSValueConst v)
+{
+    if (JS_IsArray(ctx, v)) {
+        int64_t n;
+        if (js_get_length64(ctx, &n, v)) return JS_EXCEPTION;
+        return js_array_ext_build_range(ctx, v, 0, n);
+    }
+    if (JS_VALUE_GET_TAG(v) == JS_TAG_OBJECT) {
+        JSValue o = JS_NewObject(ctx);
+        if (JS_IsException(o)) return o;
+        if (JS_CopyDataProperties(ctx, o, v, JS_UNDEFINED, TRUE)) { JS_FreeValue(ctx, o); return JS_EXCEPTION; }
+        return o;
+    }
+    return JS_DupValue(ctx, v);
+}
+
+/* reduceBy(valueFn, acc, keyFn) -> object grouping by keyFn(el), each group
+ * reduced by valueFn(groupAcc, el) starting from a shallow clone of acc
+ * (Ramda reduceBy). A valueFn returning R.reduced(x) halts the reduction. */
+static JSValue js_array_ext_reduceby(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValueConst valueFn = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst acc     = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValueConst keyFn   = argc > 2 ? argv[2] : JS_UNDEFINED;
+    JSValue obj, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    int64_t len, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    result = JS_NewObject(ctx);
+    if (JS_IsException(result)) { result = JS_UNDEFINED; goto done; }
+    for (i = 0; i < len; i++) {
+        JSValue el, keyv, cur, val;
+        JSValueConst va[2];
+        JSAtom atom;
+        int has;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
+        keyv = JS_Call(ctx, keyFn, JS_UNDEFINED, 1, (JSValueConst *)&el);
+        if (JS_IsException(keyv)) { JS_FreeValue(ctx, el); goto done; }
+        atom = JS_ValueToAtom(ctx, keyv);
+        JS_FreeValue(ctx, keyv);
+        if (atom == JS_ATOM_NULL) { JS_FreeValue(ctx, el); goto done; }
+        has = JS_HasProperty(ctx, result, atom);
+        if (has < 0) { JS_FreeAtom(ctx, atom); JS_FreeValue(ctx, el); goto done; }
+        if (has) {
+            cur = JS_GetProperty(ctx, result, atom);
+            if (JS_IsException(cur)) { JS_FreeAtom(ctx, atom); JS_FreeValue(ctx, el); goto done; }
+        } else {
+            cur = js_ext_shallow_clone(ctx, acc);
+            if (JS_IsException(cur)) { JS_FreeAtom(ctx, atom); JS_FreeValue(ctx, el); goto done; }
+        }
+        va[0] = cur; va[1] = el;
+        val = JS_Call(ctx, valueFn, JS_UNDEFINED, 2, va);
+        JS_FreeValue(ctx, cur);
+        JS_FreeValue(ctx, el);
+        if (JS_IsException(val)) { JS_FreeAtom(ctx, atom); goto done; }
+        if (JS_VALUE_GET_TAG(val) == JS_TAG_OBJECT) {   /* R.reduced short-circuit */
+            JSValue rd = JS_GetPropertyStr(ctx, val, "@@transducer/reduced");
+            int stop = !JS_IsException(rd) && JS_ToBool(ctx, rd);
+            JS_FreeValue(ctx, rd);
+            if (stop) { JS_FreeValue(ctx, val); JS_FreeAtom(ctx, atom); break; }
+        }
+        if (JS_DefinePropertyValue(ctx, result, atom, val, JS_PROP_C_W_E) < 0) goto done;
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* Array.repeat(value, n) -> [value, value, ...] (n copies, same reference). */
+static JSValue js_array_static_repeat(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValueConst value = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue arr, *pval;
+    JSObject *p;
+    int64_t n, i;
+    (void)this_val;
+    if (JS_ToInt64Sat(ctx, &n, argc > 1 ? argv[1] : JS_UNDEFINED)) return JS_EXCEPTION;
+    if (n < 0) return JS_ThrowRangeError(ctx, "repeat: count must be non-negative");
+    if (n > ARR_EXT_MAX) return JS_ThrowRangeError(ctx, "repeat: count too large");
+    if (n == 0) return JS_NewArray(ctx);
+    arr = js_allocate_fast_array(ctx, n);
+    if (JS_IsException(arr)) return arr;
+    p = JS_VALUE_GET_OBJ(arr);
+    pval = p->u.array.u.values;
+    for (i = 0; i < n; i++)
+        pval[i] = JS_DupValue(ctx, value);
+    return arr;
+}
+
+/* ============================================================================
+ * Transducers (Ramda transduce/into) + applicative sequence/traverse. Faithful
+ * to Ramda's transformer protocol: string keys "@@transducer/init|step|result"
+ * and the reduced wrapper {"@@transducer/reduced":true,"@@transducer/value":x}.
+ * ========================================================================== */
+
+/* One transformer object's step. fd[0]=kind (0 array-push, 1 string-concat,
+ * 2 object-assign, 3 wrap a plain (acc,x) reducer fd[1]). Returns the new acc. */
+static JSValue js_xf_step(JSContext *ctx, JSValueConst this_val,
+                          int argc, JSValueConst *argv, int magic, JSValue *fd)
+{
+    int kind = JS_VALUE_GET_INT(fd[0]);
+    JSValueConst acc = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst x   = argc > 1 ? argv[1] : JS_UNDEFINED;
+    (void)this_val; (void)magic;
+    switch (kind) {
+    case 0: {   /* array push */
+        int64_t n;
+        if (js_get_length64(ctx, &n, acc)) return JS_EXCEPTION;
+        if (JS_SetPropertyInt64(ctx, acc, n, JS_DupValue(ctx, x)) < 0) return JS_EXCEPTION;
+        return JS_DupValue(ctx, acc);
+    }
+    case 1: {   /* string concat */
+        JSValue sa = JS_ToString(ctx, acc), sx;
+        if (JS_IsException(sa)) return sa;
+        sx = JS_ToString(ctx, x);
+        if (JS_IsException(sx)) { JS_FreeValue(ctx, sa); return sx; }
+        return JS_ConcatString(ctx, sa, sx);   /* consumes sa, sx */
+    }
+    case 2: {   /* object assign: {k:v} pair-array or a source object */
+        if (JS_IsArray(ctx, x)) {
+            JSValue k = JS_GetPropertyInt64(ctx, x, 0), v;
+            JSAtom atom;
+            if (JS_IsException(k)) return JS_EXCEPTION;
+            v = JS_GetPropertyInt64(ctx, x, 1);
+            if (JS_IsException(v)) { JS_FreeValue(ctx, k); return JS_EXCEPTION; }
+            atom = JS_ValueToAtom(ctx, k);
+            JS_FreeValue(ctx, k);
+            if (atom == JS_ATOM_NULL) { JS_FreeValue(ctx, v); return JS_EXCEPTION; }
+            if (JS_SetProperty(ctx, acc, atom, v) < 0) { JS_FreeAtom(ctx, atom); return JS_EXCEPTION; }
+            JS_FreeAtom(ctx, atom);
+        } else if (JS_CopyDataProperties(ctx, acc, x, JS_UNDEFINED, TRUE)) {
+            return JS_EXCEPTION;
+        }
+        return JS_DupValue(ctx, acc);
+    }
+    default: {  /* wrap: fd[1](acc, x) */
+        JSValueConst a2[2];
+        a2[0] = acc; a2[1] = x;
+        return JS_Call(ctx, fd[1], JS_UNDEFINED, 2, a2);
+    }
+    }
+}
+
+/* One transformer object's init: a fresh empty container by kind. */
+static JSValue js_xf_init(JSContext *ctx, JSValueConst this_val,
+                          int argc, JSValueConst *argv, int magic, JSValue *fd)
+{
+    int kind = JS_VALUE_GET_INT(fd[0]);
+    (void)this_val; (void)argc; (void)argv; (void)magic;
+    switch (kind) {
+    case 0:  return JS_NewArray(ctx);
+    case 1:  return JS_NewString(ctx, "");
+    case 2:  return JS_NewObject(ctx);
+    default: return JS_ThrowTypeError(ctx, "init not implemented on wrapped transformer");
+    }
+}
+
+/* result: identity (the catenating transformers return the accumulator as-is). */
+static JSValue js_xf_result(JSContext *ctx, JSValueConst this_val,
+                            int argc, JSValueConst *argv, int magic, JSValue *fd)
+{
+    (void)this_val; (void)magic; (void)fd;
+    return JS_DupValue(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+}
+
+/* Build a base transformer object exposing the three protocol methods. */
+static JSValue js_make_step_transformer(JSContext *ctx, int kind, JSValueConst fn)
+{
+    JSValue obj, kv, step, init, result;
+    JSValueConst sd[2];
+    obj = JS_NewObject(ctx);
+    if (JS_IsException(obj)) return obj;
+    kv = JS_NewInt32(ctx, kind);
+    sd[0] = kv; sd[1] = fn;
+    step   = JS_NewCFunctionData(ctx, js_xf_step, 2, 0, 2, sd);
+    init   = JS_NewCFunctionData(ctx, js_xf_init, 0, 0, 1, (JSValueConst *)&kv);
+    result = JS_NewCFunctionData(ctx, js_xf_result, 1, 0, 1, (JSValueConst *)&kv);
+    JS_FreeValue(ctx, kv);
+    if (JS_IsException(step) || JS_IsException(init) || JS_IsException(result)) {
+        JS_FreeValue(ctx, step); JS_FreeValue(ctx, init); JS_FreeValue(ctx, result);
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
+    if (JS_SetPropertyStr(ctx, obj, "@@transducer/step", step) < 0 ||
+        JS_SetPropertyStr(ctx, obj, "@@transducer/init", init) < 0 ||
+        JS_SetPropertyStr(ctx, obj, "@@transducer/result", result) < 0) {
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
+    return obj;
+}
+
+/* Drive a composed transformer over the list (Ramda _xArrayReduce): step each
+ * element, unwrap+break on a reduced result, then always call result. `acc` is
+ * owned and consumed. Returns an owned result or JS_EXCEPTION. */
+static JSValue js_x_array_reduce(JSContext *ctx, JSValueConst xf, JSValue acc,
+                                 JSValueConst list, int64_t len)
+{
+    JSValue step, resfn, r;
+    int64_t i;
+    step = JS_GetPropertyStr(ctx, xf, "@@transducer/step");
+    if (JS_IsException(step)) { JS_FreeValue(ctx, acc); return JS_EXCEPTION; }
+    for (i = 0; i < len; i++) {
+        JSValue el, nacc;
+        JSValueConst a2[2];
+        if (js_array_ext_getel(ctx, list, i, &el)) { JS_FreeValue(ctx, step); JS_FreeValue(ctx, acc); return JS_EXCEPTION; }
+        a2[0] = acc; a2[1] = el;
+        nacc = JS_Call(ctx, step, xf, 2, a2);
+        JS_FreeValue(ctx, el);
+        JS_FreeValue(ctx, acc);
+        if (JS_IsException(nacc)) { JS_FreeValue(ctx, step); return JS_EXCEPTION; }
+        acc = nacc;
+        if (JS_VALUE_GET_TAG(acc) == JS_TAG_OBJECT) {
+            JSValue rd = JS_GetPropertyStr(ctx, acc, "@@transducer/reduced");
+            int stop = !JS_IsException(rd) && JS_ToBool(ctx, rd);
+            JS_FreeValue(ctx, rd);
+            if (stop) {
+                JSValue v = JS_GetPropertyStr(ctx, acc, "@@transducer/value");
+                JS_FreeValue(ctx, acc);
+                if (JS_IsException(v)) { JS_FreeValue(ctx, step); return JS_EXCEPTION; }
+                acc = v;
+                break;
+            }
+        }
+    }
+    JS_FreeValue(ctx, step);
+    resfn = JS_GetPropertyStr(ctx, xf, "@@transducer/result");
+    if (JS_IsException(resfn)) { JS_FreeValue(ctx, acc); return JS_EXCEPTION; }
+    r = JS_Call(ctx, resfn, xf, 1, (JSValueConst *)&acc);
+    JS_FreeValue(ctx, resfn);
+    JS_FreeValue(ctx, acc);
+    return r;
+}
+
+/* transduce(xf, fn, acc) -> reduce `this` through the transducer, seeded with
+ * `acc`. `fn` may be a 2-arity reducer or a transformer object. */
+static JSValue js_array_ext_transduce(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValueConst xf = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst fn = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValueConst accArg = argc > 2 ? argv[2] : JS_UNDEFINED;
+    JSValue obj, base, composed, ret = JS_EXCEPTION;
+    int64_t len;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    base = JS_IsFunction(ctx, fn) ? js_make_step_transformer(ctx, 3, fn)
+                                  : JS_DupValue(ctx, fn);
+    if (JS_IsException(base)) goto done;
+    composed = JS_Call(ctx, xf, JS_UNDEFINED, 1, (JSValueConst *)&base);
+    JS_FreeValue(ctx, base);
+    if (JS_IsException(composed)) goto done;
+    ret = js_x_array_reduce(ctx, composed, JS_DupValue(ctx, accArg), obj, len);
+    JS_FreeValue(ctx, composed);
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* into(acc, xf) -> transduce `this` into a fresh container chosen by `acc`'s
+ * type (array/string/object) or `acc` itself if it is a transformer. */
+static JSValue js_array_ext_into(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    JSValueConst accArg = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst xf     = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValue obj, base, composed, seed, initfn, ret = JS_EXCEPTION;
+    int64_t len;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    {   /* _isTransformer(accArg)? */
+        JSValue stepm = JS_GetPropertyStr(ctx, accArg, "@@transducer/step");
+        int isxf = JS_IsFunction(ctx, stepm);
+        JS_FreeValue(ctx, stepm);
+        if (isxf) {
+            base = JS_DupValue(ctx, accArg);
+        } else if (JS_IsArray(ctx, accArg)) {
+            base = js_make_step_transformer(ctx, 0, JS_UNDEFINED);
+        } else if (JS_VALUE_GET_TAG(accArg) == JS_TAG_STRING) {
+            base = js_make_step_transformer(ctx, 1, JS_UNDEFINED);
+        } else if (JS_VALUE_GET_TAG(accArg) == JS_TAG_OBJECT) {
+            base = js_make_step_transformer(ctx, 2, JS_UNDEFINED);
+        } else {
+            JS_ThrowTypeError(ctx, "into: cannot create a transformer for this accumulator");
+            goto done;
+        }
+    }
+    if (JS_IsException(base)) goto done;
+    composed = JS_Call(ctx, xf, JS_UNDEFINED, 1, (JSValueConst *)&base);
+    JS_FreeValue(ctx, base);
+    if (JS_IsException(composed)) goto done;
+    initfn = JS_GetPropertyStr(ctx, composed, "@@transducer/init");
+    if (JS_IsException(initfn)) { JS_FreeValue(ctx, composed); goto done; }
+    seed = JS_Call(ctx, initfn, composed, 0, NULL);
+    JS_FreeValue(ctx, initfn);
+    if (JS_IsException(seed)) { JS_FreeValue(ctx, composed); goto done; }
+    ret = js_x_array_reduce(ctx, composed, seed, obj, len);
+    JS_FreeValue(ctx, composed);
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* Extract the applicative `of` from a TypeRep F (fantasy-land/of | of | F). */
+static JSValue js_applicative_of(JSContext *ctx, JSValueConst F)
+{
+    JSValue of = JS_GetPropertyStr(ctx, F, "fantasy-land/of");
+    if (JS_IsFunction(ctx, of)) return of;
+    JS_FreeValue(ctx, of);
+    of = JS_GetPropertyStr(ctx, F, "of");
+    if (JS_IsFunction(ctx, of)) return of;
+    JS_FreeValue(ctx, of);
+    return JS_DupValue(ctx, F);
+}
+
+/* One reduceRight fold step of the default (list-applicative) sequence:
+ * ap(map(prepend, x), acc) => [ [xi, ...a] for xi in x for a in acc ]. */
+static JSValue js_seq_fold(JSContext *ctx, JSValueConst x, JSValueConst acc)
+{
+    JSValue out;
+    int64_t xn, an, xi, ai, w = 0;
+    if (js_get_length64(ctx, &xn, x)) return JS_EXCEPTION;
+    if (js_get_length64(ctx, &an, acc)) return JS_EXCEPTION;
+    out = JS_NewArray(ctx);
+    if (JS_IsException(out)) return out;
+    for (xi = 0; xi < xn; xi++) {
+        JSValue xv;
+        if (js_array_ext_getel(ctx, x, xi, &xv)) { JS_FreeValue(ctx, out); return JS_EXCEPTION; }
+        for (ai = 0; ai < an; ai++) {
+            JSValue a, row;
+            int64_t al, k;
+            if (js_array_ext_getel(ctx, acc, ai, &a)) { JS_FreeValue(ctx, xv); JS_FreeValue(ctx, out); return JS_EXCEPTION; }
+            if (js_get_length64(ctx, &al, a)) { JS_FreeValue(ctx, a); JS_FreeValue(ctx, xv); JS_FreeValue(ctx, out); return JS_EXCEPTION; }
+            row = js_allocate_fast_array(ctx, al + 1);
+            if (JS_IsException(row)) { JS_FreeValue(ctx, a); JS_FreeValue(ctx, xv); JS_FreeValue(ctx, out); return JS_EXCEPTION; }
+            {
+                JSObject *rp = JS_VALUE_GET_OBJ(row);
+                JSValue *dst = rp->u.array.u.values;
+                dst[0] = JS_DupValue(ctx, xv);
+                for (k = 0; k < al; k++)
+                    if (js_array_ext_getel(ctx, a, k, &dst[1 + k])) { JS_FreeValue(ctx, a); JS_FreeValue(ctx, xv); JS_FreeValue(ctx, row); JS_FreeValue(ctx, out); return JS_EXCEPTION; }
+            }
+            JS_FreeValue(ctx, a);
+            if (JS_DefinePropertyValueInt64(ctx, out, w++, row, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, xv); JS_FreeValue(ctx, out); return JS_EXCEPTION; }
+        }
+        JS_FreeValue(ctx, xv);
+    }
+    return out;
+}
+
+/* sequence over a list of Array applicatives: reduceRight(fold, of([]), list).
+ * Only the default list/Array applicative is supported (documented). */
+static JSValue js_array_sequence_core(JSContext *ctx, JSValueConst F,
+                                      JSValueConst listObj, int64_t len)
+{
+    JSValue of, empty, acc, ret = JS_EXCEPTION;
+    int64_t i;
+    of = js_applicative_of(ctx, F);
+    if (JS_IsException(of)) return JS_EXCEPTION;
+    empty = JS_NewArray(ctx);
+    if (JS_IsException(empty)) { JS_FreeValue(ctx, of); return JS_EXCEPTION; }
+    acc = JS_Call(ctx, of, JS_UNDEFINED, 1, (JSValueConst *)&empty);
+    JS_FreeValue(ctx, empty);
+    JS_FreeValue(ctx, of);
+    if (JS_IsException(acc)) return JS_EXCEPTION;
+    for (i = len - 1; i >= 0; i--) {
+        JSValue x, nacc;
+        if (js_array_ext_getel(ctx, listObj, i, &x)) { JS_FreeValue(ctx, acc); return JS_EXCEPTION; }
+        nacc = js_seq_fold(ctx, x, acc);
+        JS_FreeValue(ctx, x);
+        JS_FreeValue(ctx, acc);
+        if (JS_IsException(nacc)) return JS_EXCEPTION;
+        acc = nacc;
+    }
+    ret = acc;
+    return ret;
+}
+
+/* sequence(F) -> transpose an Array-of-applicatives into an applicative-of-Array
+ * (default list path only). */
+static JSValue js_array_ext_sequence(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValueConst F = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue obj, ret;
+    int64_t len;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    ret = js_array_sequence_core(ctx, F, obj, len);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* traverse(F, fn) = sequence(F, map(fn, this)) (default list path only). */
+static JSValue js_array_ext_traverse(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValueConst F  = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst fn = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValue obj, mapped, ret = JS_EXCEPTION;
+    int64_t len, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    mapped = JS_NewArray(ctx);
+    if (JS_IsException(mapped)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    for (i = 0; i < len; i++) {
+        JSValue el, r;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
+        r = JS_Call(ctx, fn, JS_UNDEFINED, 1, (JSValueConst *)&el);
+        JS_FreeValue(ctx, el);
+        if (JS_IsException(r)) goto done;
+        if (JS_DefinePropertyValueInt64(ctx, mapped, i, r, JS_PROP_C_W_E) < 0) goto done;
+    }
+    ret = js_array_sequence_core(ctx, F, mapped, len);
+ done:
+    JS_FreeValue(ctx, mapped);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+static const JSCFunctionListEntry js_array_static_ext_funcs[] = {
+    JS_CFUNC_DEF("repeat", 2, js_array_static_repeat ),
+};
+
 static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("isEmpty", 0, js_array_ext_isEmpty ),
     JS_CFUNC_DEF("first", 0, js_array_ext_first ),
@@ -2170,6 +3164,31 @@ static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("removeRange", 2, js_array_ext_removerange ),
     JS_CFUNC_DEF("splitWhen", 1, js_array_ext_splitwhen ),
     JS_CFUNC_DEF("innerJoin", 2, js_array_ext_innerjoin ),
+    JS_CFUNC_MAGIC_DEF("startsWith", 1, js_array_ext_startsends, 0 ),
+    JS_CFUNC_MAGIC_DEF("endsWith", 1, js_array_ext_startsends, 1 ),
+    JS_CFUNC_DEF("unnest", 0, js_array_ext_unnest ),
+    JS_CFUNC_MAGIC_DEF("dropRepeats", 0, js_array_ext_droprepeats, 0 ),
+    JS_CFUNC_MAGIC_DEF("dropRepeatsWith", 1, js_array_ext_droprepeats, 1 ),
+    JS_CFUNC_MAGIC_DEF("dropRepeatsBy", 1, js_array_ext_droprepeats, 2 ),
+    JS_CFUNC_DEF("sortWith", 1, js_array_ext_sortwith ),
+    JS_CFUNC_DEF("unionWith", 2, js_array_ext_unionwith ),
+    JS_CFUNC_DEF("differenceWith", 2, js_array_ext_differencewith ),
+    JS_CFUNC_MAGIC_DEF("symmetricDifference", 1, js_array_ext_symdiff, 0 ),
+    JS_CFUNC_MAGIC_DEF("symmetricDifferenceWith", 2, js_array_ext_symdiff, 1 ),
+    JS_CFUNC_DEF("reduceBy", 3, js_array_ext_reduceby ),
+    JS_CFUNC_DEF("transduce", 3, js_array_ext_transduce ),
+    JS_CFUNC_DEF("into", 2, js_array_ext_into ),
+    JS_CFUNC_DEF("sequence", 1, js_array_ext_sequence ),
+    JS_CFUNC_DEF("traverse", 2, js_array_ext_traverse ),
+    JS_CFUNC_MAGIC_DEF("mapFromIndex", 2, js_array_fromindex, FI_MAP ),
+    JS_CFUNC_MAGIC_DEF("forEachFromIndex", 2, js_array_fromindex, FI_FOREACH ),
+    JS_CFUNC_MAGIC_DEF("filterFromIndex", 2, js_array_fromindex, FI_FILTER ),
+    JS_CFUNC_MAGIC_DEF("findFromIndex", 2, js_array_fromindex, FI_FIND ),
+    JS_CFUNC_MAGIC_DEF("findIndexFromIndex", 2, js_array_fromindex, FI_FINDINDEX ),
+    JS_CFUNC_MAGIC_DEF("someFromIndex", 2, js_array_fromindex, FI_SOME ),
+    JS_CFUNC_MAGIC_DEF("everyFromIndex", 2, js_array_fromindex, FI_EVERY ),
+    JS_CFUNC_MAGIC_DEF("reduceFromIndex", 2, js_array_fromindex, FI_REDUCE ),
+    JS_CFUNC_MAGIC_DEF("reduceRightFromIndex", 2, js_array_fromindex, FI_REDUCERIGHT ),
 };
 
 static const JSCFunctionListEntry js_array_proto_funcs[] = {

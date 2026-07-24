@@ -103,8 +103,28 @@ library** — one `import` each, no dependencies:
 | `dyna:sort` | Sorting and binary search |
 | `dyna:search` | SIMD substring search, including overlapping matches |
 
-Every example in the docs is real and runs. See the **[API Reference](docs/dyna-guide/API.md)** for
+Every example in the docs is real and runs. See the **[API Reference](docs/dynajs-guide/API.md)** for
 complete signatures.
+
+## Batteries on the prototypes, too
+
+The `dyna:*` modules are opt-in imports. The other half of the batteries needs **no import at all**:
+DynaJS bakes the non-ECMAScript methods of **SugarJS 2.0** and **RamdaJS 0.32** straight onto the
+built-in prototypes — native C, non-enumerable, and careful to *never* shadow a standard method.
+
+```js
+[1, 1, 2, 3, 3].dropRepeats();                 // [1, 2, 3]   — only adjacent dupes
+[{age:2},{age:1}].sortWith([(a,b)=>a.age-b.age]);  // sorted by age
+["a","b","c","d"].mapFromIndex(2, true, s=>s); // ["c","d","a","b"]  — start at 2, wrap around
+[[1,2],[3,4]].sequence(Array);                 // [[1,3],[1,4],[2,3],[2,4]]  — cartesian product
+Object.mergeDeepRight({a:{x:1}}, {a:{y:2}});   // {a:{x:1, y:2}}
+(x => x+1).pipe(x => x*2, x => -x)(3);         // -8   — point-free composition
+new Date(2024,1,29).endOfMonth().getDate();    // 29   — Sugar dates, immutable
+```
+
+Hundreds of methods across `Array`/`String`/`Number`/`Object`/`Function`/`Date`, plus a `Lens` type
+and Ramda transducers — all in the binary, all documented in the
+**[API Reference → Built-in prototype extensions](docs/dynajs-guide/API.md#built-in-prototype-extensions-sugarjs--ramdajs)**.
 
 ## Why DynaJS
 
@@ -123,16 +143,16 @@ guide.
 
 ## Documentation
 
-The complete book lives in **[`docs/dyna-guide/`](docs/dyna-guide/README.md)**:
+The complete book lives in **[`docs/dynajs-guide/`](docs/dynajs-guide/README.md)**:
 
-1. [Introduction & Philosophy](docs/dyna-guide/01-introduction-and-philosophy.md)
-2. [Installation & First Steps](docs/dyna-guide/02-installation-and-first-steps.md)
-3. [The Language & the Runtime](docs/dyna-guide/03-language-and-runtime.md)
-4. [The Standard Library, Module by Module](docs/dyna-guide/04-standard-library.md)
-5. [Performance Architecture](docs/dyna-guide/05-performance-architecture.md)
-6. [For AI Agents](docs/dyna-guide/06-for-ai-agents.md)
-7. [Roadmap & Philosophy](docs/dyna-guide/07-roadmap-and-philosophy.md)
-- [**Complete API Reference**](docs/dyna-guide/API.md) — every module, every signature.
+1. [Introduction & Philosophy](docs/dynajs-guide/01-introduction-and-philosophy.md)
+2. [Installation & First Steps](docs/dynajs-guide/02-installation-and-first-steps.md)
+3. [The Language & the Runtime](docs/dynajs-guide/03-language-and-runtime.md)
+4. [The Standard Library, Module by Module](docs/dynajs-guide/04-standard-library.md)
+5. [Performance Architecture](docs/dynajs-guide/05-performance-architecture.md)
+6. [For AI Agents](docs/dynajs-guide/06-for-ai-agents.md)
+7. [Roadmap & Philosophy](docs/dynajs-guide/07-roadmap-and-philosophy.md)
+- [**Complete API Reference**](docs/dynajs-guide/API.md) — every module, every signature.
 
 ## Build from source
 
@@ -143,7 +163,7 @@ make test                                                       # language + mod
 ```
 
 `make` alone builds the core engine plus the classic `std`/`os` modules. Sanitizer builds:
-`make CONFIG_ASAN=y`, `make CONFIG_UBSAN=y`. See [Chapter 2](docs/dyna-guide/02-installation-and-first-steps.md).
+`make CONFIG_ASAN=y`, `make CONFIG_UBSAN=y`. See [Chapter 2](docs/dynajs-guide/02-installation-and-first-steps.md).
 
 ## Status
 

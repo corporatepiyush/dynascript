@@ -1831,6 +1831,8 @@ a property-key string, or omitted (identity).
 | `count` / `none` / `any` / `all` | `(match) → number \| boolean` | Count / quantifiers over the matcher. |
 | `countBy` / `indexBy` | `(fn) → object` | `{key: count}` / `{key: lastElement}` grouped by `fn(el)`. |
 | `scan` | `(fn, acc) → array` | Running reduce (all intermediate accumulators). |
+| `reduceBy` | `(valueFn, acc, keyFn) → object` | Group by `keyFn(el)`, fold each group from a fresh (shallow-cloned) `acc`. |
+| `startsWith` / `endsWith` | `(sublist) → boolean` | Deep-equal prefix / suffix test. |
 
 **Access & window**
 
@@ -1847,8 +1849,10 @@ a property-key string, or omitted (identity).
 | Method | Signature | Description |
 |---|---|---|
 | `unique` / `uniq` / `uniqBy` | `(map?) → array` | Dedup by SameValueZero (or by `fn(el)`). |
+| `dropRepeats` / `dropRepeatsWith` / `dropRepeatsBy` | `(pred? / fn?) → array` | Drop *consecutive* duplicates (deep-equal; or `pred(prev,cur)`; or by `fn(el)`). |
 | `compact` | `() → array` | Drop falsey (`null`/`undefined`/`NaN`/`false`/empty) elements. |
-| `flatten` / `transpose` | `() → array` | Deep flatten / matrix transpose. |
+| `flatten` / `unnest` / `transpose` | `() → array` | Deep flatten / flatten one level / matrix transpose. |
+| `sortWith` | `(comparators) → array` | Stable sort by a list of comparators — first non-zero wins. |
 | `intersperse` | `(sep) → array` | Insert `sep` between elements. |
 | `aperture` | `(n) → array` | Sliding windows of width `n`. |
 | `splitEvery` / `splitAt` / `splitWhen` | `(n \| i \| match) → array` | Chunk / split at index / split at first match. |
@@ -1869,6 +1873,9 @@ a property-key string, or omitted (identity).
 | `removeAt` / `removeRange` | `(i) / (start, count) → array` | Non-mutating removal. |
 | `remove` / `reject` | `(match) → array` | Drop matching elements (aliases). |
 | `union` / `intersect` / `intersection` / `difference` / `without` | `(b) → array` | Set ops (SameValueZero). |
+| `unionWith` / `differenceWith` | `(pred, b) → array` | Same, but equality is your `pred(a,b)`. |
+| `symmetricDifference` / `symmetricDifferenceWith` | `(b) / (pred, b) → array` | Elements in either but not both. |
+| `Array.repeat` *(static)* | `(x, n) → array` | `n` copies of `x` (the same reference); `RangeError` past `1e8`. |
 
 ```js
 [1,2,3,4].sum();                 // 10
@@ -1876,7 +1883,56 @@ a property-key string, or omitted (identity).
 ["a","b","c"].intersperse("-");  // ["a","-","b","-","c"]
 [{n:1},{n:2}].pluck("n");        // [1, 2]
 [1,2,3].union([3,4,5]);          // [1,2,3,4,5]
+[1,1,2,3,3].dropRepeats();       // [1,2,3]  (only *adjacent* dupes)
+[1,2,3].symmetricDifference([2,3,4]);   // [1,4]
 ```
+
+## Array.prototype  (transducers)
+
+The genuine Ramda transducer protocol — a *transformer* is any object with
+`@@transducer/init`, `@@transducer/step`, `@@transducer/result`, and early-exit is the
+`{ "@@transducer/reduced": true, "@@transducer/value": v }` wrapper. Hand-write one, or bring your
+own from Ramda; the engine drives it.
+
+| Method | Signature | Description |
+|---|---|---|
+| `transduce` | `(xf, fn, acc) → any` | Reduce through transducer `xf`, seeded with `acc`; `fn` is a `(acc,x)` reducer or a transformer. |
+| `into` | `(acc, xf) → any` | Transduce into a **fresh** container chosen by `acc`'s type — array (push), string (concat) or object (assign). |
+| `sequence` | `(Applicative) → any` | Transpose an array of applicatives. For the `Array` applicative this is the **cartesian product**. |
+| `traverse` | `(Applicative, fn) → any` | `sequence` of `map(fn, this)`. |
+
+```js
+const double = xf => ({ "@@transducer/init":   () => xf["@@transducer/init"](),
+                        "@@transducer/result": a  => xf["@@transducer/result"](a),
+                        "@@transducer/step":  (a,x)=> xf["@@transducer/step"](a, x*2) });
+[1,2,3,4].into([], double);              // [2,4,6,8]  — no intermediate array
+[[1,2],[3,4]].sequence(Array);           // [[1,3],[1,4],[2,3],[2,4]]
+```
+
+> `sequence`/`traverse` implement Ramda's default list path, so the applicative is `Array`
+> (cartesian product). Non-`Array` applicatives with custom `ap`/`map` are out of scope.
+
+## Array.prototype  (Sugar `*FromIndex`)
+
+Every one is the matching Array method, but **starting at `startIndex`** (negative = from the end) and,
+when the optional `loop` boolean is passed, **wrapping around to the front**. Callbacks always receive the
+*original* element and its de-shifted original index.
+
+| Method | Signature |
+|---|---|
+| `mapFromIndex` `forEachFromIndex` `filterFromIndex` | `(startIndex, loop?, fn, thisArg?)` |
+| `findFromIndex` `findIndexFromIndex` `someFromIndex` `everyFromIndex` | `(startIndex, loop?, match, thisArg?)` |
+| `reduceFromIndex` `reduceRightFromIndex` | `(startIndex, loop?, reducer, initial?)` |
+
+```js
+["a","b","c","d","e"].mapFromIndex(2, x => x);          // ["c","d","e"]
+["a","b","c","d","e"].mapFromIndex(2, true, x => x);    // ["c","d","e","a","b"]  (wrapped)
+[10,20,30,40].filterFromIndex(1, x => x > 15);          // [20,30,40]
+```
+
+> Faithful to Sugar's quirks (they’re bugs-as-features, and tests depend on them): a **falsy**
+> `reduceFromIndex` seed is dropped (the first element seeds instead), and `reduceRightFromIndex`
+> reports shifted indices in the non-loop case.
 
 ## %TypedArray%.prototype  (SIMD reductions)
 
@@ -2105,6 +2161,27 @@ const add3 = ((a,b,c)=>a+b+c).curry();    add3(1)(2)(3);   // 6
 const safe = (x=>{ if(x<0) throw Error("neg"); return x }).tryCatch(()=>0);   safe(-1);  // 0
 ```
 
+## Function  (static combinators on the constructor)
+
+The point-free “glue” that has no natural receiver — it lives on the `Function` constructor itself.
+
+| Method | Signature | Description |
+|---|---|---|
+| `Function.identity` | `(x) → x` | Returns its argument. |
+| `Function.always` | `(x) → fn` | A function that always returns `x`. |
+| `Function.of` | `(x) → [x]` | Singleton array. |
+| `Function.not` / `Function.negate` | `(x) → boolean` / `(n) → number` | Logical `!x` / arithmetic `-n`. |
+| `Function.applyTo` | `(x, f) → f(x)` | Feed `x` to `f`. |
+| `Function.cond` | `([[pred, transform], …]) → fn` | Run the first matching pair’s transform (else `undefined`). |
+| `Function.uncurryN` | `(depth, fn) → fn` | Collapse `depth` curried calls into one. |
+| `Function.lift` / `Function.liftN` | `(fn) / (arity, fn) → fn` | Lift `fn` over lists — the cartesian product of its arguments. |
+| `Function.ap` | `(fns, xs) → array` | `[f(x) …]`; or the S-combinator `x => f(x)(g(x))` when `fns` is a function. |
+
+```js
+Function.cond([[x=>x<0,()=>"neg"], [x=>x>0,()=>"pos"], [()=>true,()=>"zero"]])(-5);  // "neg"
+Function.lift((a,b)=>a+b)([1,2],[10,20]);   // [11,21,12,22]
+```
+
 ## Date.prototype  (English/ISO, local-time, immutable)
 
 **Predicates** — `() → boolean`
@@ -2189,11 +2266,12 @@ Lens.over(Lens.index(1), x=>x*10, [1,2,3]);   // [1, 20, 3]
 
 ## Not implemented (deferred)
 
-- `Date.create(string)` — the natural-language date parser + per-locale format masks.
-- Function timers — `throttle debounce delay memoize after lazy` (need event-loop + cancellation).
-- Array transducers — `into sequence traverse transduce mapAccum`.
-- `RegExp.prototype` flag helpers — blocked by `test262 staging/sm/RegExp/prototype.js` (pins
-  `Reflect.ownKeys(RegExp.prototype)`).
-- Remaining Array (`startsWith endsWith unnest dropRepeats sortWith *With set-ops symmetricDifference
-  repeat reduceBy`, Sugar FromIndex) and Function statics (`always identity cond of not negate applyTo
-  uncurryN lift ap`).
+Everything else in the SugarJS/Ramda surface is landed — what remains needs infrastructure that
+doesn’t exist yet (or that a test suite forbids):
+
+- `Date.create(string)` — the natural-language date parser + per-locale format masks (thousands of
+  lines of locale data; a project of its own).
+- Function timers — `throttle debounce delay memoize lazy` (need the event loop + cancellation).
+- `RegExp.prototype` flag helpers — blocked by `test262 staging/sm/RegExp/prototype.js`, which pins
+  `Reflect.ownKeys(RegExp.prototype)` exactly, so *any* added own property fails the suite.
+- `sequence`/`traverse` for non-`Array` applicatives — the generic `ap`/`map`-dispatch path.
