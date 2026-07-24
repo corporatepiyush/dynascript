@@ -1975,6 +1975,181 @@ static JSValue js_array_ext_union(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* _zip(other) -> [[this[i], other[i]], ...] truncated to the shorter length. */
+static JSValue js_array_ext_zip(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
+{
+    JSValue obj, other, result, ret = JS_EXCEPTION;
+    int64_t len, olen, n, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    other = JS_ToObject(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(other)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &olen, other)) goto done;
+    n = len < olen ? len : olen;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < n; i++) {
+        JSValue a, b, pair;
+        if (js_array_ext_getel(ctx, obj, i, &a)) { JS_FreeValue(ctx, result); goto done; }
+        if (js_array_ext_getel(ctx, other, i, &b)) { JS_FreeValue(ctx, a); JS_FreeValue(ctx, result); goto done; }
+        pair = JS_NewArray(ctx);
+        if (JS_IsException(pair)) { JS_FreeValue(ctx, a); JS_FreeValue(ctx, b); JS_FreeValue(ctx, result); goto done; }
+        JS_DefinePropertyValueInt64(ctx, pair, 0, a, JS_PROP_C_W_E);
+        JS_DefinePropertyValueInt64(ctx, pair, 1, b, JS_PROP_C_W_E);
+        if (JS_DefinePropertyValueInt64(ctx, result, i, pair, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, result); goto done; }
+    }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, other);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _zipWith(fn, other) -> [fn(this[i], other[i]), ...] truncated to shorter. */
+static JSValue js_array_ext_zipwith(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue obj, other, result, ret = JS_EXCEPTION;
+    JSValueConst fn = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, olen, n, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    other = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(other)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &olen, other)) goto done;
+    n = len < olen ? len : olen;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < n; i++) {
+        JSValue a, b, r;
+        JSValueConst args[2];
+        if (js_array_ext_getel(ctx, obj, i, &a)) { JS_FreeValue(ctx, result); goto done; }
+        if (js_array_ext_getel(ctx, other, i, &b)) { JS_FreeValue(ctx, a); JS_FreeValue(ctx, result); goto done; }
+        args[0] = a; args[1] = b;
+        r = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
+        JS_FreeValue(ctx, a); JS_FreeValue(ctx, b);
+        if (JS_IsException(r)) { JS_FreeValue(ctx, result); goto done; }
+        if (JS_DefinePropertyValueInt64(ctx, result, i, r, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, result); goto done; }
+    }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, other);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _intersperse(sep) -> a new array with sep between each pair of elements. */
+static JSValue js_array_ext_intersperse(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv)
+{
+    JSValue obj, result, ret = JS_EXCEPTION;
+    JSValueConst sep = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, i, j = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue el;
+        if (i > 0 && JS_DefinePropertyValueInt64(ctx, result, j++, JS_DupValue(ctx, sep), JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, result); goto done; }
+        if (js_array_ext_getel(ctx, obj, i, &el)) { JS_FreeValue(ctx, result); goto done; }
+        if (JS_DefinePropertyValueInt64(ctx, result, j++, el, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, result); goto done; }
+    }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* recursive flatten; c_depth guards the C stack against pathological nesting
+ * (past FLATTEN_MAX_DEPTH a nested array is emitted as-is). */
+#define FLATTEN_MAX_DEPTH 512
+static int js_array_ext_flatten_into(JSContext *ctx, JSValueConst result,
+                                     JSValueConst arr, int64_t remaining,
+                                     int64_t *j, int c_depth)
+{
+    int64_t len, i;
+    if (js_get_length64(ctx, &len, arr)) return -1;
+    for (i = 0; i < len; i++) {
+        JSValue el;
+        if (js_array_ext_getel(ctx, arr, i, &el)) return -1;
+        if (remaining > 0 && c_depth < FLATTEN_MAX_DEPTH && JS_IsArray(ctx, el)) {
+            int r = js_array_ext_flatten_into(ctx, result, el, remaining - 1, j, c_depth + 1);
+            JS_FreeValue(ctx, el);
+            if (r) return -1;
+        } else if (JS_DefinePropertyValueInt64(ctx, result, (*j)++, el, JS_PROP_C_W_E) < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* _flatten(depth?) -> a new array flattened to `depth` (default: fully). */
+static JSValue js_array_ext_flatten(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue obj, result, ret = JS_EXCEPTION;
+    int64_t depth = INT64_MAX, j = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (argc > 0 && !JS_IsUndefined(argv[0])) {
+        if (JS_ToInt64Sat(ctx, &depth, argv[0])) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+        if (depth < 0) depth = 0;
+    }
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_array_ext_flatten_into(ctx, result, obj, depth, &j, 0)) { JS_FreeValue(ctx, result); goto done; }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _transpose() -> transpose an array of arrays (ragged: skips missing cells). */
+static JSValue js_array_ext_transpose(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue obj, result, ret = JS_EXCEPTION;
+    int64_t nrows, maxcol = 0, r, c;
+    (void)argc; (void)argv;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &nrows, obj)) goto done;
+    for (r = 0; r < nrows; r++) {
+        JSValue row;
+        int64_t rl;
+        if (js_array_ext_getel(ctx, obj, r, &row)) goto done;
+        if (JS_IsArray(ctx, row)) {
+            if (js_get_length64(ctx, &rl, row)) { JS_FreeValue(ctx, row); goto done; }
+            if (rl > maxcol) maxcol = rl;
+        }
+        JS_FreeValue(ctx, row);
+    }
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    for (c = 0; c < maxcol; c++) {
+        JSValue col = JS_NewArray(ctx);
+        int64_t k = 0;
+        if (JS_IsException(col)) { JS_FreeValue(ctx, result); goto done; }
+        for (r = 0; r < nrows; r++) {
+            JSValue row, cell;
+            int64_t rl;
+            if (js_array_ext_getel(ctx, obj, r, &row)) { JS_FreeValue(ctx, col); JS_FreeValue(ctx, result); goto done; }
+            if (!JS_IsArray(ctx, row)) { JS_FreeValue(ctx, row); continue; }
+            if (js_get_length64(ctx, &rl, row)) { JS_FreeValue(ctx, row); JS_FreeValue(ctx, col); JS_FreeValue(ctx, result); goto done; }
+            if (c < rl) {
+                if (js_array_ext_getel(ctx, row, c, &cell)) { JS_FreeValue(ctx, row); JS_FreeValue(ctx, col); JS_FreeValue(ctx, result); goto done; }
+                if (JS_DefinePropertyValueInt64(ctx, col, k++, cell, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, row); JS_FreeValue(ctx, col); JS_FreeValue(ctx, result); goto done; }
+            }
+            JS_FreeValue(ctx, row);
+        }
+        if (JS_DefinePropertyValueInt64(ctx, result, c, col, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, result); goto done; }
+    }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
 /* _partition(matcher) -> [ [elements the matcher accepts], [the rest] ]
  * (matcher = value via SameValueZero, or a predicate function). */
 static JSValue js_array_ext_partition(JSContext *ctx, JSValueConst this_val,
@@ -2076,6 +2251,11 @@ static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("_union", 1, js_array_ext_union ),
     JS_CFUNC_DEF("_partition", 1, js_array_ext_partition ),
     JS_CFUNC_DEF("_pluck", 1, js_array_ext_pluck ),
+    JS_CFUNC_DEF("_zip", 1, js_array_ext_zip ),
+    JS_CFUNC_DEF("_zipWith", 2, js_array_ext_zipwith ),
+    JS_CFUNC_DEF("_intersperse", 1, js_array_ext_intersperse ),
+    JS_CFUNC_DEF("_flatten", 0, js_array_ext_flatten ),
+    JS_CFUNC_DEF("_transpose", 0, js_array_ext_transpose ),
 };
 
 static const JSCFunctionListEntry js_array_proto_funcs[] = {

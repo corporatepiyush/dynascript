@@ -180,4 +180,22 @@ eq([]._pluck("x"), [], "_pluck of empty → []");
 eq([[10, 20], [30, 40]]._pluck(1), [20, 40], "_pluck numeric index");
 const pSrc = [1, 2, 3]; pSrc._partition(x => x > 1); eq(pSrc, [1, 2, 3], "_partition does not mutate");
 
+/* ---- batch 6: _zip / _zipWith / _intersperse / _flatten / _transpose ---- */
+eq([1, 2, 3]._zip(["a", "b"]), [[1, "a"], [2, "b"]], "_zip truncates to shorter");
+eq([1, 2]._zip([]), [], "_zip with empty → []");
+eq([1, 2, 3]._zipWith((a, b) => a + b, [10, 20, 30]), [11, 22, 33], "_zipWith(fn, other)");
+eq([1, 2, 3]._zipWith((a, b) => a * b, [10, 20]), [10, 40], "_zipWith truncates");
+eq([1, 2, 3]._intersperse(0), [1, 0, 2, 0, 3], "_intersperse");
+eq([1]._intersperse(0), [1], "_intersperse single → no sep");
+eq([]._intersperse(0), [], "_intersperse empty → []");
+eq([1, [2, [3, [4]]]]._flatten(), [1, 2, 3, 4], "_flatten deep (default)");
+eq([1, [2, [3]]]._flatten(1), [1, 2, [3]], "_flatten(1) one level");
+eq([1, [2, [3]]]._flatten(0), [1, [2, [3]]], "_flatten(0) → unchanged copy");
+eq([1, 2, 3]._flatten(), [1, 2, 3], "_flatten of a flat array");
+eq([[1, 2, 3], [4, 5, 6]]._transpose(), [[1, 4], [2, 5], [3, 6]], "_transpose square");
+eq([[1, 2], [3], [4, 5, 6]]._transpose(), [[1, 3, 4], [2, 5], [6]], "_transpose ragged (skips missing)");
+eq([]._transpose(), [], "_transpose of empty → []");
+/* non-mutation */
+const zSrc = [1, 2, 3]; zSrc._flatten(); zSrc._intersperse(0); eq(zSrc, [1, 2, 3], "structural methods do not mutate");
+
 print("test_array_ext: all tests passed (" + n + " assertions)");
