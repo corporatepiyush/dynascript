@@ -1,15 +1,15 @@
-/* test_csv.js — dynajs:csv (file CRUD, RFC-4180, SIMD parse + atomic I/O).
+/* test_csv.js — dyna:csv (file CRUD, RFC-4180, SIMD parse + atomic I/O).
  * Hermetic: everything happens inside a temp dir that is removed at the end.
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_csv.js */
-import * as csv from "dynajs:csv";
-import { makeTempDir, removeAll, exists } from "dynajs:sys";
+import * as csv from "dyna:csv";
+import { makeTempDir, removeAll, exists } from "dyna:sys";
 
 let n = 0;
 function assert(cond, msg) { n++; if (!cond) throw new Error("assertion failed: " + msg); }
 function eq(a, b, msg) { assert(JSON.stringify(a) === JSON.stringify(b), msg + " (got " + JSON.stringify(a) + ", want " + JSON.stringify(b) + ")"); }
 function throws(fn, msg) { let t = false; try { fn(); } catch { t = true; } assert(t, msg); }
 
-const dir = makeTempDir("dynajs-csv-test-");
+const dir = makeTempDir("dyna-csv-test-");
 const P = (name) => dir + "/" + name;
 
 try {

@@ -1,4 +1,4 @@
-/* test_bits.js -- dynajs:bits (in-repo faithful port of Go's math/bits).
+/* test_bits.js -- dyna:bits (in-repo faithful port of Go's math/bits).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_bits.js
  *
  * Every function is cross-checked against an INDEPENDENT reference computed
@@ -12,7 +12,7 @@
  *
  * Prints "test_bits: all tests passed (N assertions)"; throws on any failure. */
 
-import * as bits from "dynajs:bits";
+import * as bits from "dyna:bits";
 
 let n = 0;
 function assert(cond, msg) {

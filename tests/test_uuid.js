@@ -1,4 +1,4 @@
-/* test_uuid.js -- dynajs:uuid (RFC 9562 UUID v4/v7/v3/v5, parse/validate/
+/* test_uuid.js -- dyna:uuid (RFC 9562 UUID v4/v7/v3/v5, parse/validate/
  * version/variant, bytes<->string, NIL/MAX, predefined namespaces).
  *
  * v3/v5 name-based vectors are cross-checked against Python's `uuid` stdlib
@@ -15,7 +15,7 @@
 import {
     v4, v7, v3, v5, parse, validate, version, variant, bytes, fromBytes,
     NIL, MAX, NAMESPACE_DNS, NAMESPACE_URL, NAMESPACE_OID, NAMESPACE_X500,
-} from "dynajs:uuid";
+} from "dyna:uuid";
 
 let n = 0;
 function assert(cond, msg) {

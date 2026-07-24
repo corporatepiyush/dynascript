@@ -7,7 +7,7 @@ DynaJS is a JavaScript runtime built on a fork of Fabrice Bellard's **QuickJS** 
 ES2023+ engine in a handful of C files, with a bytecode compiler, a small register/stack virtual
 machine, reference-counting garbage collection, and near-instant startup. DynaJS keeps that core
 and adds what a *runtime* needs to be useful on its own: a curated, native, **SIMD-accelerated
-standard library** exposed to JavaScript under the `dynajs:` module namespace, an async I/O
+standard library** exposed to JavaScript under the `dyna:` module namespace, an async I/O
 reactor, buffered file I/O, an HTTP client and server, cryptographic hashes, compression, a
 multi-ISA vector-math engine, and a growing catalogue of the utilities you normally reach to npm or
 the Go standard library for — all shipped inside the binary, with no package manager and no
@@ -52,9 +52,9 @@ miniature: transitive dependency trees thousands deep, supply-chain risk, `node_
 directories larger than the programs that use them, and semver churn.
 
 DynaJS makes the opposite bet: **the runtime should ship the batteries itself**, curated and
-native. Not "install `left-pad`," but `import { title } from "dynajs:strings"`. Not "add a crypto
-npm package," but `import { sha256 } from "dynajs:crypto"`. Not "pull in a SIMD add-on compiled per
-platform," but `import { dot } from "dynajs:simd"`. The functionality lives in the binary, is
+native. Not "install `left-pad`," but `import { title } from "dyna:strings"`. Not "add a crypto
+npm package," but `import { sha256 } from "dyna:crypto"`. Not "pull in a SIMD add-on compiled per
+platform," but `import { dot } from "dyna:simd"`. The functionality lives in the binary, is
 written in C, is SIMD-accelerated where it pays, and is verified in-tree.
 
 This is why the standard library is the heart of this book (Chapter 4). It is also why DynaJS is
@@ -65,11 +65,11 @@ This is why the standard library is the heart of this book (Chapter 4). It is al
 Being explicit about non-goals is part of the design.
 
 - **No Node.js compatibility.** No `require()`, no CommonJS, no `node:fs`/`node:http`/`node:crypto`
-  shims, no attempt to load npm packages. DynaJS modules live under `dynajs:` and have their own,
+  shims, no attempt to load npm packages. DynaJS modules live under `dyna:` and have their own,
   often nicer, APIs. (See §1.6 and Chapter 9.)
 - **No JIT (today).** DynaJS is an interpreter. It wins on startup, memory, and predictability, not
   on multi-minute numeric hot loops where a tracing JIT eventually pulls ahead. Where raw compute
-  matters, DynaJS gives you **native SIMD kernels** (`dynajs:simd`, `dynajs:ml`) instead of hoping a
+  matters, DynaJS gives you **native SIMD kernels** (`dyna:simd`, `dyna:ml`) instead of hoping a
   JIT vectorizes your loop.
 - **No package manager, no `node_modules`.** Dependencies you don't control are a cost. DynaJS's
   answer to "I need X" is "X should be a curated native module," not "add a dependency."
@@ -93,7 +93,7 @@ This book will not oversell. Here is the straight assessment.
   feels like it."
 - **A dependency-free standard library.** No supply chain, no `npm audit`, no lockfile drift. What
   ships in the binary is what runs.
-- **Native vector math from JavaScript.** `dynajs:simd` exposes a multi-ISA (scalar / NEON / SSE4.2
+- **Native vector math from JavaScript.** `dyna:simd` exposes a multi-ISA (scalar / NEON / SSE4.2
   / AVX2 / AVX-512 / SVE) kernel set — dot products, norms, distances, activations, GEMM, f32 and
   f64 — with no native-addon build step.
 - **Data-plane utilities at C speed.** Hashing, compression, substring search, byte manipulation,
@@ -118,7 +118,7 @@ This book will not oversell. Here is the straight assessment.
 | Startup | microseconds | tens of ms | milliseconds | native (instant) |
 | Idle memory | a few MB | tens of MB | tens of MB | small |
 | Concurrency model | single-thread reactor + workers | libuv event loop + workers | event loop + workers | goroutines |
-| Standard library | native `dynajs:*`, curated, SIMD | large, C++ + npm | large, npm-compatible | large, first-party |
+| Standard library | native `dyna:*`, curated, SIMD | large, C++ + npm | large, npm-compatible | large, first-party |
 | Third-party ecosystem | **none by design** (stdlib grows instead) | npm (huge) | npm (huge) | Go modules |
 | Native SIMD from the language | **yes, built in** | via N-API addons | via addons/FFI | via assembly/intrinsics |
 | Node compatibility | **no, deliberate** | n/a | high | n/a |
@@ -132,10 +132,10 @@ Here is DynaJS doing a few things that would each be an npm install (or a native
 all from the standard library, no dependencies:
 
 ```js
-import { sha256Hex } from "dynajs:crypto";
-import { v7 } from "dynajs:uuid";
-import { dot } from "dynajs:simd";
-import { parseAddr, contains } from "dynajs:netip";
+import { sha256Hex } from "dyna:crypto";
+import { v7 } from "dyna:uuid";
+import { dot } from "dyna:simd";
+import { parseAddr, contains } from "dyna:netip";
 
 // A content hash — native, streaming-capable, standard test-vector verified.
 print(sha256Hex("hello world"));

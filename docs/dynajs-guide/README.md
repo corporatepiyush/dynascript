@@ -4,7 +4,7 @@
 
 DynaJS is a small, fast, batteries-included JavaScript runtime. It began as a fork of
 Fabrice Bellard's **QuickJS** (release `2026-06-04`) and grew into a runtime with a native,
-SIMD-accelerated standard library under the `dynajs:` namespace. It is written in C11 as a
+SIMD-accelerated standard library under the `dyna:` namespace. It is written in C11 as a
 unity build, starts in microseconds, uses a few megabytes of RAM, and ships a curated set of
 native modules that fill capabilities JavaScript genuinely lacks — instead of chasing
 compatibility with an existing ecosystem.
@@ -41,10 +41,10 @@ extracted from the source and the test suites, not invented.
 1. [Introduction & Philosophy](01-introduction-and-philosophy.md) — what DynaJS is, where it came
    from (the QuickJS lineage), and the positioning against Node 26, Bun, and Go.
 2. [Installation & First Steps](02-installation-and-first-steps.md) — building the binary, the CLI,
-   the REPL, your first script, ES modules, and the `dynajs:` namespace.
+   the REPL, your first script, ES modules, and the `dyna:` namespace.
 3. [The Language & the Runtime](03-language-and-runtime.md) — the ECMAScript baseline (ES2023–2026),
    deterministic resource disposal, `std`/`os`, workers, and BigInt.
-4. [The Standard Library, Module by Module](04-standard-library.md) — every `dynajs:*` module with
+4. [The Standard Library, Module by Module](04-standard-library.md) — every `dyna:*` module with
    worked examples: `path`, `strings`, `bytes`, `crypto`, `encoding`, `time`, `container`, `mathx`,
    `uuid`, `bits`, `netip`, `simd`, `text`, `file`, `http`, `sort`, `search`, `random`, `compress`,
    `ml`, `docparse`, `structures`, `uring`.
@@ -94,7 +94,7 @@ SIMD-accelerated standard library — no `node_modules`, no supply chain).
 |---|---|---|---|---|
 | Engine | QuickJS fork (interpreter) | V8 (JIT) | JSC (JIT) | native compiler |
 | Startup / idle RAM | µs / few MB | tens of ms / tens of MB | ms / tens of MB | instant / small |
-| Stdlib model | native `dynajs:*`, curated | C++ + npm | npm-compatible | first-party |
+| Stdlib model | native `dyna:*`, curated | C++ + npm | npm-compatible | first-party |
 | Third-party ecosystem | **none, by design** | npm (huge) | npm (huge) | Go modules |
 | SIMD from the language | **built in** | via addons | via addons/FFI | via intrinsics |
 | Node compatibility | **no, deliberate** | — | high | — |
@@ -111,7 +111,7 @@ reference-counting GC with cycle collection, and near-instant startup — no JIT
 2026-vintage engine DynaJS builds on already has **rope strings**, a **slab allocator** with the
 refcount in the malloc-block header, **short-BigInt**, and a **token-threaded (computed-goto)
 interpreter**. What DynaJS *adds* is the thing that turns an embeddable engine into a runtime: the
-native `dynajs:*` standard library (SIMD, crypto, http, file/io_uring, compression, data
+native `dyna:*` standard library (SIMD, crypto, http, file/io_uring, compression, data
 structures, math, networking, …), the async I/O reactor, the deterministic native-resource memory
 model, and a standing optimizer program (`meta@`). The engine stayed small and correct; the runtime
 grew around it. Chapter 5 covers the machinery; Chapter 7 covers where it is going.

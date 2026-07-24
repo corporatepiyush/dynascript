@@ -1,9 +1,9 @@
-/* test_container.js — dynajs:container (in-repo Heap + List + Ring).
+/* test_container.js — dyna:container (in-repo Heap + List + Ring).
  * Mirrors Go's container/heap, container/list, container/ring.
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_container.js
  * Prints "test_container: all tests passed" on success; throws on failure. */
 
-import { Heap, List, Ring } from "dynajs:container";
+import { Heap, List, Ring } from "dyna:container";
 import * as std from "std";
 
 let n = 0;

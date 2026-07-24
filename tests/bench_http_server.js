@@ -1,7 +1,7 @@
-/* bench_http_server.js — start the dynajs:http HttpServer for external load testing.
+/* bench_http_server.js — start the dyna:http HttpServer for external load testing.
  * Usage: dynajs tests/bench_http_server.js [port] [workers] [uptimeMs]
  * Prints "LISTENING <port>" once bound, then serves for uptimeMs (default 30s). */
-import { HttpServer } from "dynajs:http";
+import { HttpServer } from "dyna:http";
 import * as std from "std";
 
 const port = parseInt(scriptArgs[1] || "8098", 10);

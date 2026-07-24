@@ -1,4 +1,4 @@
-/* test_simd_int.js — dynajs:simd integer (i32) + prefix-scan kernels.
+/* test_simd_int.js — dyna:simd integer (i32) + prefix-scan kernels.
  * Run: dynajs (CONFIG_NATIVE_MODULES=y) tests/test_simd_int.js
  *
  * The i32 kernels operate on Int32Array; cumsum/cummax accept Int32Array OR
@@ -14,7 +14,7 @@
  */
 import {
     i32Sum, i32Min, i32Max, i32Dot, i32Add, i32Mul, i32Scale, cumsum, cummax,
-} from "dynajs:simd";
+} from "dyna:simd";
 
 let n = 0;
 function assert(c, m) { n++; if (!c) throw new Error("assertion failed: " + m); }

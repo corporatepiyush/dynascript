@@ -23,8 +23,8 @@ RUN make clean || true
 RUN make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y -j"$(nproc)"
 
 # prove which ISA the runtime dispatch selected under this emulated CPU
-RUN printf '#include "dynajs-simd-kernels.h"\n#include <stdio.h>\nint main(void){simd_init();unsigned long long c=cpu_features();printf("SIMD caps=0x%%llx  SSE42=%%d AVX2=%%d AVX512=%%d NEON=%%d\\n",c,!!(c&CPU_SSE42),!!(c&CPU_AVX2),!!(c&CPU_AVX512F),!!(c&CPU_NEON));return 0;}' > /tmp/caps.c \
- && clang -O2 -Isrc /tmp/caps.c .obj/dynajs-simd-core.o .obj/dynajs-simd-scalar.o .obj/dynajs-simd-sse42.o .obj/dynajs-simd-avx2.o .obj/dynajs-simd-avx512.o .obj/dynajs-simd-neon.o .obj/dynajs-simd-sve.o -lpthread -lm -o /tmp/caps \
+RUN printf '#include "dyna-simd-kernels.h"\n#include <stdio.h>\nint main(void){simd_init();unsigned long long c=cpu_features();printf("SIMD caps=0x%%llx  SSE42=%%d AVX2=%%d AVX512=%%d NEON=%%d\\n",c,!!(c&CPU_SSE42),!!(c&CPU_AVX2),!!(c&CPU_AVX512F),!!(c&CPU_NEON));return 0;}' > /tmp/caps.c \
+ && clang -O2 -Isrc /tmp/caps.c .obj/dyna-simd-core.o .obj/dyna-simd-scalar.o .obj/dyna-simd-sse42.o .obj/dyna-simd-avx2.o .obj/dyna-simd-avx512.o .obj/dyna-simd-neon.o .obj/dyna-simd-sve.o -lpthread -lm -o /tmp/caps \
  && echo "=== x86 SIMD dispatch under qemu ===" && /tmp/caps
 
 # in-tree suite + the SIMD/module tests (exercise AVX2 dot/sum/add via the table)

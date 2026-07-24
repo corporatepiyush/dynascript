@@ -1,0 +1,27 @@
+# HTTP hello-world benchmark: dynajs dyn_aio (epoll backend on Linux) vs Node.js 26.
+# The dyn_aio io_uring backend is not built yet, so this exercises the epoll
+# readiness path -- the first Linux data point. On an Apple-Silicon host,
+# linux/amd64 runs under qemu emulation (absolute req/s is NOT production speed;
+# the dyna-vs-Node RATIO, RSS, and server CPU/req on the same substrate are the
+# trustworthy signals). Real amd64 numbers come from CI on native hardware.
+#
+#   docker build --platform linux/amd64 -f docker/Dockerfile.bench -t dynajs:bench .
+#   docker run --rm --platform linux/amd64 dynajs:bench
+FROM node:26-bookworm-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      clang lld make libc6-dev apache2-utils procps ca-certificates curl \
+ && (apt-get install -y --no-install-recommends wrk || true) \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+RUN make clean || true \
+ && make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y -j"$(nproc)" dynajs libdynajs.a \
+ && clang -O2 -Isrc -I. -DCONFIG_NATIVE_MODULES tests/bench_http_hello.c \
+      .obj/dyna-aio.o .obj/dyna-evloop.o libdynajs.a \
+      -lm -lpthread -o /usr/local/bin/bench_http_hello
+
+CMD ["bash", "/src/bench/bench_linux.sh"]

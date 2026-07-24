@@ -1,4 +1,4 @@
-/* test_encoding.js — dynajs:encoding (hex / base32 / base64 / varint / base85
+/* test_encoding.js — dyna:encoding (hex / base32 / base64 / varint / base85
  * codecs, mirroring Go's encoding/hex, encoding/base32, encoding/base64,
  * encoding/binary, encoding/ascii85). RFC 4648 vectors are cross-checked
  * against Python's `base64` stdlib module (an independent oracle, including
@@ -13,7 +13,7 @@ import {
     base32Encode, base32Decode, base32HexEncode, base32HexDecode,
     putUvarint, uvarint, putVarint, varint,
     base85Encode, base85Decode,
-} from "dynajs:encoding";
+} from "dyna:encoding";
 
 let n = 0;
 function assert(cond, msg) {
@@ -454,7 +454,7 @@ const RANDOM53_B85 = "cGF0tFale1JAa&9B%Lq8`b\\B9>HKA+n=e,BM$)FE\\LHlVll*?\"DGoIt
     /* putUvarint/putVarint run ToNumber-ish coercion (JS_ToFloat64), which may
      * invoke valueOf -- verify it still produces the right answer (there is
      * no closable native resource in this module to attack, unlike
-     * dynajs:bytes, so this is a plain functional check, not a UAF probe). */
+     * dyna:bytes, so this is a plain functional check, not a UAF probe). */
     assert(eqArr(putUvarint({ valueOf() { return 300; } }), u8(0xAC, 0x02)),
         "putUvarint: accepts a valueOf-coercible object");
     assert(eqArr(putVarint({ valueOf() { return -1; } }), u8(1)),

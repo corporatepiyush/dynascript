@@ -1,7 +1,7 @@
 # Chapter 4 — The Standard Library, Module by Module
 
 This is the heart of DynaJS. Everything here is native (C11), compiled into the binary with
-`CONFIG_NATIVE_MODULES=y`, imported under `dynajs:`, and dependency-free. Every example below was
+`CONFIG_NATIVE_MODULES=y`, imported under `dyna:`, and dependency-free. Every example below was
 run against the real modules.
 
 ## 4.0 How modules are shaped
@@ -23,13 +23,13 @@ call boundary.** No native pointer escapes into the JS heap; nothing you hold ca
 
 ## 4.1 Text & bytes
 
-### `dynajs:strings` — Go-style string utilities
+### `dyna:strings` — Go-style string utilities
 
 Fills the gaps around `String.prototype`, with native (some SIMD-accelerated) implementations.
 
 ```js
 import { title, fields, split, splitN, contains, count, index, lastIndex,
-         replace, replaceAll, equalFold, compare, trimChars, repeat, join } from "dynajs:strings";
+         replace, replaceAll, equalFold, compare, trimChars, repeat, join } from "dyna:strings";
 
 print(title("hello world"));              // "Hello World"
 print(fields("  a  b   c ").join("|"));   // "a|b|c"   (split on whitespace runs, trimmed)
@@ -43,14 +43,14 @@ print(compare("apple", "banana"));        // -1        (lexicographic ordering)
 `equalFold`, `fields`, `title`, and `splitN` are the genuine gaps — JavaScript has none of them
 built in, and `contains`/`count` run over long strings using the SIMD substring engine (§4.8, §5.1).
 
-### `dynajs:bytes` — the byte buffer JavaScript never shipped
+### `dyna:bytes` — the byte buffer JavaScript never shipped
 
-`DataView` is clumsy; `dynajs:bytes` is the ergonomic, fast byte toolkit — comparison, search,
+`DataView` is clumsy; `dyna:bytes` is the ergonomic, fast byte toolkit — comparison, search,
 concatenation, and hex/base64/utf8 conversion, all native.
 
 ```js
 import { toHex, fromHex, toBase64, fromBase64, toUtf8, fromUtf8,
-         compare, equal, indexOf, count, concat, fill } from "dynajs:bytes";
+         compare, equal, indexOf, count, concat, fill } from "dyna:bytes";
 
 print(toHex(new Uint8Array([0xde, 0xad, 0xbe, 0xef])));   // "deadbeef"
 print(toBase64(fromUtf8("hi")));                          // "aGk="
@@ -66,14 +66,14 @@ Contrast: in Node you would reach for `Buffer` (a Node-specific global) or a `Da
 Go this is `bytes` + `encoding/hex` + `encoding/base64`. DynaJS gives you one coherent native module
 over standard `Uint8Array`.
 
-### `dynajs:encoding` — codecs beyond `atob`
+### `dyna:encoding` — codecs beyond `atob`
 
 Hex, standard and URL-safe base64, Ascii85/base85, and Go-style LEB128 var-ints — the encodings a
 data-plane program actually needs.
 
 ```js
 import { hexEncode, hexDecode, base64Encode, base64UrlEncode,
-         base85Encode, base85Decode, putUvarint, uvarint } from "dynajs:encoding";
+         base85Encode, base85Decode, putUvarint, uvarint } from "dyna:encoding";
 
 print(hexEncode(new Uint8Array([1, 255])));       // "01ff"
 print(base64UrlEncode(new Uint8Array([251,255,191]))); // "-_-_"  (URL-safe alphabet)
@@ -91,14 +91,14 @@ print(value, "in", read, "bytes");                // 300 in 2 bytes
 `atob`/`btoa` cover only standard base64 of Latin-1 strings; this module covers the rest, over
 bytes, natively.
 
-### `dynajs:text` — SIMD text kernels
+### `dyna:text` — SIMD text kernels
 
 Lower-level, throughput-oriented text operations built directly on the SIMD engine: UTF-8
 validation and code-point counting, hex transcoding, Latin-1↔UTF-8, and multi-byte search — the
 primitives a parser or protocol codec leans on.
 
 ```js
-import { isValidUtf8, countUtf8, hexEncode, latin1ToUtf8, indexOfAny } from "dynajs:text";
+import { isValidUtf8, countUtf8, hexEncode, latin1ToUtf8, indexOfAny } from "dyna:text";
 
 print(isValidUtf8(new Uint8Array([0xc3, 0xa9])));        // true  (é)
 print(countUtf8(new Uint8Array([0xc3, 0xa9, 0x61])));    // 2     (code points, not bytes)
@@ -113,7 +113,7 @@ GiB/s (Chapter 5). This is the module the engine itself reuses internally for HT
 `text` also does **UTF-8 ↔ UTF-16 transcoding** (vectorized), for interop with UTF-16 systems:
 
 ```js
-import { utf8ToUtf16, utf16ToUtf8, isValidUtf16, countUtf16 } from "dynajs:text";
+import { utf8ToUtf16, utf16ToUtf8, isValidUtf16, countUtf16 } from "dyna:text";
 
 const u16 = utf8ToUtf16("hello 世界 😀");        // → UTF-16LE bytes (Uint8Array)
 print(countUtf16(u16));                            // 10  (code points)
@@ -128,13 +128,13 @@ The policy is strict/lossless (simdutf `convert` semantics): a lone or misordere
 
 ## 4.2 Cryptographic hashing & identity
 
-### `dynajs:crypto` — hashes, HMAC, CRC
+### `dyna:crypto` — hashes, HMAC, CRC
 
 The full classic hash suite, verified against the published standard test vectors (FIPS 180-4,
 RFC 1321/2104/4231, IEEE 802.3). One-shot helpers *and* a streaming `Hasher`.
 
 ```js
-import { sha256Hex, sha512Hex, md5Hex, hmacHex, crc32, crc32c, Hasher } from "dynajs:crypto";
+import { sha256Hex, sha512Hex, md5Hex, hmacHex, crc32, crc32c, Hasher } from "dyna:crypto";
 
 print(sha256Hex("hello world"));
 //   b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
@@ -157,13 +157,13 @@ Algorithms: MD5, SHA-1, SHA-224/256/384/512, HMAC over any of them, CRC-32 and C
 Node's `crypto` is a large module (and browser `SubtleCrypto` is async-only); DynaJS gives you the
 common hashing surface synchronously, natively, with no import ceremony.
 
-### `dynajs:uuid` — RFC 9562 UUIDs
+### `dyna:uuid` — RFC 9562 UUIDs
 
 The modern UUID spec, including the time-ordered **v7** that has become the default choice for
 database keys.
 
 ```js
-import { v4, v7, v5, parse, validate, version, NAMESPACE_DNS } from "dynajs:uuid";
+import { v4, v7, v5, parse, validate, version, NAMESPACE_DNS } from "dyna:uuid";
 
 print(v4());                              // random:       a random UUIDv4
 print(v7());                              // time-ordered: sorts by creation time
@@ -178,13 +178,13 @@ millisecond timestamp in the high bits, so freshly-minted ids are monotonically 
 locality without a central sequence. JavaScript has no built-in UUID generator at all; Node needs
 `crypto.randomUUID` (v4 only). DynaJS ships v4, v7, and the name-based v3/v5.
 
-### `dynajs:random` — seedable PRNG
+### `dyna:random` — seedable PRNG
 
 A fast, **seedable** generator — reproducible streams for tests, simulations, and sampling
 (`Math.random` is neither seedable nor reproducible).
 
 ```js
-import { Random } from "dynajs:random";
+import { Random } from "dyna:random";
 
 const rng = new Random(42);               // seed with a Number or BigInt
 print(rng.nextFloat().toFixed(4));        // 0.0839  (deterministic for seed 42)
@@ -202,12 +202,12 @@ print(new Random(7).nextU64() === new Random(7n).nextU64());   // true
 
 ## 4.3 Numbers & bits
 
-### `dynajs:mathx` — the math `Math` is missing
+### `dyna:mathx` — the math `Math` is missing
 
 Special functions, exact integer helpers, and constants that `Math` never included.
 
 ```js
-import { gamma, erf, hypot, gcd, lcm, factorial, isPrime, cbrt, Phi } from "dynajs:mathx";
+import { gamma, erf, hypot, gcd, lcm, factorial, isPrime, cbrt, Phi } from "dyna:mathx";
 
 print(gamma(5));                  // 24        (Γ(5) = 4!)
 print(erf(1).toFixed(6));         // 0.842701  (the error function)
@@ -225,13 +225,13 @@ print(Phi);                       // 1.618033988749895  (golden ratio)
 test valid across the full 64-bit range. Contrast: this is Go's `math` + `math/big` primitives, in
 one small module.
 
-### `dynajs:bits` — Go's `math/bits`, exactly
+### `dyna:bits` — Go's `math/bits`, exactly
 
 Bit-twiddling primitives at fixed widths (8/16/32/64), plus full-width add/sub/mul/div with carry.
 
 ```js
 import { LeadingZeros32, OnesCount64, RotateLeft8, ReverseBytes32,
-         Len32, Mul64, Add64, Div64 } from "dynajs:bits";
+         Len32, Mul64, Add64, Div64 } from "dyna:bits";
 
 print(LeadingZeros32(1));          // 31
 print(OnesCount64(0xffffn));       // 16        (popcount, 64-bit)
@@ -255,12 +255,12 @@ supports beyond `Math.clz32`.
 
 ## 4.4 Collections
 
-### `dynajs:container` — heap, doubly-linked list, ring (Go's `container/*`)
+### `dyna:container` — heap, doubly-linked list, ring (Go's `container/*`)
 
 Native data structures JavaScript lacks. Each owns native memory and is `close()`d when done.
 
 ```js
-import { Heap, List, Ring } from "dynajs:container";
+import { Heap, List, Ring } from "dyna:container";
 
 // A binary heap with a user comparator — a real priority queue.
 const pq = new Heap((a, b) => a - b);           // min-heap
@@ -289,10 +289,10 @@ npm package on every project. Here it is a native, comparator-driven class — a
 handling is hardened against re-entrancy (a comparator that closes the heap mid-operation cannot
 corrupt memory).
 
-### `dynajs:structures` — growable vector & hash map
+### `dyna:structures` — growable vector & hash map
 
 ```js
-import { Vector, HashMap } from "dynajs:structures";
+import { Vector, HashMap } from "dyna:structures";
 
 const v = new Vector();
 v.push(10); v.push(20); v.push(30);
@@ -315,10 +315,10 @@ built-ins the most — they are here for the native-memory story, not to replace
 
 ## 4.5 Files & paths
 
-### `dynajs:path` — path manipulation (no built-in exists)
+### `dyna:path` — path manipulation (no built-in exists)
 
 ```js
-import { join, resolve, normalize, dirname, basename, extname, relative, isAbsolute } from "dynajs:path";
+import { join, resolve, normalize, dirname, basename, extname, relative, isAbsolute } from "dyna:path";
 
 print(join("a", "b", "..", "c"));         // "a/c"
 print(normalize("./a//b/../c"));          // "a/c"
@@ -331,14 +331,14 @@ print(isAbsolute("/etc"), isAbsolute("etc")); // true false
 
 Pure path-string logic (POSIX semantics). JavaScript has nothing here; Node's `path` is the model.
 
-### `dynajs:file` — buffered file I/O with OS fast paths
+### `dyna:file` — buffered file I/O with OS fast paths
 
 Buffered `FileReader`/`FileWriter` plus one-shot `readFile`/`writeFile`. Under the hood it uses the
 platform's best primitives — `F_RDAHEAD`/`F_PREALLOCATE`/`F_FULLFSYNC` on macOS, `fadvise`/
 `fallocate`/io_uring on Linux — behind one identical API.
 
 ```js
-import { readFile, writeFile, FileReader, FileWriter } from "dynajs:file";
+import { readFile, writeFile, FileReader, FileWriter } from "dyna:file";
 
 // One-shot:
 writeFile("/tmp/demo.txt", "line one\nline two\n");
@@ -362,14 +362,14 @@ print("read", lines, "lines");                  // read 100000 lines
 flush. The buffering and preallocation matter: a naïve write-per-line loop is syscall-bound, while
 this batches into large buffers and preallocates the file extent.
 
-### `dynajs:uring` — io_uring bulk file read (Linux)
+### `dyna:uring` — io_uring bulk file read (Linux)
 
 On Linux, a high-queue-depth whole-file reader and checksummer built on **io_uring** — true async
 disk I/O for throughput-bound bulk reads.
 
 ```js
 // Linux only (built with io_uring support):
-import { readFile, checksum } from "dynajs:uring";
+import { readFile, checksum } from "dyna:uring";
 
 const data = readFile("/var/log/big.log");      // async io_uring under the hood
 print(data.length, "bytes");
@@ -377,20 +377,20 @@ print("crc:", checksum("/var/log/big.log"));    // streamed checksum, high QD
 ```
 
 This is the "cheap read-heavy win" path: io_uring submits many read requests without a syscall per
-block, so large sequential reads saturate the device. On non-Linux builds, use `dynajs:file`.
+block, so large sequential reads saturate the device. On non-Linux builds, use `dyna:file`.
 
 ---
 
 ## 4.6 Networking
 
-### `dynajs:http` — client and async server
+### `dyna:http` — client and async server
 
 An HTTP client and a **single-thread reactor** server (`HttpServerAsync`) built on kqueue (macOS) /
 epoll / io_uring (Linux). The reactor design gives it dramatic concurrency headroom over a
 thread-per-connection model (Chapter 5 §5.4).
 
 ```js
-import { HttpServerAsync, HttpClient } from "dynajs:http";
+import { HttpServerAsync, HttpClient } from "dyna:http";
 
 // A reactor-based server. `port: 0` picks a free port.
 const server = new HttpServerAsync({ port: 0, routes: {
@@ -416,13 +416,13 @@ paths to either a string body or a `{ status, contentType, body }` object. Becau
 single-threaded reactor, it handles thousands of concurrent connections on one thread without the
 memory and context-switch cost of a thread pool.
 
-### `dynajs:netip` — IP addresses & CIDR (Go's `net/netip`)
+### `dyna:netip` — IP addresses & CIDR (Go's `net/netip`)
 
 Parsing and reasoning about IPv4/IPv6 addresses and CIDR prefixes — a capability JavaScript lacks
 entirely.
 
 ```js
-import { parseAddr, parsePrefix, contains, masked, canonical, isValid } from "dynajs:netip";
+import { parseAddr, parsePrefix, contains, masked, canonical, isValid } from "dyna:netip";
 
 const a = parseAddr("::ffff:127.0.0.1");
 print(a.is4, a.is6);                     // true false   (IPv4-mapped is treated as v4)
@@ -441,14 +441,14 @@ routing, and address classification.
 
 ## 4.7 Time
 
-### `dynajs:time` — durations, monotonic clock, RFC 3339 (Go's `time`)
+### `dyna:time` — durations, monotonic clock, RFC 3339 (Go's `time`)
 
-`Date` handles wall-clock timestamps; `dynajs:time` adds what Go's `time` package gives you —
+`Date` handles wall-clock timestamps; `dyna:time` adds what Go's `time` package gives you —
 typed durations, a monotonic clock, and precise formatting/parsing.
 
 ```js
 import { Second, Minute, Hour, durationString, parseDuration,
-         nowUnixNano, monotonicNano, formatRFC3339, parseRFC3339, fromUnix } from "dynajs:time";
+         nowUnixNano, monotonicNano, formatRFC3339, parseRFC3339, fromUnix } from "dyna:time";
 
 print(durationString(90 * Number(Minute)));   // "1h30m0s"
 print(parseDuration("1h30m"));                // 5400000000000  (nanoseconds)
@@ -469,7 +469,7 @@ interchange format APIs actually use.
 
 ## 4.8 Compute: SIMD & ML
 
-### `dynajs:simd` — a multi-ISA vector-math engine, from JavaScript
+### `dyna:simd` — a multi-ISA vector-math engine, from JavaScript
 
 This is DynaJS's signature capability. A native SIMD kernel set — dispatched at runtime to the best
 instruction set your CPU has (scalar / NEON / SSE4.2 / AVX2 / AVX-512 / SVE) — exposed directly to
@@ -478,7 +478,7 @@ JavaScript over typed arrays. No native addon, no build step.
 ```js
 import { dot, sum, normL2, distL2, distCos, axpy, scale,
          relu, sigmoid, softmax, gelu, gemv, gemm, argmax,
-         f64Sum, f64Dot } from "dynajs:simd";
+         f64Sum, f64Dot } from "dyna:simd";
 
 const a = new Float32Array([1, 2, 3, 4]);
 const b = new Float32Array([5, 6, 7, 8]);
@@ -520,7 +520,7 @@ elementwise ops — `i32Sum` (exact via int64), `i32Min`/`i32Max`/`i32Dot`, `i32
 or `Float32Array`) round out the array toolkit:
 
 ```js
-import { i32Sum, i32Dot, cumsum, cummax } from "dynajs:simd";
+import { i32Sum, i32Dot, cumsum, cummax } from "dyna:simd";
 
 const a = new Int32Array([5, 2, 8, 1, 9]);
 print(i32Sum(a));                 // 25       (widened, exact)
@@ -542,12 +542,12 @@ scanning uses the SIMD substring search) and are available to your code.
 > and fall back to the verified AVX2 path until they can be exercised on real AVX-512 silicon —
 > DynaJS ships the proven path rather than an unverified one.
 
-### `dynajs:ml` — classic ML models
+### `dyna:ml` — classic ML models
 
 Native `LinearRegression`, `LogisticRegression`, and `KMeans`, built on the same SIMD engine.
 
 ```js
-import { LinearRegression, KMeans } from "dynajs:ml";
+import { LinearRegression, KMeans } from "dyna:ml";
 
 // Fit y = 2x + 1 and predict.
 const lr = new LinearRegression();
@@ -579,10 +579,10 @@ native module using the in-binary SIMD kernels.
 
 ## 4.9 Data formats & algorithms
 
-### `dynajs:compress` — real DEFLATE (gzip)
+### `dyna:compress` — real DEFLATE (gzip)
 
 ```js
-import { gzip, gunzip } from "dynajs:compress";
+import { gzip, gunzip } from "dyna:compress";
 
 const original = "the quick brown fox ".repeat(100);        // 2000 bytes
 const packed = gzip(original);                               // real DEFLATE
@@ -592,10 +592,10 @@ print(gunzip(packed).length === original.length);           // round-trips
 
 A genuine DEFLATE implementation (not a stub) — the standard `gzip`/`gunzip` pair over bytes.
 
-### `dynajs:docparse` — fast JSON & CSV parsing
+### `dyna:docparse` — fast JSON & CSV parsing
 
 ```js
-import { parseJson, parseCsv } from "dynajs:docparse";
+import { parseJson, parseCsv } from "dyna:docparse";
 
 print(JSON.stringify(parseCsv("a,b\n1,2\n3,4")));   // [["a","b"],["1","2"],["3","4"]]
 const obj = parseJson('{"x": [1, 2, 3], "y": true}');
@@ -605,15 +605,15 @@ print(obj.x[2], obj.y);                             // 3 true
 `parseCsv` handles RFC-4180 quoting/embedded newlines; both are native and fast — the module the
 data-ingestion path uses.
 
-### `dynajs:csv` — CSV files as a mini database
+### `dyna:csv` — CSV files as a mini database
 
-Where `docparse.parseCsv` parses a CSV *string*, `dynajs:csv` treats a CSV *file* as an editable
+Where `docparse.parseCsv` parses a CSV *string*, `dyna:csv` treats a CSV *file* as an editable
 dataset — create it, page through it, mutate rows and columns — with RFC-4180 quoting, a
 SIMD-accelerated parse, and **atomic writes** (a crash mid-write never corrupts the file). Every
 function takes an options object; row indices are 0-based over data rows.
 
 ```js
-import * as csv from "dynajs:csv";
+import * as csv from "dyna:csv";
 
 csv.create({ path: "/tmp/people.csv", headers: ["Name", "Age", "City"],
              rows: [["Alice", "30", "NYC"]], overwrite: true });
@@ -632,10 +632,10 @@ each a single-options-object call (easy to expose as an MCP tool). Reads mmap th
 file creates and reads back in a few milliseconds each. See the [API Reference](API.md#csv) for
 every option.
 
-### `dynajs:sort` — sorting & binary search
+### `dyna:sort` — sorting & binary search
 
 ```js
-import { sort, binarySearch } from "dynajs:sort";
+import { sort, binarySearch } from "dyna:sort";
 
 const sorted = sort([3, 1, 2, 5, 4]);        // returns a NEW sorted array
 print(sorted.join(","));                     // "1,2,3,4,5"
@@ -646,10 +646,10 @@ print(binarySearch(sorted, 99));             // -1  (not found)
 Note the semantics: `sort` returns a **new** array (it does not mutate its input), matching a
 functional style. `binarySearch` requires a sorted array and returns the index or `-1`.
 
-### `dynajs:search` — substring / subsequence search
+### `dyna:search` — substring / subsequence search
 
 ```js
-import { indexOf, indexOfAll } from "dynajs:search";
+import { indexOf, indexOfAll } from "dyna:search";
 
 print(indexOf("the quick brown fox", "quick"));   // 4
 print(JSON.stringify(indexOfAll("abababa", "aba")));// [0, 2, 4]  (overlapping matches)
@@ -661,18 +661,18 @@ scalar scan it replaced).
 
 ---
 
-## 4.10 System: filesystem, directories, process (`dynajs:sys`)
+## 4.10 System: filesystem, directories, process (`dyna:sys`)
 
-`dynajs:sys` is the unified **system-interface** module — filesystem metadata, directories,
+`dyna:sys` is the unified **system-interface** module — filesystem metadata, directories,
 globbing, and process/environment — deliberately *not* split the way Node (`fs` / `os` / `process`,
 plus `glob` / `rimraf` / `mkdirp`) or Go (`os` / `path/filepath`) split it. One synchronous module.
-(Path-*string* logic stays in `dynajs:path`; buffered file *content* I/O stays in `dynajs:file` — no
+(Path-*string* logic stays in `dyna:path`; buffered file *content* I/O stays in `dyna:file` — no
 duplication.)
 
 ```js
 import { stat, readDir, makeDir, removeAll, glob, exists,
-         makeTempDir, getEnv, platform } from "dynajs:sys";
-import { writeFile } from "dynajs:file";
+         makeTempDir, getEnv, platform } from "dyna:sys";
+import { writeFile } from "dyna:file";
 
 const root = makeTempDir("demo-");               // fresh unique temp dir
 makeDir(root + "/a/b", { recursive: true });
@@ -696,13 +696,13 @@ returns sorted `{ name, isDir, isFile, isSymlink }` entries. Full surface: `stat
 `tempDir`/`makeTempDir`/`makeTempFile`, and `env`/`getEnv`/`setEnv`/`args`/`cwd`/`chDir`/`platform`/
 `pid`/`hostName`/`homeDir`.
 
-## 4.11 Semantic versioning (`dynajs:semver`)
+## 4.11 Semantic versioning (`dyna:semver`)
 
 SemVer 2.0.0 parsing, comparison, and npm-style range satisfaction — the capability behind the npm
 `semver` package, delivered as a curated native module (our own API, not a port).
 
 ```js
-import { parse, compare, satisfies, inc, maxSatisfying, coerce, sort } from "dynajs:semver";
+import { parse, compare, satisfies, inc, maxSatisfying, coerce, sort } from "dyna:semver";
 
 print(compare("1.0.0-alpha", "1.0.0"));  // -1   (a prerelease is lower than the release)
 print(satisfies("1.2.9", "^1.2.3"));     // true

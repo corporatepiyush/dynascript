@@ -21,9 +21,9 @@
  * Build+run natively (arm64 NEON / x86 host). -ffp-contract=off keeps the C
  * reference non-fused so the exact axpy check is valid on every compiler:
  *   clang -O2 -ffp-contract=off -Isrc tests/test_simd_f64.c \
- *     src/dynajs-simd-core.c src/dynajs-simd-scalar.c src/dynajs-simd-neon.c \
- *     src/dynajs-simd-sse42.c src/dynajs-simd-avx2.c src/dynajs-simd-avx512.c \
- *     src/dynajs-simd-sve.c -lpthread -lm -o /tmp/tsf64 && /tmp/tsf64
+ *     src/dyna-simd-core.c src/dyna-simd-scalar.c src/dyna-simd-neon.c \
+ *     src/dyna-simd-sse42.c src/dyna-simd-avx2.c src/dyna-simd-avx512.c \
+ *     src/dyna-simd-sve.c -lpthread -lm -o /tmp/tsf64 && /tmp/tsf64
  * Exercise the x86 kernels under emulation (build into /tmp, never host .obj):
  *   docker run --rm --platform linux/amd64 -e QEMU_CPU=Haswell -v "$PWD":/src \
  *     -w /src dynascript-dev:amd64 bash -c '<build line above>'
@@ -35,7 +35,7 @@
 #include <math.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include "dynajs-simd-kernels.h"
+#include "dyna-simd-kernels.h"
 
 static double ref_sum(const double *x, size_t n) {
     double a = 0.0;

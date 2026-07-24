@@ -1,8 +1,8 @@
-/* test_http.js — dynajs:http (in-repo HTTP/1.1 client + threaded server).
+/* test_http.js — dyna:http (in-repo HTTP/1.1 client + threaded server).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_http.js
  * Prints "test_http: all tests passed" on success; throws on failure. */
 
-import { HttpClient, HttpServer } from "dynajs:http";
+import { HttpClient, HttpServer } from "dyna:http";
 
 let n = 0;
 function assert(cond, msg) {

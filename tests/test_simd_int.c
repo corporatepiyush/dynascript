@@ -29,9 +29,9 @@
  * Build+run natively (arm64 NEON / x86 host). -ffp-contract=off keeps the C
  * reference non-fused:
  *   clang -O2 -ffp-contract=off -Isrc tests/test_simd_int.c \
- *     src/dynajs-simd-core.c src/dynajs-simd-scalar.c src/dynajs-simd-neon.c \
- *     src/dynajs-simd-sse42.c src/dynajs-simd-avx2.c src/dynajs-simd-avx512.c \
- *     src/dynajs-simd-sve.c -lpthread -lm -o /tmp/tsi && /tmp/tsi
+ *     src/dyna-simd-core.c src/dyna-simd-scalar.c src/dyna-simd-neon.c \
+ *     src/dyna-simd-sse42.c src/dyna-simd-avx2.c src/dyna-simd-avx512.c \
+ *     src/dyna-simd-sve.c -lpthread -lm -o /tmp/tsi && /tmp/tsi
  * Exercise the x86 SSE4.2 kernels under OrbStack/Rosetta (caps report SSE4.2):
  *   docker --context orbstack run --rm --platform linux/amd64 -v "$PWD":/src \
  *     -w /src dynascript-dev:amd64 bash -c '<build line above>'
@@ -43,7 +43,7 @@
 #include <stdint.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include "dynajs-simd-kernels.h"
+#include "dyna-simd-kernels.h"
 
 /* ── sequential scalar references (the oracle) ─────────────────────── */
 static int64_t ref_sum(const int32_t *x, size_t n) {

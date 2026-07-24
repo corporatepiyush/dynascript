@@ -58,11 +58,11 @@ The **disposable protocol** from TC39 is fully present as a library:
 - `SuppressedError` — the error type that correctly folds a disposer failure together with an
   in-flight error (so you never silently lose one).
 
-Every native `dynajs:*` resource object (a `FileWriter`, an `HttpServerAsync`, a `Hasher`, a
+Every native `dyna:*` resource object (a `FileWriter`, an `HttpServerAsync`, a `Hasher`, a
 `Heap`) implements `[Symbol.dispose]()` and a matching `close()`. You release them explicitly:
 
 ```js
-import { FileWriter } from "dynajs:file";
+import { FileWriter } from "dyna:file";
 
 const w = new FileWriter("/tmp/out.txt", { bufferSize: 4096 });
 try {
@@ -77,7 +77,7 @@ For several resources, `DisposableStack` removes the nested-`try/finally` pyrami
 everything in reverse on scope exit:
 
 ```js
-import { FileReader, FileWriter } from "dynajs:file";
+import { FileReader, FileWriter } from "dyna:file";
 
 function copyFiltered(src, dst) {
   const stack = new DisposableStack();
@@ -129,7 +129,7 @@ const t0 = os.now();                     // monotonic-ish clock
 std.gc();
 ```
 
-For higher-level, ergonomic file and filesystem work, prefer the native modules — `dynajs:file`
+For higher-level, ergonomic file and filesystem work, prefer the native modules — `dyna:file`
 (buffered reader/writer, one-shot `readFile`/`writeFile`) covered in Chapter 4. `std`/`os` remain
 the escape hatch for raw syscall-level control.
 
@@ -185,8 +185,8 @@ small values (they avoid heap allocation). Several standard-library modules use 
 *because* it is exact where `Number` is not:
 
 ```js
-import { factorial, gcd } from "dynajs:mathx";
-import { Mul64 } from "dynajs:bits";
+import { factorial, gcd } from "dyna:mathx";
+import { Mul64 } from "dyna:bits";
 
 print(factorial(25));                 // 15511210043330985984000000n  (exact, > 2^53)
 print(gcd(462n, 1071n));              // 21n

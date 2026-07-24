@@ -1,4 +1,4 @@
-/* test_bytes.js — dynajs:bytes (byte-buffer utilities: Go bytes package +
+/* test_bytes.js — dyna:bytes (byte-buffer utilities: Go bytes package +
  * Node Buffer read/write helpers, over Uint8Array/ArrayBuffer).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_bytes.js
  * Prints "test_bytes: all tests passed" on success; throws on failure. */
@@ -14,7 +14,7 @@ import {
     writeBigUint64LE, writeBigUint64BE, writeBigInt64LE, writeBigInt64BE,
     writeFloatLE, writeFloatBE, writeDoubleLE, writeDoubleBE,
     toHex, fromHex, toBase64, fromBase64, toUtf8, fromUtf8,
-} from "dynajs:bytes";
+} from "dyna:bytes";
 
 let n = 0;
 function assert(cond, msg) {

@@ -1,5 +1,5 @@
 /*
- * dynajs:random -- native random number generation from secure-c-libs, with
+ * dyna:random -- native random number generation from secure-c-libs, with
  * DETERMINISTIC memory management (no GC reliance).
  *
  * Requires the SCL-modules build:
@@ -11,7 +11,7 @@
  * uuid() is a plain function (RFC 4122 v4). Seeded Randoms are deterministic;
  * an unseeded Random draws its seed from the system CSPRNG.
  */
-import { Random, uuid } from "dynajs:random";
+import { Random, uuid } from "dyna:random";
 
 function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 

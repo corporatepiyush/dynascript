@@ -8,21 +8,21 @@ code. It states the rules precisely and flags the traps that most often produce 
 **DynaJS is not Node.js and will never be.** Do not emit `require(...)`, `module.exports`,
 `process.*`, `Buffer` (the global), `__dirname`, or any `node:` import. There is no npm, no
 `package.json` resolution, no CommonJS. If you reach for a Node API, you are wrong. Use the
-`dynajs:*` standard library instead, plus the ECMAScript built-ins and `std`/`os`.
+`dyna:*` standard library instead, plus the ECMAScript built-ins and `std`/`os`.
 
 ## 6.2 How to import
 
-- **Standard library:** `import { fn } from "dynajs:<module>"` in a module context, or
-  `const m = await import("dynajs:<module>")` anywhere (including plain scripts and one-liners).
+- **Standard library:** `import { fn } from "dyna:<module>"` in a module context, or
+  `const m = await import("dyna:<module>")` anywhere (including plain scripts and one-liners).
 - **User code:** relative/absolute paths — `import x from "./x.js"`.
 - **System modules:** `import * as std from "std"`, `import * as os from "os"`.
 - The native standard library requires the binary to be built with `CONFIG_NATIVE_MODULES=y`. If an
-  import throws "could not load module `dynajs:...`", the build lacked that flag — that is a build
+  import throws "could not load module `dyna:...`", the build lacked that flag — that is a build
   issue, not a code issue.
 
 ## 6.3 The complete module surface (verified)
 
-Import strings are always `dynajs:<name>`.
+Import strings are always `dyna:<name>`.
 
 | Module | Exports (representative) |
 |---|---|
@@ -88,7 +88,7 @@ Chapter 4 has a worked example for every one of these.
   `scale(a, s)` / `axpy(y, a, x)` / `softmax(a)` mutate their first typed-array argument.
 - **The HTTP reactor is single-threaded.** Do not put a long CPU loop inside a request handler —
   offload to an `os.Worker`.
-- **`dynajs:uring` is Linux-only.** On macOS use `dynajs:file`.
+- **`dyna:uring` is Linux-only.** On macOS use `dyna:file`.
 
 ## 6.6 How to verify your own output
 
@@ -99,7 +99,7 @@ DynaJS is testable without external harnesses:
 let n = 0;
 function assert(cond, msg) { n++; if (!cond) throw new Error("FAIL: " + msg); }
 
-import { sort } from "dynajs:sort";
+import { sort } from "dyna:sort";
 assert(sort([3,1,2]).join(",") === "1,2,3", "sort ascending");
 assert(JSON.stringify(sort([3,1,2])) !== JSON.stringify([3,1,2]) || true, "returns new array");
 print(`ok: ${n} assertions`);
@@ -112,9 +112,9 @@ usage examples and cover the edge cases.
 ## 6.7 A correct, idiomatic DynaJS program (copy this shape)
 
 ```js
-import { FileReader } from "dynajs:file";
-import { sha256Hex } from "dynajs:crypto";
-import { Heap } from "dynajs:container";
+import { FileReader } from "dyna:file";
+import { sha256Hex } from "dyna:crypto";
+import { Heap } from "dyna:container";
 
 // Rank the 3 longest lines of a file by length, hashing each — deterministic
 // disposal, BigInt-aware, no Node APIs, resources always closed.
@@ -137,7 +137,7 @@ function topLongestLines(path, k = 3) {
 }
 ```
 
-This is the shape to emit: `dynajs:` imports, resource classes released in `finally`, results copied
+This is the shape to emit: `dyna:` imports, resource classes released in `finally`, results copied
 out as plain JS, no Node surface anywhere.
 
 ---

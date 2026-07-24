@@ -53,13 +53,13 @@ EOF
 }
 
 rc=0
-run_bench /usr/local/bin/dynajs-epoll  "epoll"     18080 || rc=1
-run_bench /usr/local/bin/dynajs-uring  "io_uring"  18081 || rc=1
+run_bench /usr/local/bin/dyna-epoll  "epoll"     18080 || rc=1
+run_bench /usr/local/bin/dyna-uring  "io_uring"  18081 || rc=1
 
 echo "=================================================================="
 echo ">> disk I/O: scl:uring (io_uring build only)"
 echo "=================================================================="
-/usr/local/bin/dynajs-uring /src/tests/test_uring_disk.js || rc=1
+/usr/local/bin/dyna-uring /src/tests/test_uring_disk.js || rc=1
 echo "=================================================================="
 [ "$rc" -eq 0 ] && echo "RESULT: both backends functional" || echo "RESULT: a backend FAILED"
 exit "$rc"

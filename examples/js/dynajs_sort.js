@@ -1,5 +1,5 @@
 /*
- * dynajs:sort -- native sorting + binary search from secure-c-libs.
+ * dyna:sort -- native sorting + binary search from secure-c-libs.
  *
  * Requires the SCL-modules build:
  *     make CONFIG_SCL_MODULES=y
@@ -10,7 +10,7 @@
  * the result back into fresh JS values, and destroys the arena before returning.
  * Nothing to .close() -- peak memory stays flat across any number of calls.
  */
-import { sort, binarySearch } from "dynajs:sort";
+import { sort, binarySearch } from "dyna:sort";
 
 function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 

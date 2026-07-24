@@ -1,15 +1,15 @@
 /*
  * bench_memfind.c -- microbenchmark + equivalence oracle for the HTTP header
- * substring scan (dyn_memfind in dynajs-http.c). Justifies wiring the shared
+ * substring scan (dyn_memfind in dyna-http.c). Justifies wiring the shared
  * SIMD strfind kernel into dyn_memfind: on a realistic HTTP/1.1 header block the
  * vectorised scan is ~4.75x the scalar byte loop (short-span parsing like CSV
  * does NOT benefit -- see tests/bench_docparse.js -- but header blocks are long
  * enough to amortize). The `acc` printed by both variants MUST match: that is
  * the byte-identical-result proof.
  *
- *   clang -O2 -I src tests/bench_memfind.c .obj/dynajs-simd-*.o -lpthread -lm -o /tmp/mfb && /tmp/mfb
+ *   clang -O2 -I src tests/bench_memfind.c .obj/dyna-simd-*.o -lpthread -lm -o /tmp/mfb && /tmp/mfb
  *
- * (Requires a prior `make CONFIG_NATIVE_MODULES=y` so .obj/dynajs-simd-*.o exist.)
+ * (Requires a prior `make CONFIG_NATIVE_MODULES=y` so .obj/dyna-simd-*.o exist.)
  */
 #include <stdio.h>
 #include <string.h>
@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <time.h>
-#include "dynajs-simd-kernels.h"
+#include "dyna-simd-kernels.h"
 static const char *scalar_memfind(const char *hay, size_t hlen, const char *needle, size_t nlen){
     size_t i; if (nlen==0||hlen<nlen) return NULL;
     for (i=0;i+nlen<=hlen;i++) if (hay[i]==needle[0]&&memcmp(hay+i,needle,nlen)==0) return hay+i;

@@ -1,4 +1,4 @@
-/* test_path.js -- dynajs:path (in-repo POSIX filesystem-path string utilities).
+/* test_path.js -- dyna:path (in-repo POSIX filesystem-path string utilities).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_path.js
  * Prints "test_path: all tests passed" on success; throws on failure.
  *
@@ -6,10 +6,10 @@
  * `path.posix` (join/normalize/dirname/basename/extname/isAbsolute are
  * cwd-independent and match Node directly; resolve()/relative() are checked
  * against Node's `path.posix.resolve("/", ...)`, which is exactly equivalent
- * to this module's notional "cwd is always /" scheme -- see dynajs-path.c). */
+ * to this module's notional "cwd is always /" scheme -- see dyna-path.c). */
 
 import { join, resolve, normalize, clean, dirname, basename, extname,
-         isAbsolute, relative, sep, delimiter } from "dynajs:path";
+         isAbsolute, relative, sep, delimiter } from "dyna:path";
 
 let n = 0;
 function assert(cond, msg) {
@@ -320,7 +320,7 @@ function throwsTypeError(fn, msg) {
 }
 
 /* --- non-string arguments throw TypeError, are NOT coerced (matches Node's
- * validateString; contrast with dynajs:search's indexOf, which documents
+ * validateString; contrast with dyna:search's indexOf, which documents
  * the opposite choice) --- */
 {
     throwsTypeError(() => join(1, 2), "join(number, number)");

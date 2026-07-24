@@ -1,6 +1,6 @@
 /*
  * test_text_kernels.c -- differential regression test for the shared SIMD
- * byte/text kernels added for dynajs:text:
+ * byte/text kernels added for dyna:text:
  *   hex_encode, hex_decode, latin1_to_utf8, utf8_to_latin1, count_utf8.
  *
  * Each kernel is checked TWO ways against an independent scalar reference:
@@ -20,9 +20,9 @@
  *
  * Build + run natively (arm64 NEON / x86 host):
  *   clang -O2 -Isrc tests/test_text_kernels.c \
- *     src/dynajs-simd-core.c src/dynajs-simd-scalar.c src/dynajs-simd-neon.c \
- *     src/dynajs-simd-sse42.c src/dynajs-simd-avx2.c src/dynajs-simd-avx512.c \
- *     src/dynajs-simd-sve.c -lpthread -lm -o /tmp/ttk && /tmp/ttk
+ *     src/dyna-simd-core.c src/dyna-simd-scalar.c src/dyna-simd-neon.c \
+ *     src/dyna-simd-sse42.c src/dyna-simd-avx2.c src/dyna-simd-avx512.c \
+ *     src/dyna-simd-sve.c -lpthread -lm -o /tmp/ttk && /tmp/ttk
  * Exercise the x86 kernels under emulation:
  *   docker run --rm --platform linux/amd64 -e QEMU_CPU=Nehalem -v "$PWD":/src \
  *     -w /src dynascript-dev:amd64 bash -c '<build line above>; /tmp/ttk'   # SSE4.2
@@ -35,7 +35,7 @@
 #include <stdint.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include "dynajs-simd-kernels.h"
+#include "dyna-simd-kernels.h"
 
 /* ── independent scalar references (deliberately not shared with the kernels) ── */
 static const char REFHEX[] = "0123456789abcdef";

@@ -13,9 +13,9 @@
  *
  * Build+run natively (arm64 NEON / x86 host):
  *   clang -O2 -Isrc tests/test_simd_reductions.c \
- *     src/dynajs-simd-core.c src/dynajs-simd-scalar.c src/dynajs-simd-neon.c \
- *     src/dynajs-simd-sse42.c src/dynajs-simd-avx2.c src/dynajs-simd-avx512.c \
- *     src/dynajs-simd-sve.c -lpthread -lm -o /tmp/tsr && /tmp/tsr
+ *     src/dyna-simd-core.c src/dyna-simd-scalar.c src/dyna-simd-neon.c \
+ *     src/dyna-simd-sse42.c src/dyna-simd-avx2.c src/dyna-simd-avx512.c \
+ *     src/dyna-simd-sve.c -lpthread -lm -o /tmp/tsr && /tmp/tsr
  * Exercise the x86 kernels under emulation (Haswell => AVX2):
  *   docker run --rm --platform linux/amd64 -e QEMU_CPU=Haswell -v "$PWD":/src \
  *     -w /src dynascript-dev:amd64 bash -c 'make clean >/dev/null; <build line above>; /tmp/tsr'
@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include "dynajs-simd-kernels.h"
+#include "dyna-simd-kernels.h"
 
 static float ref_max(const float *x, size_t n) { float m = x[0]; for (size_t i = 1; i < n; i++) if (x[i] > m) m = x[i]; return m; }
 static float ref_min(const float *x, size_t n) { float m = x[0]; for (size_t i = 1; i < n; i++) if (x[i] < m) m = x[i]; return m; }

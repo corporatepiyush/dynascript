@@ -1,8 +1,8 @@
-/* test_uring_disk.js — dynajs:uring disk I/O (Linux, CONFIG_IO_URING only).
+/* test_uring_disk.js — dyna:uring disk I/O (Linux, CONFIG_IO_URING only).
  * Proves the io_uring reader returns byte-identical data to a pread reference,
  * then does a crude page-cache timing. A faithful disk-throughput comparison
  * needs O_DIRECT on real storage; on a cached/virtualised fs both hit cache. */
-import * as uring from "dynajs:uring";
+import * as uring from "dyna:uring";
 import * as std from "std";
 
 function assert(c, m) { if (!c) throw new Error("assertion failed: " + m); }

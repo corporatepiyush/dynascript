@@ -2,7 +2,7 @@
 // Fuzz target for DynaJS RegExp compilation
 
 #include "dynajs.h"
-#include "dynajs-libc.h"
+#include "dyna-libc.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

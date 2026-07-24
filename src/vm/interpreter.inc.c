@@ -28,12 +28,12 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
 #else
 #define def(id, size, n_pop, n_push, f) && case_default,
 #endif
-#include "dynajs-opcode.h"
+#include "dyna-opcode.h"
         [ OP_COUNT ... 255 ] = &&case_default
     };
     static const void * const dispatch_table2[256] = {
 #define DEF2(id, size, n_pop, n_push, f) && case_OP2_ ## id,
-#include "dynajs-opcode2.h"
+#include "dyna-opcode2.h"
 #undef DEF2
         [ OP2_COUNT ... 255 ] = &&case_default
     };
@@ -2796,7 +2796,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             OP_STRICT_EQ_BRANCH(OP_strict_neq_if_true, 1, (res ^ 1));
 
         CASE(OP_ext):
-            /* Escape into bank 2: the next byte selects a dynajs-opcode2.h op.
+            /* Escape into bank 2: the next byte selects a dyna-opcode2.h op.
                The ARITH shard fuses `<get_loc|get_loc_check> A;
                <get_loc|get_loc_check> B; <mul|add|sub>` into one op reading the
                two locals directly (n_pop 0, n_push 1). Fast paths mirror

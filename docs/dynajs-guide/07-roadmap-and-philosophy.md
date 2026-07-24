@@ -29,26 +29,26 @@ own standard library** — rewritten in the DynaJS style, native where it pays, 
 audited, and shipped in the binary.
 
 Concretely, the roadmap is to work down the list of the **~50 most-depended-upon distinct npm
-packages** and, for each one that represents a genuine capability, provide an equivalent `dynajs:*`
+packages** and, for each one that represents a genuine capability, provide an equivalent `dyna:*`
 module (or fold it into an existing one). And deliberately **not a clone**: the package names and
 their arrangement are re-thought for DynaJS — functionality is regrouped by domain under DynaJS-native
 names, not copied one-package-to-one-module with the upstream name. It is an *implementation of what
 the package does*, done properly and re-arranged:
 
-- A date/time library becomes coverage in `dynajs:time`.
-- A UUID library becomes `dynajs:uuid` (already shipped: v4/v7/v3/v5).
-- A hashing/crypto library becomes `dynajs:crypto` (already shipped).
-- A compression library becomes `dynajs:compress` (already shipped: real DEFLATE).
-- A CSV/JSON parser becomes `dynajs:docparse` (already shipped).
-- An HTTP client/server becomes `dynajs:http` (already shipped: reactor server + client).
-- The filesystem/glob packages (`fs-extra`, `glob`, `rimraf`, `mkdirp`) become `dynajs:sys` (already
+- A date/time library becomes coverage in `dyna:time`.
+- A UUID library becomes `dyna:uuid` (already shipped: v4/v7/v3/v5).
+- A hashing/crypto library becomes `dyna:crypto` (already shipped).
+- A compression library becomes `dyna:compress` (already shipped: real DEFLATE).
+- A CSV/JSON parser becomes `dyna:docparse` (already shipped).
+- An HTTP client/server becomes `dyna:http` (already shipped: reactor server + client).
+- The filesystem/glob packages (`fs-extra`, `glob`, `rimraf`, `mkdirp`) become `dyna:sys` (already
   shipped: unified filesystem + process + glob, re-arranged into one module).
-- The `semver` package becomes `dynajs:semver` (already shipped: SemVer 2.0.0 + npm range grammar).
+- The `semver` package becomes `dyna:semver` (already shipped: SemVer 2.0.0 + npm range grammar).
 - A validation, templating, or data-structure package becomes a native module or a documented
   built-in recipe.
 
 The end state is a runtime where the things people install a dependency for are simply *there*,
-under `dynajs:`, with no install step, no lockfile, no `node_modules`, and — because they are native
+under `dyna:`, with no install step, no lockfile, no `node_modules`, and — because they are native
 and SIMD-aware — often faster than the JavaScript package they replace.
 
 This is a large, multi-release effort. It is the central roadmap item, and it is why the standard
@@ -71,7 +71,7 @@ This bar is enforced, and it has teeth. Examples of what it *rejects*:
   property escapes and `String.prototype.toUpperCase`/`toLowerCase`. **Rejected.**
 - An in-memory line/word `bufio.Scanner` would duplicate `String.prototype.split(/\r?\n/)`.
   **Rejected** as a standalone module (the streaming case, where it *would* add value, belongs inside
-  `dynajs:file`).
+  `dyna:file`).
 - Generic `slices`/`maps` utility packs would duplicate `Array.prototype` and `Map`. **Rejected.**
 
 And what it *accepts* — the shipped library — is exactly the set that passes: path logic, IP/CIDR,
@@ -93,10 +93,10 @@ roadmap moves through categories:
   reductions/elementwise + `cumsum`/`cummax` prefix-scan **shipped**), plus vectorized sort,
   filter/compress, gather/scatter, and running statistics.
 - **Bytes/strings** — UTF-8↔UTF-16↔Latin-1 transcoding at GiB/s (UTF-8↔UTF-16 + validate/count
-  **shipped** in `dynajs:text`; Latin-1↔UTF-8 already shipped), multi-pattern search, and CRC via
+  **shipped** in `dyna:text`; Latin-1↔UTF-8 already shipped), multi-pattern search, and CRC via
   carry-less multiply (`simdutf`-class throughput).
 - **Maps** — SwissTable-style group-probe hashing, to speed the engine's own atom/shape lookups as
-  well as `dynajs:structures`.
+  well as `dyna:structures`.
 - **Matrix** — transpose, convolution, int8 matmul (VNNI/dot-product instructions), and attention.
 
 Verification is part of the roadmap, not an afterthought: every per-ISA kernel is differentially

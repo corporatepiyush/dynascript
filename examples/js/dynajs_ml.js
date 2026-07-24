@@ -1,5 +1,5 @@
 /*
- * dynajs:ml -- native machine learning from secure-c-libs, with DETERMINISTIC
+ * dyna:ml -- native machine learning from secure-c-libs, with DETERMINISTIC
  * memory management (no GC reliance).
  *
  * Requires the SCL-modules build with the ML family enabled:
@@ -14,7 +14,7 @@
  * is COPIED into the native side, and predictions come back as plain JS Arrays.
  * Nothing native ever escapes into the JS heap.
  */
-import { LinearRegression, LogisticRegression, KMeans } from "dynajs:ml";
+import { LinearRegression, LogisticRegression, KMeans } from "dyna:ml";
 
 function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 

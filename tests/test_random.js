@@ -1,8 +1,8 @@
-/* test_random.js — dynajs:random (in-repo xoshiro256** + uuid v4).
+/* test_random.js — dyna:random (in-repo xoshiro256** + uuid v4).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_random.js
  * Prints "test_random: all tests passed" on success; throws on failure. */
 
-import { Random, uuid } from "dynajs:random";
+import { Random, uuid } from "dyna:random";
 
 let n = 0;
 function assert(cond, msg) {

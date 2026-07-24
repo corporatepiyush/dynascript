@@ -1,6 +1,6 @@
-// dynajs_http.js — native HTTP/1.1 client from the dynajs:http module.
+// dynajs_http.js — native HTTP/1.1 client from the dyna:http module.
 //
-// dynajs:http exposes HttpClient, backed by secure-c-libs. Each client owns a
+// dyna:http exposes HttpClient, backed by secure-c-libs. Each client owns a
 // private native arena, so .close() reclaims all of its native memory in one
 // step (the GC finalizer is only a safety net). A response's native bytes are
 // copied into JS strings at the boundary, then freed — nothing native escapes.
@@ -18,7 +18,7 @@
 //   `body` is a string (UTF-8). On a network/parse failure the call throws an
 //   Error with a numeric `.dynajsError` code.
 
-import { HttpClient } from "dynajs:http";
+import { HttpClient } from "dyna:http";
 
 const base = scriptArgs[1];
 

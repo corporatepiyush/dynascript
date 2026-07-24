@@ -20,12 +20,12 @@ COPY . .
 # epoll variant (baseline Linux backend)
 RUN make clean || true \
  && make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y -j"$(nproc)" dynajs \
- && cp dynajs /usr/local/bin/dynajs-epoll
+ && cp dynajs /usr/local/bin/dyna-epoll
 
 # io_uring variant
 RUN make clean || true \
  && make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y CONFIG_IO_URING=y -j"$(nproc)" dynajs \
- && cp dynajs /usr/local/bin/dynajs-uring
+ && cp dynajs /usr/local/bin/dyna-uring
 
 COPY docker/uring-bench.sh /usr/local/bin/uring-bench.sh
 RUN chmod +x /usr/local/bin/uring-bench.sh

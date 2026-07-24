@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#include "dynajs-libc.h"
+#include "dyna-libc.h"
 #include "cutils.h"
 
 static JSValue js_bjson_read(JSContext *ctx, JSValueConst this_val,

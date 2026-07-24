@@ -1,6 +1,6 @@
 /*
  * test_utf16_kernels.c -- differential regression test for the shared SIMD
- * UTF-8 <-> UTF-16 transcode + validation kernels added for dynajs:text:
+ * UTF-8 <-> UTF-16 transcode + validation kernels added for dyna:text:
  *   utf8_to_utf16le, utf16le_to_utf8, validate_utf16le, count_utf16.
  *
  * Each kernel is checked against an independent scalar reference TWO ways:
@@ -32,9 +32,9 @@
  *
  * Build + run natively (arm64 NEON / x86 host):
  *   clang -O2 -Isrc tests/test_utf16_kernels.c \
- *     src/dynajs-simd-core.c src/dynajs-simd-scalar.c src/dynajs-simd-neon.c \
- *     src/dynajs-simd-sse42.c src/dynajs-simd-avx2.c src/dynajs-simd-avx512.c \
- *     src/dynajs-simd-sve.c -lpthread -lm -o /tmp/tuk && /tmp/tuk
+ *     src/dyna-simd-core.c src/dyna-simd-scalar.c src/dyna-simd-neon.c \
+ *     src/dyna-simd-sse42.c src/dyna-simd-avx2.c src/dyna-simd-avx512.c \
+ *     src/dyna-simd-sve.c -lpthread -lm -o /tmp/tuk && /tmp/tuk
  * Exercise the SSE4.2 kernels under emulated amd64 (OrbStack/Rosetta):
  *   docker run --rm --platform linux/amd64 -v "$PWD":/host:ro dynascript-dev:amd64 \
  *     bash -c 'cp -r /host /b && cd /b && <build line above>; /tmp/tuk'
@@ -45,7 +45,7 @@
 #include <stdint.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include "dynajs-simd-kernels.h"
+#include "dyna-simd-kernels.h"
 
 /* ── independent scalar references (deliberately not shared with the kernels) ── */
 static int ref_u8_to_u16(const uint8_t *s, size_t n, uint16_t *d, size_t *ol) {

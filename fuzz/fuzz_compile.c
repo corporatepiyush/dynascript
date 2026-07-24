@@ -14,7 +14,7 @@
  */
 
 #include "dynajs.h"
-#include "dynajs-libc.h"
+#include "dyna-libc.h"
 #include "cutils.h"
 #include "fuzz/fuzz_common.h"
 

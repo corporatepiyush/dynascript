@@ -1,9 +1,9 @@
-/* test_text_kernels.js -- differential tests for the dynajs:text byte kernels
+/* test_text_kernels.js -- differential tests for the dyna:text byte kernels
  * hexEncode/hexDecode, latin1ToUtf8/utf8ToLatin1, countUtf8. Oracles are
  * independent JS reimplementations; lengths sweep the 16/32B SIMD block
  * boundaries and boundary bytes (0x00,0x7F,0x80,0xFF). */
 import { hexEncode, hexDecode, latin1ToUtf8, utf8ToLatin1, countUtf8 }
-    from "dynajs:text";
+    from "dyna:text";
 
 function assert(c, m) { if (!c) throw new Error("assertion failed: " + m); }
 

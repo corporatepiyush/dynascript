@@ -1,4 +1,4 @@
-/* test_utf16.js -- tests for the dynajs:text UTF-8 <-> UTF-16 kernels:
+/* test_utf16.js -- tests for the dyna:text UTF-8 <-> UTF-16 kernels:
  * utf8ToUtf16, utf16ToUtf8, isValidUtf16, countUtf16. Oracles are independent
  * JS reimplementations. UTF-16 bytes are little-endian (UTF-16LE). Policy under
  * test: STRICT / lossless (simdutf convert semantics) -- ill-formed input
@@ -6,7 +6,7 @@
  * boundaries; surrogate edge cases (lone high/low, reversed, high-at-end, BOM,
  * odd length) and non-BMP (emoji) are pinned. */
 import { utf8ToUtf16, utf16ToUtf8, isValidUtf16, countUtf16, countUtf8 }
-    from "dynajs:text";
+    from "dyna:text";
 
 function assert(c, m) { if (!c) throw new Error("assertion failed: " + m); }
 

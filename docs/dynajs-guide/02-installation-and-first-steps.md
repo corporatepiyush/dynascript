@@ -19,13 +19,13 @@ make -j"$(getconf _NPROCESSORS_ONLN)"
 ```
 
 That default build gives you the language and the two classic QuickJS system modules (`std`, `os`).
-To get the **native standard library** — everything under the `dynajs:` namespace that this book is
+To get the **native standard library** — everything under the `dyna:` namespace that this book is
 about — build with `CONFIG_NATIVE_MODULES=y`:
 
 ```sh
 make CONFIG_NATIVE_MODULES=y -j"$(getconf _NPROCESSORS_ONLN)"
 
-./dynajs -e 'import("dynajs:crypto").then(c => print(c.sha256Hex("hi")))'
+./dynajs -e 'import("dyna:crypto").then(c => print(c.sha256Hex("hi")))'
 #   8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4
 ```
 
@@ -38,7 +38,7 @@ Useful build variants:
 | Command | What you get |
 |---|---|
 | `make` | core engine + `std`/`os` |
-| `make CONFIG_NATIVE_MODULES=y` | + the entire `dynajs:*` standard library |
+| `make CONFIG_NATIVE_MODULES=y` | + the entire `dyna:*` standard library |
 | `make CONFIG_ASAN=y` | AddressSanitizer build (own objdir) |
 | `make CONFIG_UBSAN=y` | UndefinedBehaviorSanitizer build |
 | `make test` | run the full test suite (language + modules) |
@@ -110,7 +110,7 @@ Everything you know from modern JavaScript works: arrow functions, destructuring
 literals, optional chaining, nullish coalescing, `Array` group/`findLast`, and more (Chapter 3
 covers the exact baseline).
 
-## 2.4 ES modules and the `dynajs:` namespace
+## 2.4 ES modules and the `dyna:` namespace
 
 DynaJS uses standard ES modules. Auto-detection treats a file that uses `import`/`export` as a
 module; force it with `-m` if needed.
@@ -125,7 +125,7 @@ export function mean(xs) {
 ```js
 // main.js
 import { mean } from "./math-utils.js";
-import { v4 } from "dynajs:uuid";
+import { v4 } from "dyna:uuid";
 
 console.log("mean:", mean([2, 4, 6, 8]));   // 5
 console.log("id:", v4());                    // a random UUIDv4
@@ -138,8 +138,8 @@ dynajs main.js
 There are **three kinds of module specifier**:
 
 1. **Relative / absolute paths** — `"./math-utils.js"`, `"/abs/path/mod.js"`. Your own code.
-2. **`dynajs:*`** — the native standard library. `"dynajs:crypto"`, `"dynajs:simd"`,
-   `"dynajs:http"`, etc. These are compiled into the binary (with `CONFIG_NATIVE_MODULES=y`).
+2. **`dyna:*`** — the native standard library. `"dyna:crypto"`, `"dyna:simd"`,
+   `"dyna:http"`, etc. These are compiled into the binary (with `CONFIG_NATIVE_MODULES=y`).
 3. **`std` and `os`** — the classic QuickJS system modules (low-level I/O, process control). Made
    available by `--std` or by importing them directly in a module context.
 
@@ -152,9 +152,9 @@ if (!err) console.log("entries:", dir.length);
 std.gc();   // force a GC cycle (useful in tests / benchmarks)
 ```
 
-> **Namespacing is a feature.** Because the standard library lives under `dynajs:`, there is never
+> **Namespacing is a feature.** Because the standard library lives under `dyna:`, there is never
 > ambiguity about whether an import is yours, a third party's, or the runtime's — there *is* no
-> third party. `dynajs:` always means "native, in-binary, curated."
+> third party. `dyna:` always means "native, in-binary, curated."
 
 ## 2.5 The REPL
 
@@ -163,11 +163,11 @@ std.gc();   // force a GC cycle (useful in tests / benchmarks)
 ```
 $ dynajs -i
 DynaJS version 2026-06-04
-> const { toHex } = await import("dynajs:bytes")
+> const { toHex } = await import("dyna:bytes")
 undefined
 > toHex(new Uint8Array([222, 173, 190, 239]))
 "deadbeef"
-> import("dynajs:mathx").then(m => m.gcd(48, 36))
+> import("dyna:mathx").then(m => m.gcd(48, 36))
 Promise { 12 }
 ```
 
@@ -181,10 +181,10 @@ time-ordered id, and reports its gzip-compressed size. Every capability here is 
 dependency-free.
 
 ```js
-import { sha256Hex } from "dynajs:crypto";
-import { v7 } from "dynajs:uuid";
-import { gzip } from "dynajs:compress";
-import { toBase64 } from "dynajs:bytes";
+import { sha256Hex } from "dyna:crypto";
+import { v7 } from "dyna:uuid";
+import { gzip } from "dyna:compress";
+import { toBase64 } from "dyna:bytes";
 
 function store(payload) {
   const id = v7();                      // time-ordered id (sorts by creation)

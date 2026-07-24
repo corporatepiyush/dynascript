@@ -1,8 +1,8 @@
-/* test_sort.js — dynajs:sort (in-repo merge sort + binary search).
+/* test_sort.js — dyna:sort (in-repo merge sort + binary search).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_sort.js
  * Prints "test_sort: all tests passed" on success; throws on failure. */
 
-import { sort, binarySearch } from "dynajs:sort";
+import { sort, binarySearch } from "dyna:sort";
 
 let n = 0;
 function assert(cond, msg) {

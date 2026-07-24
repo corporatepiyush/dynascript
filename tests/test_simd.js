@@ -1,4 +1,4 @@
-/* test_simd.js — dynajs:simd float32 vector kernels.
+/* test_simd.js — dyna:simd float32 vector kernels.
  * Run: dynajs (CONFIG_NATIVE_MODULES=y) tests/test_simd.js
  *
  * Tolerance classes (documented per assertion group below):
@@ -19,7 +19,7 @@ import {
     distL2, distL1, distCos, distCheb,
     gemv, gemvT, gemm,
     clamp, threshold, topkIndices,
-} from "dynajs:simd";
+} from "dyna:simd";
 
 let n = 0;
 function assert(c, m) { n++; if (!c) throw new Error("assertion failed: " + m); }
@@ -186,7 +186,7 @@ for (const len of SIZES) {
     }
 
     /* silu is tested below with the fast_exp-approximation group: it is
-     * composed from sigmoid (see dynajs-simd.c for why), not libm-exact. */
+     * composed from sigmoid (see dyna-simd.c for why), not libm-exact. */
 }
 
 /* ---------- activations built on fast_exp/fast_tanh: looser tolerance ---------- */
@@ -217,7 +217,7 @@ for (const len of SIZES) {
     for (let i = 0; i < len; i++) assert(approx(c2[i], Math.tanh(a[i]), 4e-2), "tanhFast[" + i + "]");
 
     /* silu(x) = x*sigmoid(x), composed from the fast-exp-based sigmoid kernel
-     * (see dynajs-simd.c) -- same tolerance class as sigmoid. */
+     * (see dyna-simd.c) -- same tolerance class as sigmoid. */
     const c1b = Float32Array.from(a); silu(c1b);
     for (let i = 0; i < len; i++) assert(approx(c1b[i], a[i] / (1 + Math.exp(-a[i])), 2e-2), "silu[" + i + "]");
 

@@ -1,4 +1,4 @@
-/* test_time.js — dynajs:time (in-repo Go-style time/duration utilities).
+/* test_time.js — dyna:time (in-repo Go-style time/duration utilities).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_time.js
  * Prints "test_time: all tests passed" on success; throws on failure. */
 
@@ -8,7 +8,7 @@ import {
     now, nowUnixNano, nowMillis, monotonicNano,
     formatRFC3339, formatUnix, parseRFC3339,
     date, fromUnix,
-} from "dynajs:time";
+} from "dyna:time";
 
 let n = 0;
 function assert(cond, msg) {
@@ -467,7 +467,7 @@ function durEq(a, b) {
 
 /* ================================================================ *
  *  Argument coercion: non-string/non-number arguments are coerced (Go-like
- *  duck typing consistent with the rest of dynajs:* native modules).
+ *  duck typing consistent with the rest of dyna:* native modules).
  * ================================================================ */
 {
     assertEq(durationString("1000"), "1µs", "durationString coerces a string to a number");

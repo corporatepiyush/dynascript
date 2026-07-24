@@ -169,7 +169,7 @@ endif
 
 CFLAGS+=$(DEFINES)
 # -I. resolves dynajs.c's "src/*.inc.c" unity includes from the repo root;
-# -Isrc resolves the project headers (dynajs.h, dynajs-opcode.h, cutils.h, ...)
+# -Isrc resolves the project headers (dynajs.h, dyna-opcode.h, cutils.h, ...)
 # now that all engine sources live under src/. VPATH lets the object rules find
 # src/<x>.c for a flat $(OBJDIR)/<x>.o (generated repl.c etc. stay in the root,
 # which make searches before VPATH).
@@ -216,85 +216,85 @@ CFLAGS+=-fsanitize=thread -fno-omit-frame-pointer
 LDFLAGS+=-fsanitize=thread -fno-omit-frame-pointer
 endif
 # in-repo native modules (self-contained, NO external deps). A family is active
-# iff its dynajs-<family>.c is present. No -I/-l into any external tree.
+# iff its dyna-<family>.c is present. No -I/-l into any external tree.
 ifdef CONFIG_NATIVE_MODULES
 CFLAGS+=-DCONFIG_NATIVE_MODULES
-ifneq ($(wildcard src/dynajs-random.c),)
+ifneq ($(wildcard src/dyna-random.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_RANDOM
 endif
-ifneq ($(wildcard src/dynajs-sort.c),)
+ifneq ($(wildcard src/dyna-sort.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_SORT
 endif
-ifneq ($(wildcard src/dynajs-search.c),)
+ifneq ($(wildcard src/dyna-search.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_SEARCH
 endif
-ifneq ($(wildcard src/dynajs-compress.c),)
+ifneq ($(wildcard src/dyna-compress.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_COMPRESS
 endif
-ifneq ($(wildcard src/dynajs-http.c),)
+ifneq ($(wildcard src/dyna-http.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_HTTP
 endif
-ifneq ($(wildcard src/dynajs-structures.c),)
+ifneq ($(wildcard src/dyna-structures.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_STRUCTURES
 endif
-ifneq ($(wildcard src/dynajs-structures3.c),)
+ifneq ($(wildcard src/dyna-structures3.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_STRUCTURES3
 endif
-ifneq ($(wildcard src/dynajs-container.c),)
+ifneq ($(wildcard src/dyna-container.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_CONTAINER
 endif
-ifneq ($(wildcard src/dynajs-ml.c),)
+ifneq ($(wildcard src/dyna-ml.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_ML
 endif
-ifneq ($(wildcard src/dynajs-docparse.c),)
+ifneq ($(wildcard src/dyna-docparse.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_DOCPARSE
 endif
-ifneq ($(wildcard src/dynajs-simd.c),)
+ifneq ($(wildcard src/dyna-simd.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_SIMD
 endif
-ifneq ($(wildcard src/dynajs-file.c),)
+ifneq ($(wildcard src/dyna-file.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_FILE
 endif
-ifneq ($(wildcard src/dynajs-text.c),)
+ifneq ($(wildcard src/dyna-text.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_TEXT
 endif
-ifneq ($(wildcard src/dynajs-path.c),)
+ifneq ($(wildcard src/dyna-path.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_PATH
 endif
-ifneq ($(wildcard src/dynajs-netip.c),)
+ifneq ($(wildcard src/dyna-netip.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_NETIP
 endif
-ifneq ($(wildcard src/dynajs-semver.c),)
+ifneq ($(wildcard src/dyna-semver.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_SEMVER
 endif
-ifneq ($(wildcard src/dynajs-strings.c),)
+ifneq ($(wildcard src/dyna-strings.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_STRINGS
 endif
-ifneq ($(wildcard src/dynajs-bytes.c),)
+ifneq ($(wildcard src/dyna-bytes.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_BYTES
 endif
-ifneq ($(wildcard src/dynajs-crypto.c),)
+ifneq ($(wildcard src/dyna-crypto.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_CRYPTO
 endif
-ifneq ($(wildcard src/dynajs-encoding.c),)
+ifneq ($(wildcard src/dyna-encoding.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_ENCODING
 endif
-ifneq ($(wildcard src/dynajs-time.c),)
+ifneq ($(wildcard src/dyna-time.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_TIME
 endif
-ifneq ($(wildcard src/dynajs-mathx.c),)
+ifneq ($(wildcard src/dyna-mathx.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_MATHX
 endif
-ifneq ($(wildcard src/dynajs-csv.c),)
+ifneq ($(wildcard src/dyna-csv.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_CSV
 endif
-ifneq ($(wildcard src/dynajs-uuid.c),)
+ifneq ($(wildcard src/dyna-uuid.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_UUID
 endif
-ifneq ($(wildcard src/dynajs-bits.c),)
+ifneq ($(wildcard src/dyna-bits.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_BITS
 endif
-ifneq ($(wildcard src/dynajs-sys.c),)
+ifneq ($(wildcard src/dyna-sys.c),)
 CFLAGS+=-DCONFIG_NATIVE_MODULE_SYS
 endif
 endif
@@ -347,95 +347,100 @@ endif
 endif
 endif
 
-all: $(OBJDIR) $(OBJDIR)/dynajs.check.o $(OBJDIR)/dynajs-cli.check.o $(PROGS)
+all: $(OBJDIR) $(OBJDIR)/dynajs.check.o $(OBJDIR)/dyna-cli.check.o $(PROGS)
 
-DYNAJS_LIB_OBJS=$(OBJDIR)/dynajs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/dynajs-libc.o $(OBJDIR)/dynajs-simd-core.o $(OBJDIR)/dynajs-simd-scalar.o $(OBJDIR)/dynajs-simd-neon.o $(OBJDIR)/dynajs-simd-sse42.o $(OBJDIR)/dynajs-simd-avx2.o $(OBJDIR)/dynajs-simd-avx512.o $(OBJDIR)/dynajs-simd-sve.o
+DYNAJS_LIB_OBJS=$(OBJDIR)/dynajs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/dyna-libc.o $(OBJDIR)/dyna-io.o $(OBJDIR)/dyna-simd-core.o $(OBJDIR)/dyna-simd-scalar.o $(OBJDIR)/dyna-simd-neon.o $(OBJDIR)/dyna-simd-sse42.o $(OBJDIR)/dyna-simd-avx2.o $(OBJDIR)/dyna-simd-avx512.o $(OBJDIR)/dyna-simd-sve.o
 
-DYNAJS_OBJS=$(OBJDIR)/dynajs-cli.o $(OBJDIR)/repl.o $(DYNAJS_LIB_OBJS)
+DYNAJS_OBJS=$(OBJDIR)/dyna-cli.o $(OBJDIR)/repl.o $(DYNAJS_LIB_OBJS)
 ifdef CONFIG_NATIVE_MODULES
 # in-repo native module objects (framework + each present family)
-NAT_MODULE_OBJS=$(OBJDIR)/dynajs-nat.o
-ifneq ($(wildcard src/dynajs-random.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-random.o
+NAT_MODULE_OBJS=$(OBJDIR)/dyna-nat.o
+# shared async IO adapter + readiness reactor (used by http and the io engine).
+# dyna-aio.c is the portable readiness backend; dyna-aio-uring.c is the Linux
+# io_uring backend (self-guarded, empty unless CONFIG_IO_URING). One provides the
+# dyn_aio_* symbols; the other compiles to nothing.
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-aio.o $(OBJDIR)/dyna-aio-uring.o $(OBJDIR)/dyna-evloop.o
+ifneq ($(wildcard src/dyna-random.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-random.o
 endif
-ifneq ($(wildcard src/dynajs-sort.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-sort.o
+ifneq ($(wildcard src/dyna-sort.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-sort.o
 endif
-ifneq ($(wildcard src/dynajs-search.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-search.o
+ifneq ($(wildcard src/dyna-search.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-search.o
 endif
-ifneq ($(wildcard src/dynajs-compress.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-compress.o
+ifneq ($(wildcard src/dyna-compress.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-compress.o
 endif
-ifneq ($(wildcard src/dynajs-http.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-http.o $(OBJDIR)/dynajs-evloop.o
+ifneq ($(wildcard src/dyna-http.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-http.o
 endif
-ifneq ($(wildcard src/dynajs-structures.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-structures.o
+ifneq ($(wildcard src/dyna-structures.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-structures.o
 endif
-ifneq ($(wildcard src/dynajs-structures3.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-structures3.o
+ifneq ($(wildcard src/dyna-structures3.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-structures3.o
 endif
-ifneq ($(wildcard src/dynajs-container.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-container.o
+ifneq ($(wildcard src/dyna-container.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-container.o
 endif
-ifneq ($(wildcard src/dynajs-ml.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-ml.o
+ifneq ($(wildcard src/dyna-ml.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-ml.o
 endif
-ifneq ($(wildcard src/dynajs-docparse.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-docparse.o
+ifneq ($(wildcard src/dyna-docparse.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-docparse.o
 endif
-ifneq ($(wildcard src/dynajs-simd.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-simd.o
+ifneq ($(wildcard src/dyna-simd.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-simd.o
 endif
-ifneq ($(wildcard src/dynajs-file.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-file.o
+ifneq ($(wildcard src/dyna-file.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-file.o
 endif
-ifneq ($(wildcard src/dynajs-text.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-text.o
+ifneq ($(wildcard src/dyna-text.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-text.o
 endif
-ifneq ($(wildcard src/dynajs-path.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-path.o
+ifneq ($(wildcard src/dyna-path.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-path.o
 endif
-ifneq ($(wildcard src/dynajs-netip.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-netip.o
+ifneq ($(wildcard src/dyna-netip.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-netip.o
 endif
-ifneq ($(wildcard src/dynajs-semver.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-semver.o
+ifneq ($(wildcard src/dyna-semver.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-semver.o
 endif
-ifneq ($(wildcard src/dynajs-strings.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-strings.o
+ifneq ($(wildcard src/dyna-strings.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-strings.o
 endif
-ifneq ($(wildcard src/dynajs-bytes.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-bytes.o
+ifneq ($(wildcard src/dyna-bytes.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-bytes.o
 endif
-ifneq ($(wildcard src/dynajs-crypto.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-crypto.o
+ifneq ($(wildcard src/dyna-crypto.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-crypto.o
 endif
-ifneq ($(wildcard src/dynajs-encoding.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-encoding.o
+ifneq ($(wildcard src/dyna-encoding.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-encoding.o
 endif
-ifneq ($(wildcard src/dynajs-time.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-time.o
+ifneq ($(wildcard src/dyna-time.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-time.o
 endif
-ifneq ($(wildcard src/dynajs-mathx.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-mathx.o
+ifneq ($(wildcard src/dyna-mathx.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-mathx.o
 endif
-ifneq ($(wildcard src/dynajs-csv.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-csv.o
+ifneq ($(wildcard src/dyna-csv.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-csv.o
 endif
-ifneq ($(wildcard src/dynajs-uuid.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-uuid.o
+ifneq ($(wildcard src/dyna-uuid.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-uuid.o
 endif
-ifneq ($(wildcard src/dynajs-bits.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-bits.o
+ifneq ($(wildcard src/dyna-bits.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-bits.o
 endif
-ifneq ($(wildcard src/dynajs-sys.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-sys.o
+ifneq ($(wildcard src/dyna-sys.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-sys.o
 endif
 ifdef CONFIG_IO_URING
-ifneq ($(wildcard src/dynajs-uring.c),)
-NAT_MODULE_OBJS+=$(OBJDIR)/dynajs-uring.o
+ifneq ($(wildcard src/dyna-uring.c),)
+NAT_MODULE_OBJS+=$(OBJDIR)/dyna-uring.o
 endif
 endif
 DYNAJS_OBJS+=$(NAT_MODULE_OBJS)
@@ -462,7 +467,7 @@ $(OBJDIR):
 dynajs$(EXE): $(DYNAJS_OBJS)
 	$(CC) $(LDFLAGS) $(LDEXPORT) -o $@ $^ $(LIBS)
 
-dynajs-debug$(EXE): $(patsubst %.o, %.debug.o, $(DYNAJS_OBJS))
+dyna-debug$(EXE): $(patsubst %.o, %.debug.o, $(DYNAJS_OBJS))
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 dynajsc$(EXE): $(OBJDIR)/dynajsc.o $(DYNAJS_LIB_OBJS)
@@ -577,7 +582,7 @@ clean:
 	rm -f *.a *.o *.d *~ unicode_gen regexp_test fuzz_eval fuzz_compile fuzz_regexp $(PROGS)
 	rm -f hello.c test_fib.c
 	rm -f examples/*.so tests/*.so
-	rm -rf $(OBJDIR)/ *.dSYM/ dynajs-debug$(EXE)
+	rm -rf $(OBJDIR)/ *.dSYM/ dyna-debug$(EXE)
 	rm -rf run-test262-debug$(EXE)
 	rm -f run_octane run_sunspider_like
 
@@ -591,7 +596,7 @@ ifdef CONFIG_LTO
 	install -m644 libdynajs.lto.a "$(DESTDIR)$(PREFIX)/lib/dynajs"
 endif
 	mkdir -p "$(DESTDIR)$(PREFIX)/include/dynajs"
-	install -m644 src/dynajs.h src/dynajs-libc.h "$(DESTDIR)$(PREFIX)/include/dynajs"
+	install -m644 src/dynajs.h src/dyna-libc.h "$(DESTDIR)$(PREFIX)/include/dynajs"
 
 ###############################################################################
 # examples

@@ -42,7 +42,7 @@
 
 #include "cutils.h"
 #include "list.h"
-#include "dynajs-libc.h"
+#include "dyna-libc.h"
 
 #define CMD_NAME "run-test262"
 

@@ -1,6 +1,6 @@
 /*
  * bench_docparse.js -- throughput benchmark + correctness oracle for the native
- * dynajs:docparse CSV parser. Not part of `make test` (it is a bench). Kept
+ * dyna:docparse CSV parser. Not part of `make test` (it is a bench). Kept
  * in-repo so any future parser rewrite can be measured AND proven equivalent:
  * the FNV-1a checksum of the parsed output is printed alongside MB/s, so two
  * builds (e.g. scalar vs a candidate SIMD path) must print the SAME checksum.
@@ -12,7 +12,7 @@
  * are only a few bytes, so the per-field indirect call to the kernel costs more
  * than the inline compare it replaced. Use this bench before trying again.
  */
-import { parseCsv } from "dynajs:docparse";
+import { parseCsv } from "dyna:docparse";
 
 function makeCsv(rows, cols, wide) {
     let out = [];

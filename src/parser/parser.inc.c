@@ -422,7 +422,7 @@ static const JSOpCode opcode_info[OP_COUNT + (OP_TEMP_END - OP_TEMP_START)] = {
 #else
 #define DEF(id, size, n_pop, n_push, f) { size, n_pop, n_push, OP_FMT_ ## f },
 #endif
-#include "dynajs-opcode.h"
+#include "dyna-opcode.h"
 #undef DEF
 #undef FMT
 };
@@ -435,7 +435,7 @@ static const JSOpCode opcode_info2[OP2_COUNT] = {
 #else
 #define DEF2(id, size, n_pop, n_push, f) { size, n_pop, n_push, OP_FMT_ ## f },
 #endif
-#include "dynajs-opcode2.h"
+#include "dyna-opcode2.h"
 #undef DEF2
 };
 

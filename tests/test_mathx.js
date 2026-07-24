@@ -1,4 +1,4 @@
-/* test_mathx.js — dynajs:mathx (Go math package additions + int/BigInt helpers).
+/* test_mathx.js — dyna:mathx (Go math package additions + int/BigInt helpers).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_mathx.js
  * Prints "test_mathx: all tests passed" on success; throws on failure. */
 
@@ -9,7 +9,7 @@ import {
     expm1, log1p, log2, logb, scalbn, ilogb, modf, frexp, ldexp,
     remainder, fmod, isInf, isNaN as mxIsNaN, signbit, trunc, round, roundToEven,
     gcd, lcm, factorial, isPrime, abs, bitLen, popcount,
-} from "dynajs:mathx";
+} from "dyna:mathx";
 
 let n = 0;
 function assert(cond, msg) {

@@ -1,12 +1,12 @@
 # DynaJS API Reference
 
-Complete, per-function documentation for every `dynajs:*` standard-library module. For a
+Complete, per-function documentation for every `dyna:*` standard-library module. For a
 tutorial-style tour with runnable programs, see [Chapter 4](04-standard-library.md).
 
 ## Conventions used in this reference
 
-**Importing.** Every module is imported by its `dynajs:` specifier, either statically in a module
-(`import { fn } from "dynajs:crypto"`) or dynamically anywhere (`const m = await import("dynajs:crypto")`).
+**Importing.** Every module is imported by its `dyna:` specifier, either statically in a module
+(`import { fn } from "dyna:crypto"`) or dynamically anywhere (`const m = await import("dyna:crypto")`).
 The native standard library is present only in a binary built with `CONFIG_NATIVE_MODULES=y`.
 
 **Type notation.** This reference uses TypeScript-style types for clarity (DynaJS is plain
@@ -43,7 +43,7 @@ closes the object) fails cleanly rather than corrupting memory.
 
 # path
 
-`import { join, resolve, normalize, dirname, basename, extname, isAbsolute, relative, clean, sep, delimiter } from "dynajs:path";`
+`import { join, resolve, normalize, dirname, basename, extname, isAbsolute, relative, clean, sep, delimiter } from "dyna:path";`
 
 Pure POSIX path-string manipulation. No function touches the filesystem. Separator is `/`.
 
@@ -174,7 +174,7 @@ relative("/a/b/c", "/a/x/y");   // "../../x/y"
 
 # strings
 
-`import { split, splitN, fields, join, trim, trimStart, trimEnd, trimPrefix, trimSuffix, trimChars, toUpper, toLower, title, repeat, padStart, padEnd, contains, containsAny, hasPrefix, hasSuffix, index, lastIndex, indexAny, count, replace, replaceAll, equalFold, compare } from "dynajs:strings";`
+`import { split, splitN, fields, join, trim, trimStart, trimEnd, trimPrefix, trimSuffix, trimChars, toUpper, toLower, title, repeat, padStart, padEnd, contains, containsAny, hasPrefix, hasSuffix, index, lastIndex, indexAny, count, replace, replaceAll, equalFold, compare } from "dyna:strings";`
 
 Go-flavored string utilities that complement `String.prototype`. Offsets and counts are **byte**
 offsets into the UTF‑8 encoding. `contains`/`index`/`count` use the SIMD substring engine on long
@@ -347,7 +347,7 @@ equalFold("Go", "GO");   // true
 
 # bytes
 
-`import { compare, equal, indexOf, lastIndexOf, contains, count, concat, copy, fill, /* read*, write* */ toHex, fromHex, toBase64, fromBase64, toUtf8, fromUtf8 } from "dynajs:bytes";`
+`import { compare, equal, indexOf, lastIndexOf, contains, count, concat, copy, fill, /* read*, write* */ toHex, fromHex, toBase64, fromBase64, toUtf8, fromUtf8 } from "dyna:bytes";`
 
 Byte-buffer operations over `Uint8Array`, plus fixed-width integer/float accessors in both byte
 orders. `indexOf`/`contains`/`count` use the SIMD substring engine.
@@ -456,7 +456,7 @@ toUtf8(fromBase64("aGk="));           // "hi"
 
 # encoding
 
-`import { hexEncode, hexDecode, base64Encode, base64Decode, base64UrlEncode, base64UrlDecode, base32Encode, base32Decode, base32HexEncode, base32HexDecode, base85Encode, base85Decode, putUvarint, uvarint, putVarint, varint } from "dynajs:encoding";`
+`import { hexEncode, hexDecode, base64Encode, base64Decode, base64UrlEncode, base64UrlDecode, base32Encode, base32Decode, base32HexEncode, base32HexDecode, base85Encode, base85Decode, putUvarint, uvarint, putVarint, varint } from "dyna:encoding";`
 
 Binary↔text codecs and LEB128 variable-length integers. Hex and base64 run on the SIMD kernels.
 
@@ -524,7 +524,7 @@ uvarint(enc);                  // [300, 2]
 
 # text
 
-`import { count, indexOfAny, isValidUtf8, countUtf8, base64Encode, base64Decode, hexEncode, hexDecode, latin1ToUtf8, utf8ToLatin1, utf8ToUtf16, utf16ToUtf8, isValidUtf16, countUtf16 } from "dynajs:text";`
+`import { count, indexOfAny, isValidUtf8, countUtf8, base64Encode, base64Decode, hexEncode, hexDecode, latin1ToUtf8, utf8ToLatin1, utf8ToUtf16, utf16ToUtf8, isValidUtf16, countUtf16 } from "dyna:text";`
 
 Throughput-oriented SIMD text kernels. Inputs are `bytes`; multi-byte results are fresh
 `Uint8Array`s.
@@ -559,7 +559,7 @@ Counts occurrences of a single byte.
 
 ### `base64Encode/Decode`, `hexEncode/Decode`
 
-As in `dynajs:encoding`/`dynajs:bytes` (SIMD implementations). `base64Decode` returns an
+As in `dyna:encoding`/`dyna:bytes` (SIMD implementations). `base64Decode` returns an
 `ArrayBuffer`; `hexDecode` returns a `Uint8Array` and throws `TypeError` on a non-hex character.
 
 ### `latin1ToUtf8(data)` · `utf8ToLatin1(data)`
@@ -602,7 +602,7 @@ utf16ToUtf8(u16);                  // the original UTF-8 bytes
 
 # crypto
 
-`import { md5, sha1, sha224, sha256, sha384, sha512, /* + *Hex */ hmac, hmacHex, crc32, crc32c, Hasher } from "dynajs:crypto";`
+`import { md5, sha1, sha224, sha256, sha384, sha512, /* + *Hex */ hmac, hmacHex, crc32, crc32c, Hasher } from "dyna:crypto";`
 
 Cryptographic hashes, HMAC, and CRC. Verified against FIPS 180‑4, RFC 1321/2104/4231, and IEEE
 802.3 test vectors. One-shot functions plus a streaming `Hasher` class.
@@ -677,7 +677,7 @@ finally { h.close(); }
 
 # uuid
 
-`import { v4, v7, v3, v5, parse, validate, version, variant, bytes, fromBytes, NIL, MAX, NAMESPACE_DNS, NAMESPACE_URL, NAMESPACE_OID, NAMESPACE_X500 } from "dynajs:uuid";`
+`import { v4, v7, v3, v5, parse, validate, version, variant, bytes, fromBytes, NIL, MAX, NAMESPACE_DNS, NAMESPACE_URL, NAMESPACE_OID, NAMESPACE_X500 } from "dyna:uuid";`
 
 RFC 9562 universally-unique identifiers. Returned UUIDs are canonical lowercase `8-4-4-4-12`.
 
@@ -741,7 +741,7 @@ v5(NAMESPACE_DNS, "www.example.com");
 
 # random
 
-`import { Random, uuid } from "dynajs:random";`
+`import { Random, uuid } from "dyna:random";`
 
 A fast, **seedable** pseudo-random generator (reproducible, unlike `Math.random`).
 
@@ -779,7 +779,7 @@ rng.nextBounded(6);    // a fair die index 0..5
 
 # mathx
 
-`import { /* real */ gamma, lgamma, erf, erfc, cbrt, hypot, copysign, nextafter, expm1, log1p, log2, logb, scalbn, ilogb, modf, frexp, ldexp, remainder, fmod, isInf, isNaN, signbit, trunc, round, roundToEven, /* int */ gcd, lcm, factorial, isPrime, abs, bitLen, popcount, /* + constants */ } from "dynajs:mathx";`
+`import { /* real */ gamma, lgamma, erf, erfc, cbrt, hypot, copysign, nextafter, expm1, log1p, log2, logb, scalbn, ilogb, modf, frexp, ldexp, remainder, fmod, isInf, isNaN, signbit, trunc, round, roundToEven, /* int */ gcd, lcm, factorial, isPrime, abs, bitLen, popcount, /* + constants */ } from "dyna:mathx";`
 
 The mathematics `Math` omits: special functions, IEEE‑754 helpers, and exact integer routines. All
 real-valued functions take and return `number` unless a tuple is noted.
@@ -837,7 +837,7 @@ gcd(462n, 1071n);       // 21n
 
 # bits
 
-`import { LeadingZeros32, TrailingZeros32, OnesCount32, Len32, Reverse32, ReverseBytes32, RotateLeft32, Add32, Add64, Sub32, Sub64, Mul32, Mul64, Div32, Div64, Rem32, Rem64, UintSize /* + 8/16/64 variants */ } from "dynajs:bits";`
+`import { LeadingZeros32, TrailingZeros32, OnesCount32, Len32, Reverse32, ReverseBytes32, RotateLeft32, Add32, Add64, Sub32, Sub64, Mul32, Mul64, Div32, Div64, Rem32, Rem64, UintSize /* + 8/16/64 variants */ } from "dyna:bits";`
 
 Go `math/bits`, at fixed widths of 8, 16, 32, and 64 bits. **The 8/16/32 forms use `number`; the
 64‑bit forms take and return `BigInt`.** The counting functions (`LeadingZeros`, `TrailingZeros`,
@@ -902,7 +902,7 @@ A `number` constant, `64`.
 
 # container
 
-`import { Heap, List, Ring } from "dynajs:container";`
+`import { Heap, List, Ring } from "dyna:container";`
 
 Native data structures JavaScript lacks. All three are resource classes — call `.close()` when
 done. Element values may be any JavaScript value.
@@ -983,7 +983,7 @@ r.close();
 
 # structures
 
-`import { Vector, HashMap } from "dynajs:structures";`
+`import { Vector, HashMap } from "dyna:structures";`
 
 A growable array and a hash map with native contiguous backing. Resource classes.
 
@@ -1017,11 +1017,11 @@ Keys are JavaScript values compared by identity/value as appropriate.
 
 # sys
 
-`import { stat, lstat, exists, readDir, makeDir, remove, removeAll, rename, symlink, readLink, realPath, chmod, glob, tempDir, makeTempDir, makeTempFile, env, getEnv, setEnv, args, cwd, chDir, platform, pid, hostName, homeDir } from "dynajs:sys";`
+`import { stat, lstat, exists, readDir, makeDir, remove, removeAll, rename, symlink, readLink, realPath, chmod, glob, tempDir, makeTempDir, makeTempFile, env, getEnv, setEnv, args, cwd, chDir, platform, pid, hostName, homeDir } from "dyna:sys";`
 
 Unified, synchronous system interface: filesystem metadata, directory operations, globbing, and
-process/environment access. (Path-string logic is in `dynajs:path`; buffered file *content* I/O is
-in `dynajs:file`.) On failure, functions throw an `Error` whose `.code` (e.g. `"ENOENT"`) and
+process/environment access. (Path-string logic is in `dyna:path`; buffered file *content* I/O is
+in `dyna:file`.) On failure, functions throw an `Error` whose `.code` (e.g. `"ENOENT"`) and
 `.errno` identify the OS error.
 
 ### `stat(path)` · `lstat(path)`
@@ -1106,7 +1106,7 @@ glob("data/file-[0-9].csv");
 
 # file
 
-`import { readFile, writeFile, FileReader, FileWriter } from "dynajs:file";`
+`import { readFile, writeFile, FileReader, FileWriter } from "dyna:file";`
 
 Buffered file content I/O with per-OS fast paths (macOS `F_RDAHEAD`/`F_PREALLOCATE`/`F_FULLFSYNC`;
 Linux `fadvise`/`fallocate`/io_uring) behind one API.
@@ -1168,10 +1168,10 @@ finally { w.close(); }
 
 # uring
 
-`import { readFile, readFileSync, checksum } from "dynajs:uring";`
+`import { readFile, readFileSync, checksum } from "dyna:uring";`
 
 High-queue-depth bulk file reads via Linux **io_uring**. Available only on Linux builds with
-io_uring support; on other platforms use `dynajs:file`.
+io_uring support; on other platforms use `dyna:file`.
 
 | Function | Signature | Description |
 |---|---|---|
@@ -1185,7 +1185,7 @@ io_uring support; on other platforms use `dynajs:file`.
 
 # http
 
-`import { HttpClient, HttpServer, HttpServerAsync } from "dynajs:http";`
+`import { HttpClient, HttpServer, HttpServerAsync } from "dyna:http";`
 
 An HTTP/1.1 client and two server implementations. `HttpServerAsync` is a single-thread event-loop
 reactor (kqueue on macOS; epoll or io_uring on Linux) that scales to thousands of connections on
@@ -1243,7 +1243,7 @@ A thread-pool server variant with the same `.start()`, `.stop()`, and `.port` su
 
 # netip
 
-`import { parseAddr, parsePrefix, contains, masked, canonical, isValid, compareAddr, isLoopback, isPrivate, isMulticast, isUnspecified, isLinkLocalUnicast, isGlobalUnicast, isLinkLocalMulticast } from "dynajs:netip";`
+`import { parseAddr, parsePrefix, contains, masked, canonical, isValid, compareAddr, isLoopback, isPrivate, isMulticast, isUnspecified, isLinkLocalUnicast, isGlobalUnicast, isLinkLocalMulticast } from "dyna:netip";`
 
 IPv4/IPv6 address and CIDR-prefix parsing and reasoning (modeled on Go `net/netip`).
 
@@ -1297,7 +1297,7 @@ isPrivate("192.168.1.1");             // true
 
 # time
 
-`import { Nanosecond, Microsecond, Millisecond, Second, Minute, Hour, durationString, parseDuration, now, nowUnixNano, nowMillis, monotonicNano, formatRFC3339, parseRFC3339, formatUnix, date, fromUnix } from "dynajs:time";`
+`import { Nanosecond, Microsecond, Millisecond, Second, Minute, Hour, durationString, parseDuration, now, nowUnixNano, nowMillis, monotonicNano, formatRFC3339, parseRFC3339, formatUnix, date, fromUnix } from "dyna:time";`
 
 Nanosecond-precision durations, a monotonic clock, and RFC 3339 formatting (modeled on Go `time`).
 
@@ -1346,7 +1346,7 @@ const ms = Number(monotonicNano() - t0) / 1e6;
 
 # semver
 
-`import { parse, isValid, clean, compare, gt, gte, lt, lte, eq, neq, sort, major, minor, patch, prerelease, inc, satisfies, maxSatisfying, minSatisfying, coerce } from "dynajs:semver";`
+`import { parse, isValid, clean, compare, gt, gte, lt, lte, eq, neq, sort, major, minor, patch, prerelease, inc, satisfies, maxSatisfying, minSatisfying, coerce } from "dyna:semver";`
 
 Semantic Versioning 2.0.0 with npm-style ranges.
 
@@ -1402,7 +1402,7 @@ maxSatisfying(["1.0.0","1.2.0","1.9.0","2.0.0"], "^1.2.0");   // "1.9.0"
 
 # simd
 
-`import { /* many */ } from "dynajs:simd";`
+`import { /* many */ } from "dyna:simd";`
 
 Multi-ISA vector math dispatched at runtime to the best instruction set available (scalar / NEON /
 SSE4.2 / AVX2 / AVX‑512 / SVE). Operands are typed arrays. **In-place** operations mutate and return
@@ -1475,7 +1475,7 @@ const c = new Int32Array([1,2,3,4]); cumsum(c);                  // c = [1,3,6,1
 
 # ml
 
-`import { LinearRegression, LogisticRegression, KMeans } from "dynajs:ml";`
+`import { LinearRegression, LogisticRegression, KMeans } from "dyna:ml";`
 
 Classic models implemented natively on the SIMD engine. All are resource classes; `.fit()` returns
 `this` for chaining; call `.close()` when done.
@@ -1519,7 +1519,7 @@ finally { lr.close(); }
 
 # compress
 
-`import { gzip, gunzip } from "dynajs:compress";`
+`import { gzip, gunzip } from "dyna:compress";`
 
 DEFLATE-based compression (a real implementation, gzip framing).
 
@@ -1537,7 +1537,7 @@ gunzip(z).length;   // the original length
 
 # docparse
 
-`import { parseJson, parseCsv } from "dynajs:docparse";`
+`import { parseJson, parseCsv } from "dyna:docparse";`
 
 Native parsers for the two common data interchange formats.
 
@@ -1555,7 +1555,7 @@ parseJson('{"x":[1,2,3]}').x[2];   // 3
 
 # csv
 
-`import * as csv from "dynajs:csv";`
+`import * as csv from "dyna:csv";`
 
 File-oriented CSV create/read/update/delete, RFC 4180 (quoted fields, embedded commas/newlines/quotes,
 `""` escaping). Each function takes a single **options object**. Mutations are load-modify-store and
@@ -1691,7 +1691,7 @@ csv.read({ path: "/tmp/u.csv" });
 
 # sort
 
-`import { sort, binarySearch } from "dynajs:sort";`
+`import { sort, binarySearch } from "dyna:sort";`
 
 ### `sort(arr)`
 
@@ -1719,7 +1719,7 @@ binarySearch(s, 4);            // 3
 
 # search
 
-`import { indexOf, indexOfAll } from "dynajs:search";`
+`import { indexOf, indexOfAll } from "dyna:search";`
 
 SIMD substring search over strings (byte offsets into UTF‑8).
 

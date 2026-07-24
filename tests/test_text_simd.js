@@ -1,8 +1,8 @@
-/* test_text_simd.js — differential tests for the dynajs:text SIMD kernels
+/* test_text_simd.js — differential tests for the dyna:text SIMD kernels
  * (count_u8, find_first_of, validate_utf8, base64). Oracles are independent JS
  * reimplementations + known vectors; lengths sweep the 16/32B block boundaries. */
 import { count, indexOfAny, isValidUtf8, base64Encode, base64Decode }
-    from "dynajs:text";
+    from "dyna:text";
 
 function assert(c, m) { if (!c) throw new Error("assertion failed: " + m); }
 

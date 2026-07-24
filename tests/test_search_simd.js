@@ -1,8 +1,8 @@
 /* test_search_simd.js — differential + throughput test for the SIMD substring
- * kernel (simd.strfind) wired into dynajs:search. Oracle: native String.indexOf,
+ * kernel (simd.strfind) wired into dyna:search. Oracle: native String.indexOf,
  * which for ASCII input has byte offsets == char indices, so the two must agree
  * exactly. Stresses lengths around the 16/32-byte SIMD block boundaries. */
-import { indexOf, indexOfAll } from "dynajs:search";
+import { indexOf, indexOfAll } from "dyna:search";
 
 function assert(c, m) { if (!c) throw new Error("assertion failed: " + m); }
 
@@ -72,7 +72,7 @@ const simd = bench(() => indexOf(big, needle), iters);
 const native = bench(() => big.indexOf(needle), iters);
 assert(simd.acc === expPos * iters, "SIMD found the tail match");
 const mb = (N / (1 << 20)) * iters;
-print("scan " + mb.toFixed(0) + " MiB -- dynajs:search(SIMD): " + simd.ms.toFixed(1) +
+print("scan " + mb.toFixed(0) + " MiB -- dyna:search(SIMD): " + simd.ms.toFixed(1) +
       "ms (" + (mb / (simd.ms / 1000)).toFixed(0) + " MiB/s)  |  String.indexOf: " +
       native.ms.toFixed(1) + "ms (" + (mb / (native.ms / 1000)).toFixed(0) + " MiB/s)");
 print("test_search_simd: all tests passed");

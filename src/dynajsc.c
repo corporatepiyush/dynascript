@@ -34,7 +34,7 @@
 #endif
 
 #include "cutils.h"
-#include "dynajs-libc.h"
+#include "dyna-libc.h"
 
 typedef struct {
     char *name;
@@ -544,7 +544,7 @@ static size_t get_suffixed_size(const char *str)
         break;
     default:
         if (*p != '\0') {
-            fprintf(stderr, "dynajs: invalid suffix: %s\n", p);
+            fprintf(stderr, "dyna: invalid suffix: %s\n", p);
             exit(1);
         }
         break;
@@ -768,7 +768,7 @@ int main(int argc, char **argv)
             );
 
     if (output_type != OUTPUT_C) {
-        fprintf(fo, "#include \"dynajs-libc.h\"\n"
+        fprintf(fo, "#include \"dyna-libc.h\"\n"
                 "\n"
                 );
     } else {

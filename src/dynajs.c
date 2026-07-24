@@ -46,7 +46,7 @@
 #include "libregexp.h"
 #include "libunicode.h"
 #include "dtoa.h"
-#include "dynajs-simd-kernels.h"  /* shared multi-ISA SIMD dispatch table */
+#include "dyna-simd-kernels.h"  /* shared multi-ISA SIMD dispatch table */
 
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
@@ -60,7 +60,7 @@
    `get_loc A; get_loc B; <mul|add|sub>` into a single [OP_ext][op2][a][b] op
    that reads both locals directly — 6 bytes / 1 dispatch replacing 7 bytes /
    3 dispatches). Gate exists so a #define-off oracle build proves it output-
-   identical. Bank-2 ARITH shard; see dynajs-opcode2.h. */
+   identical. Bank-2 ARITH shard; see dyna-opcode2.h. */
 #ifndef CONFIG_FUSED_ARITH
 #define CONFIG_FUSED_ARITH 1
 #endif
@@ -1154,7 +1154,7 @@ typedef struct JSMapState {
 enum {
     __JS_ATOM_NULL = JS_ATOM_NULL,
 #define DEF(name, str) JS_ATOM_ ## name,
-#include "dynajs-atom.h"
+#include "dyna-atom.h"
 #undef DEF
     JS_ATOM_END,
 };
@@ -1163,14 +1163,14 @@ enum {
 
 static const char js_atom_init[] =
 #define DEF(name, str) str "\0"
-#include "dynajs-atom.h"
+#include "dyna-atom.h"
 #undef DEF
 ;
 
 typedef enum OPCodeFormat {
 #define FMT(f) OP_FMT_ ## f,
 #define DEF(id, size, n_pop, n_push, f)
-#include "dynajs-opcode.h"
+#include "dyna-opcode.h"
 #undef DEF
 #undef FMT
 } OPCodeFormat;
@@ -1179,7 +1179,7 @@ enum OPCodeEnum {
 #define FMT(f)
 #define DEF(id, size, n_pop, n_push, f) OP_ ## id,
 #define def(id, size, n_pop, n_push, f)
-#include "dynajs-opcode.h"
+#include "dyna-opcode.h"
 #undef def
 #undef DEF
 #undef FMT
@@ -1190,17 +1190,17 @@ enum OPCodeEnum {
 #define FMT(f)
 #define DEF(id, size, n_pop, n_push, f)
 #define def(id, size, n_pop, n_push, f) OP_ ## id,
-#include "dynajs-opcode.h"
+#include "dyna-opcode.h"
 #undef def
 #undef DEF
 #undef FMT
     OP_TEMP_END,
 };
 
-/* Bank-2 opcode ids (emitted as [OP_ext][op2]); see dynajs-opcode2.h. */
+/* Bank-2 opcode ids (emitted as [OP_ext][op2]); see dyna-opcode2.h. */
 enum OP2CodeEnum {
 #define DEF2(id, size, n_pop, n_push, f) OP2_ ## id,
-#include "dynajs-opcode2.h"
+#include "dyna-opcode2.h"
 #undef DEF2
     OP2_COUNT,
 };

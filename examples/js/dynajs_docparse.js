@@ -1,4 +1,4 @@
-// dynajs_docparse.js — the native dynajs:docparse module (parseJson / parseCsv),
+// dynajs_docparse.js — the native dyna:docparse module (parseJson / parseCsv),
 // backed by secure-c-libs. Each call parses into a private SCL arena, deep-
 // copies the whole native tree into plain JS values, then destroys the arena;
 // the returned value is fully independent (no native pointer escapes).
@@ -7,7 +7,7 @@
 //   make CONFIG_SCL_MODULES=y CONFIG_SCL_MODULE_DOCPARSE=y dynajs
 // then:  ./dynajs examples/js/dynajs_docparse.js
 
-import { parseJson, parseCsv } from "dynajs:docparse";
+import { parseJson, parseCsv } from "dyna:docparse";
 import { test, run, assert, assertEqual, assertThrows, deepEqual } from "./harness.js";
 
 test("parseJson handles every JSON type", () => {
@@ -49,4 +49,4 @@ test("parseCsv with { header: true } returns an array of objects", () => {
     [{ id: "1", name: "ann" }, { id: "2", name: "bob" }]));
 });
 
-await run("dynajs:docparse (native parseJson / parseCsv)");
+await run("dyna:docparse (native parseJson / parseCsv)");

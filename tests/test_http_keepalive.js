@@ -5,7 +5,7 @@
  * request), so it cannot exercise server keep-alive; we drive curl instead and
  * read its %{num_connects} counter: N requests to the same host over a reused
  * connection make exactly ONE new connection. Skips cleanly if curl is absent. */
-import { HttpServer } from "dynajs:http";
+import { HttpServer } from "dyna:http";
 import * as std from "std";
 
 function assert(cond, msg) { if (!cond) throw new Error("assertion failed: " + msg); }

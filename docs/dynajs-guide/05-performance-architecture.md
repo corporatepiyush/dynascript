@@ -14,7 +14,7 @@ startup based on the CPU's actual capabilities (`cpu_features()` + a one-time di
 
 Two properties make this valuable rather than merely present:
 
-1. **It is exposed to JavaScript** (`dynajs:simd`, `dynajs:text`, `dynajs:ml`). You get vectorized
+1. **It is exposed to JavaScript** (`dyna:simd`, `dyna:text`, `dyna:ml`). You get vectorized
    math with no native-addon build.
 2. **It is dual-use.** The *same* kernels the language exposes are used *inside* the engine. The
    clearest example: the HTTP server's header scanning was moved from a scalar byte-at-a-time loop
@@ -44,7 +44,7 @@ This is the property that most differentiates DynaJS from tracing-GC runtimes in
 its last reference drops; a periodic trial-deletion pass reclaims reference cycles. There is no
 stop-the-world pause tied to a tracing collector's heuristics.
 
-**Native modules go further.** Every `dynajs:*` resource object owns its native memory directly and
+**Native modules go further.** Every `dyna:*` resource object owns its native memory directly and
 frees it **deterministically** on `close()` / `[Symbol.dispose]()`:
 
 - The constructor allocates the native struct.
@@ -105,7 +105,7 @@ struct, not a thread.
 
 The I/O layer also uses the cheap, correct OS levers where they pay: `TCP_NODELAY` is on for latency;
 file I/O uses `F_RDAHEAD`/`F_PREALLOCATE`/`F_FULLFSYNC` on macOS and `fadvise`/`fallocate`/io_uring on
-Linux (`dynajs:file`, `dynajs:uring`).
+Linux (`dyna:file`, `dyna:uring`).
 
 > A concurrency caveat the project is explicit about: the reactor is single-threaded, so a handler
 > must not block it. CPU-heavy per-request work belongs in a worker (Chapter 3 §3.4), not inline in

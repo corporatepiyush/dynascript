@@ -1,4 +1,4 @@
-/* test_semver.js -- dynajs:semver (in-repo SemVer 2.0.0 + npm-style ranges).
+/* test_semver.js -- dyna:semver (in-repo SemVer 2.0.0 + npm-style ranges).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_semver.js
  * Prints "test_semver: all tests passed (N assertions)" on success; throws on
  * failure.
@@ -13,7 +13,7 @@
  *   3. structural invariants (total-order consistency across the spec chain,
  *      round-trips through parse/clean/coerce). */
 
-import * as sv from "dynajs:semver";
+import * as sv from "dyna:semver";
 
 let n = 0;
 function assert(cond, msg) {

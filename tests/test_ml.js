@@ -1,8 +1,8 @@
-/* test_ml.js — dynajs:ml (in-repo LinearRegression / LogisticRegression / KMeans).
+/* test_ml.js — dyna:ml (in-repo LinearRegression / LogisticRegression / KMeans).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_ml.js
  * Prints "test_ml: all tests passed" on success; throws on failure. */
 
-import { LinearRegression, LogisticRegression, KMeans } from "dynajs:ml";
+import { LinearRegression, LogisticRegression, KMeans } from "dyna:ml";
 
 let n = 0;
 function assert(cond, msg) {

@@ -1,4 +1,4 @@
-/* test_strings.js -- dynajs:strings (Go strings package + JS String helpers).
+/* test_strings.js -- dyna:strings (Go strings package + JS String helpers).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_strings.js
  * Prints "test_strings: all tests passed" on success; throws on failure. */
 
@@ -9,7 +9,7 @@ import {
     contains, containsAny, hasPrefix, hasSuffix,
     index, lastIndex, indexAny, count,
     replace, replaceAll, equalFold, compare,
-} from "dynajs:strings";
+} from "dyna:strings";
 
 let n = 0;
 function assert(cond, msg) {

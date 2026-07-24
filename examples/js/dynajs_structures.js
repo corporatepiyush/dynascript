@@ -1,5 +1,5 @@
 /*
- * dynajs:structures -- native data structures from secure-c-libs, with
+ * dyna:structures -- native data structures from secure-c-libs, with
  * DETERMINISTIC memory management (no GC reliance).
  *
  * Requires the SCL-modules build:
@@ -11,7 +11,7 @@
  * so production code should always close explicitly (try/finally or the
  * withResource helper below).
  */
-import { Vector, HashMap } from "dynajs:structures";
+import { Vector, HashMap } from "dyna:structures";
 
 function assert(cond, msg) { if (!cond) throw new Error("FAIL: " + msg); }
 

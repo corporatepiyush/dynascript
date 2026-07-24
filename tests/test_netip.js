@@ -1,4 +1,4 @@
-/* test_netip.js -- dynajs:netip (in-repo IP/CIDR utilities, Go net/netip model).
+/* test_netip.js -- dyna:netip (in-repo IP/CIDR utilities, Go net/netip model).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_netip.js
  * Prints "test_netip: all tests passed (N assertions)" on success; throws on
  * failure.
@@ -14,7 +14,7 @@
  *      compresses exactly the leftmost-longest zero run, and the output
  *      re-parses to the original bytes). */
 
-import * as netip from "dynajs:netip";
+import * as netip from "dyna:netip";
 
 let n = 0;
 function assert(cond, msg) {

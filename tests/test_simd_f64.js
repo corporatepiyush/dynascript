@@ -1,4 +1,4 @@
-/* test_simd_f64.js — dynajs:simd double-precision (f64) kernels over
+/* test_simd_f64.js — dyna:simd double-precision (f64) kernels over
  * Float64Array. Run: dynajs (CONFIG_NATIVE_MODULES=y) tests/test_simd_f64.js
  *
  * JS Number IS f64, so the JS reference below computes the SAME IEEE-754 ops as
@@ -10,7 +10,7 @@
  *   - f64Sum / f64Dot REORDER additions, so they are checked with a
  *     reorder-aware (condition-number) tolerance: |got-ref| <= 1e-12 * Σ|terms|.
  */
-import { f64Sum, f64Dot, f64Max, f64Min, f64Scale, f64Axpy } from "dynajs:simd";
+import { f64Sum, f64Dot, f64Max, f64Min, f64Scale, f64Axpy } from "dyna:simd";
 
 let n = 0;
 function assert(c, m) { n++; if (!c) throw new Error("assertion failed: " + m); }

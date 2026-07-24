@@ -1,4 +1,4 @@
-/* test_sys.js -- dynajs:sys (unified filesystem + process/environment module).
+/* test_sys.js -- dyna:sys (unified filesystem + process/environment module).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_sys.js
  * Prints "test_sys: all tests passed (N assertions)" on success; throws on
  * failure.
@@ -7,7 +7,7 @@
  * temp directory created with makeTempDir(); the whole tree (plus the few
  * makeTempFile/makeTempDir siblings) is removed at the end (and, on failure,
  * in a finally block), so a successful OR failed run leaves nothing behind.
- * File CONTENT is written through dynajs:file (this module owns metadata /
+ * File CONTENT is written through dyna:file (this module owns metadata /
  * structure, not buffered content I/O). */
 
 import {
@@ -17,8 +17,8 @@ import {
     glob,
     tempDir, makeTempDir, makeTempFile,
     env, getEnv, setEnv, args, cwd, chDir, platform, pid, hostName, homeDir,
-} from "dynajs:sys";
-import { writeFile } from "dynajs:file";
+} from "dyna:sys";
+import { writeFile } from "dyna:file";
 
 let n = 0;
 function assert(cond, msg) {
@@ -47,13 +47,13 @@ function eqArray(actual, expected, msg) {
 }
 
 const origCwd = cwd();
-const root = makeTempDir("dynajs-sys-test-");
+const root = makeTempDir("dyna-sys-test-");
 let passed = false;
 
 try {
     /* ---------------- root / basic metadata ---------------- */
     assert(typeof root === "string" && root.length > 0, "makeTempDir returns a path");
-    assert(root.indexOf("dynajs-sys-test-") >= 0, "temp dir carries the prefix");
+    assert(root.indexOf("dyna-sys-test-") >= 0, "temp dir carries the prefix");
     assert(exists(root), "fresh temp dir exists");
     {
         const s = stat(root);
@@ -384,14 +384,14 @@ try {
         const td = tempDir();
         assert(exists(td) && stat(td).isDir, "tempDir points at a real directory");
 
-        const tf = makeTempFile("dynajs-sys-tf-");
+        const tf = makeTempFile("dyna-sys-tf-");
         assert(typeof tf === "string" && exists(tf) && stat(tf).isFile,
             "makeTempFile creates an empty file");
-        assert(tf.indexOf("dynajs-sys-tf-") >= 0, "makeTempFile carries the prefix");
+        assert(tf.indexOf("dyna-sys-tf-") >= 0, "makeTempFile carries the prefix");
         remove(tf);                 /* sibling in the system temp dir -- clean it up */
         assert(!exists(tf), "makeTempFile cleaned up");
 
-        const tdir = makeTempDir("dynajs-sys-td-");
+        const tdir = makeTempDir("dyna-sys-td-");
         assert(typeof tdir === "string" && exists(tdir) && stat(tdir).isDir,
             "makeTempDir creates a directory");
         assert(tdir !== root, "each makeTempDir is unique");

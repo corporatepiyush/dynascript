@@ -1,8 +1,8 @@
-/* test_structures.js — dynajs:structures (in-repo Vector + HashMap).
+/* test_structures.js — dyna:structures (in-repo Vector + HashMap).
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_structures.js
  * Prints "test_structures: all tests passed" on success; throws on failure. */
 
-import { Vector, HashMap } from "dynajs:structures";
+import { Vector, HashMap } from "dyna:structures";
 
 let n = 0;
 function assert(cond, msg) {

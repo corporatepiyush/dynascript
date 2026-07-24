@@ -1,0 +1,14 @@
+# Build the dyna:http App server with the dyn_aio io_uring backend
+# (CONFIG_IO_URING) and smoke-test rpc + static on a real Linux kernel.
+#   docker build --platform linux/arm64 -f docker/Dockerfile.uring-app -t dyna:uring-app .
+#   docker run --rm --platform linux/arm64 --security-opt seccomp=unconfined dyna:uring-app
+FROM debian:trixie-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      clang lld make libc6-dev liburing-dev curl ca-certificates procps \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN make clean || true \
+ && make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y CONFIG_IO_URING=y -j"$(nproc)" dynajs
+CMD ["bash", "/src/docker/uring-app-test.sh"]
