@@ -199,6 +199,13 @@ ifdef CONFIG_PROFILE
 CFLAGS+=-p
 LDFLAGS+=-p
 endif
+# mimalloc v3 as the runtime allocator (opt-in experiment; vendored under
+# third_party/mimalloc -- run: git clone --branch v3.1.5 \
+# https://github.com/microsoft/mimalloc third_party/mimalloc). Tunables via the
+# DYNA_MI_* / MIMALLOC_* env vars.
+ifdef CONFIG_MIMALLOC
+CFLAGS+=-DCONFIG_MIMALLOC -Ithird_party/mimalloc/include
+endif
 ifdef CONFIG_ASAN
 CFLAGS+=-fsanitize=address -fno-omit-frame-pointer
 LDFLAGS+=-fsanitize=address -fno-omit-frame-pointer
@@ -350,6 +357,10 @@ endif
 all: $(OBJDIR) $(OBJDIR)/dynajs.check.o $(OBJDIR)/dyna-cli.check.o $(PROGS)
 
 DYNAJS_LIB_OBJS=$(OBJDIR)/dynajs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/dyna-libc.o $(OBJDIR)/dyna-io.o $(OBJDIR)/dyna-simd-core.o $(OBJDIR)/dyna-simd-scalar.o $(OBJDIR)/dyna-simd-neon.o $(OBJDIR)/dyna-simd-sse42.o $(OBJDIR)/dyna-simd-avx2.o $(OBJDIR)/dyna-simd-avx512.o $(OBJDIR)/dyna-simd-sve.o
+
+ifdef CONFIG_MIMALLOC
+DYNAJS_LIB_OBJS+=$(OBJDIR)/mimalloc.o
+endif
 
 DYNAJS_OBJS=$(OBJDIR)/dyna-cli.o $(OBJDIR)/repl.o $(DYNAJS_LIB_OBJS)
 ifdef CONFIG_NATIVE_MODULES
@@ -549,6 +560,10 @@ run-test262-debug: $(patsubst %.o, %.debug.o, $(OBJDIR)/run-test262.o $(DYNAJS_L
 
 $(OBJDIR)/%.o: %.c | $(OBJDIR)
 	$(CC) $(CFLAGS_OPT) -c -o $@ $<
+
+# mimalloc v3 single-file amalgamation (built release, independent of engine CFLAGS)
+$(OBJDIR)/mimalloc.o: third_party/mimalloc/src/static.c | $(OBJDIR)
+	$(CC) -O2 -DNDEBUG -Ithird_party/mimalloc/include -c -o $@ $<
 
 $(OBJDIR)/fuzz_%.o: fuzz/fuzz_%.c | $(OBJDIR)
 	$(CC) $(CFLAGS_OPT) -c -I. -o $@ $<

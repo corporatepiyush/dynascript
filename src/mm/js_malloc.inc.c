@@ -910,9 +910,94 @@ static const JSMallocFunctions scl_malloc_funcs = {
 };
 #endif /* CONFIG_SCL_ALLOC */
 
+#ifdef CONFIG_MIMALLOC
+/* Route the runtime's backing allocations through mimalloc v3 (github.com/
+   microsoft/mimalloc, vendored under third_party/mimalloc). Per-runtime
+   accounting stays valid because mi_usable_size() reports the real block size.
+   Experimental, opt-in (CONFIG_MIMALLOC=y). */
+#include "mimalloc.h"
+
+static size_t js_mi_malloc_usable_size(const void *ptr)
+{
+    return mi_usable_size((void *)ptr);
+}
+
+static void *js_mi_malloc(JSMallocState *s, size_t size)
+{
+    void *ptr;
+    assert(size != 0);
+    if (unlikely(s->malloc_size + size > s->malloc_limit))
+        return NULL;
+    ptr = mi_malloc(size);
+    if (!ptr)
+        return NULL;
+    s->malloc_count++;
+    s->malloc_size += mi_usable_size(ptr) + MALLOC_OVERHEAD;
+    return ptr;
+}
+
+static void js_mi_free(JSMallocState *s, void *ptr)
+{
+    if (!ptr)
+        return;
+    s->malloc_count--;
+    s->malloc_size -= mi_usable_size(ptr) + MALLOC_OVERHEAD;
+    mi_free(ptr);
+}
+
+static void *js_mi_realloc(JSMallocState *s, void *ptr, size_t size)
+{
+    size_t old_size;
+    if (!ptr) {
+        if (size == 0)
+            return NULL;
+        return js_mi_malloc(s, size);
+    }
+    old_size = mi_usable_size(ptr);
+    if (size == 0) {
+        s->malloc_count--;
+        s->malloc_size -= old_size + MALLOC_OVERHEAD;
+        mi_free(ptr);
+        return NULL;
+    }
+    if (s->malloc_size + size - old_size > s->malloc_limit)
+        return NULL;
+    ptr = mi_realloc(ptr, size);
+    if (!ptr)
+        return NULL;
+    s->malloc_size += mi_usable_size(ptr) - old_size;
+    return ptr;
+}
+
+static const JSMallocFunctions mi_malloc_funcs = {
+    js_mi_malloc,
+    js_mi_free,
+    js_mi_realloc,
+    js_mi_malloc_usable_size,
+};
+
+/* Curated engine defaults + a DYNA_MI_* env override layer for the tunables that
+ * matter most for a JS runtime (mimalloc also reads its own MIMALLOC_* env vars
+ * natively). purge_delay ms trades RSS (lower = return memory to the OS sooner)
+ * against throughput; large/huge OS pages trade startup + RSS against TLB perf. */
+static void js_mimalloc_configure(void)
+{
+    const char *e;
+    if ((e = getenv("DYNA_MI_PURGE_DELAY")))     mi_option_set(mi_option_purge_delay, atoi(e));
+    if ((e = getenv("DYNA_MI_PURGE_DECOMMITS"))) mi_option_set(mi_option_purge_decommits, atoi(e));
+    if ((e = getenv("DYNA_MI_EAGER_COMMIT")))    mi_option_set(mi_option_eager_commit, atoi(e));
+    if ((e = getenv("DYNA_MI_LARGE_OS_PAGES")))  mi_option_set(mi_option_allow_large_os_pages, atoi(e));
+    if ((e = getenv("DYNA_MI_RESERVE_HUGE")))    mi_option_set(mi_option_reserve_huge_os_pages, atoi(e));
+    if ((e = getenv("DYNA_MI_ARENA_RESERVE")))   mi_option_set(mi_option_arena_reserve, atoi(e));
+}
+#endif /* CONFIG_MIMALLOC */
+
 JSRuntime *JS_NewRuntime(void)
 {
-#ifdef CONFIG_SCL_ALLOC
+#if defined(CONFIG_MIMALLOC)
+    js_mimalloc_configure();
+    return JS_NewRuntime2(&mi_malloc_funcs, NULL);
+#elif defined(CONFIG_SCL_ALLOC)
     return JS_NewRuntime2(&scl_malloc_funcs, scl_allocator_default());
 #else
     return JS_NewRuntime2(&def_malloc_funcs, NULL);

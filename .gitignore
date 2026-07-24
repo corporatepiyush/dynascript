@@ -49,3 +49,6 @@ fuzz_module_export
 fuzz_eval
 fuzz_compile
 fuzz_regexp
+
+# vendored external experiments (mimalloc, etc.)
+third_party/
