@@ -399,6 +399,7 @@ JSValue JS_GetClassProto(JSContext *ctx, JSClassID class_id);
 JSContext *JS_NewContextRaw(JSRuntime *rt);
 int JS_AddIntrinsicBaseObjects(JSContext *ctx);
 int JS_AddIntrinsicDate(JSContext *ctx);
+int JS_AddIntrinsicLens(JSContext *ctx);
 int JS_AddIntrinsicEval(JSContext *ctx);
 int JS_AddIntrinsicStringNormalize(JSContext *ctx);
 void JS_AddIntrinsicRegExpCompiler(JSContext *ctx);

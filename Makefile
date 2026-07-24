@@ -695,6 +695,7 @@ test: dynajs$(EXE)
 	$(WINE) ./dynajs$(EXE) tests/test_string_ext2.js
 	$(WINE) ./dynajs$(EXE) tests/test_ext_batch7.js
 	$(WINE) ./dynajs$(EXE) tests/test_date_ext.js
+	$(WINE) ./dynajs$(EXE) tests/test_lens_ext.js
 	$(WINE) ./dynajs$(EXE) tests/test_number_ext.js
 	$(WINE) ./dynajs$(EXE) tests/test_number_ext2.js
 	$(WINE) ./dynajs$(EXE) tests/test_object_ext.js

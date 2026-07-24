@@ -3402,6 +3402,212 @@ static const JSCFunctionListEntry js_object_ext_funcs[] = {
     JS_CFUNC_DEF("propIs",           3, js_object_ext_propIs ),
 };
 
+/* ===== Ramda Lens (a small value type; SUGAR_RAMDA_NATIVE.md, phase 5) =====
+ * A lens is an ORDINARY object (proto = Lens.prototype) carrying non-enumerable
+ * config -- no new intrinsic class, so normal GC, no finalizer, not serialized.
+ *   __lk  kind: 0 KEY (prop/index), 1 PATH, 2 CUSTOM
+ *   __lf  focus (key/index for KEY, path for PATH)
+ *   __lg/__ls  custom getter(obj) / setter(newVal, obj)  (CUSTOM)
+ * view/set/over reuse js_object_path_get / js_shallow_clone_container /
+ * js_assoc_path. set/over are immutable (never mutate the source). */
+
+enum { LENS_KEY, LENS_PATH, LENS_CUSTOM };
+
+static JSValue js_lens_make(JSContext *ctx, int kind, JSValueConst focus,
+                            JSValueConst getter, JSValueConst setter)
+{
+    JSValue g, L, proto, lens;
+    g = JS_GetGlobalObject(ctx);
+    L = JS_GetPropertyStr(ctx, g, "Lens");
+    JS_FreeValue(ctx, g);
+    if (JS_IsException(L)) return L;
+    proto = JS_GetPropertyStr(ctx, L, "prototype");
+    JS_FreeValue(ctx, L);
+    if (JS_IsException(proto)) return proto;
+    lens = JS_NewObjectProto(ctx, proto);
+    JS_FreeValue(ctx, proto);
+    if (JS_IsException(lens)) return lens;
+    if (JS_DefinePropertyValueStr(ctx, lens, "__lk", JS_NewInt32(ctx, kind), 0) < 0 ||
+        JS_DefinePropertyValueStr(ctx, lens, "__lf", JS_DupValue(ctx, focus), 0) < 0 ||
+        JS_DefinePropertyValueStr(ctx, lens, "__lg", JS_DupValue(ctx, getter), 0) < 0 ||
+        JS_DefinePropertyValueStr(ctx, lens, "__ls", JS_DupValue(ctx, setter), 0) < 0) {
+        JS_FreeValue(ctx, lens);
+        return JS_EXCEPTION;
+    }
+    return lens;
+}
+
+/* Lens.prop(k) / Lens.index(i) — both focus a single key. */
+static JSValue js_lens_ctor_key(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
+{
+    (void)this_val;
+    return js_lens_make(ctx, LENS_KEY, argc > 0 ? argv[0] : JS_UNDEFINED,
+                        JS_UNDEFINED, JS_UNDEFINED);
+}
+
+/* Lens.path(p) — deep path (dotted string or array). */
+static JSValue js_lens_ctor_path(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    (void)this_val;
+    return js_lens_make(ctx, LENS_PATH, argc > 0 ? argv[0] : JS_UNDEFINED,
+                        JS_UNDEFINED, JS_UNDEFINED);
+}
+
+/* Lens.lens(getter, setter) — custom lens; getter(obj), setter(newVal, obj). */
+static JSValue js_lens_ctor_custom(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    (void)this_val;
+    return js_lens_make(ctx, LENS_CUSTOM, JS_UNDEFINED,
+                        argc > 0 ? argv[0] : JS_UNDEFINED,
+                        argc > 1 ? argv[1] : JS_UNDEFINED);
+}
+
+static int js_lens_kind(JSContext *ctx, JSValueConst lens)
+{
+    JSValue kv = JS_GetPropertyStr(ctx, lens, "__lk");
+    int kind;
+    if (JS_IsException(kv)) return -1;
+    if (!JS_IsNumber(kv)) {                             /* absent marker -> not a lens */
+        JS_FreeValue(ctx, kv);
+        JS_ThrowTypeError(ctx, "not a lens");
+        return -1;
+    }
+    if (JS_ToInt32(ctx, &kind, kv)) { JS_FreeValue(ctx, kv); return -1; }
+    JS_FreeValue(ctx, kv);
+    if (kind < LENS_KEY || kind > LENS_CUSTOM) { JS_ThrowTypeError(ctx, "not a lens"); return -1; }
+    return kind;
+}
+
+static JSValue js_lens_do_view(JSContext *ctx, JSValueConst lens, JSValueConst o)
+{
+    int kind = js_lens_kind(ctx, lens);
+    JSValue focus, r;
+    if (kind < 0) return JS_EXCEPTION;
+    if (kind == LENS_CUSTOM) {
+        JSValue g = JS_GetPropertyStr(ctx, lens, "__lg");
+        if (JS_IsException(g)) return g;
+        r = JS_Call(ctx, g, JS_UNDEFINED, 1, (JSValueConst *)&o);
+        JS_FreeValue(ctx, g);
+        return r;
+    }
+    focus = JS_GetPropertyStr(ctx, lens, "__lf");
+    if (JS_IsException(focus)) return focus;
+    if (kind == LENS_KEY)
+        return JS_GetPropertyValue(ctx, o, focus);      /* focus consumed */
+    r = js_object_path_get(ctx, o, focus);
+    JS_FreeValue(ctx, focus);
+    return r;
+}
+
+static JSValue js_lens_do_set(JSContext *ctx, JSValueConst lens,
+                              JSValueConst v, JSValueConst o)
+{
+    int kind = js_lens_kind(ctx, lens);
+    JSValue focus, container, r;
+    if (kind < 0) return JS_EXCEPTION;
+    if (kind == LENS_CUSTOM) {
+        JSValue s = JS_GetPropertyStr(ctx, lens, "__ls");
+        JSValueConst args[2];
+        if (JS_IsException(s)) return s;
+        args[0] = v; args[1] = o;
+        r = JS_Call(ctx, s, JS_UNDEFINED, 2, args);
+        JS_FreeValue(ctx, s);
+        return r;
+    }
+    focus = JS_GetPropertyStr(ctx, lens, "__lf");
+    if (JS_IsException(focus)) return focus;
+    if (kind == LENS_PATH) {
+        JSAtom *atoms;
+        int n;
+        if (js_path_to_atoms(ctx, focus, &atoms, &n)) { JS_FreeValue(ctx, focus); return JS_EXCEPTION; }
+        JS_FreeValue(ctx, focus);
+        r = js_assoc_path(ctx, atoms, 0, n, v, o);      /* immutable deep set */
+        js_free_atoms(ctx, atoms, n);
+        return r;
+    }
+    /* KEY: shallow-clone (array or object preserved) + set the key */
+    {
+        JSAtom atom = JS_ValueToAtom(ctx, focus);
+        JS_FreeValue(ctx, focus);
+        if (atom == JS_ATOM_NULL) return JS_EXCEPTION;
+        container = js_shallow_clone_container(ctx, o);
+        if (JS_IsException(container)) { JS_FreeAtom(ctx, atom); return container; }
+        if (JS_SetProperty(ctx, container, atom, JS_DupValue(ctx, v)) < 0) {
+            JS_FreeAtom(ctx, atom); JS_FreeValue(ctx, container); return JS_EXCEPTION;
+        }
+        JS_FreeAtom(ctx, atom);
+        return container;
+    }
+}
+
+static JSValue js_lens_do_over(JSContext *ctx, JSValueConst lens,
+                               JSValueConst fn, JSValueConst o)
+{
+    JSValue cur = js_lens_do_view(ctx, lens, o), nv, r;
+    if (JS_IsException(cur)) return cur;
+    nv = JS_Call(ctx, fn, JS_UNDEFINED, 1, (JSValueConst *)&cur);
+    JS_FreeValue(ctx, cur);
+    if (JS_IsException(nv)) return nv;
+    r = js_lens_do_set(ctx, lens, nv, o);
+    JS_FreeValue(ctx, nv);
+    return r;
+}
+
+/* instance: l.view(o) / l.set(v,o) / l.over(fn,o) */
+static JSValue js_lens_m_view(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{ return js_lens_do_view(ctx, this_val, argc > 0 ? argv[0] : JS_UNDEFINED); }
+static JSValue js_lens_m_set(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{ return js_lens_do_set(ctx, this_val, argc > 0 ? argv[0] : JS_UNDEFINED, argc > 1 ? argv[1] : JS_UNDEFINED); }
+static JSValue js_lens_m_over(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{ return js_lens_do_over(ctx, this_val, argc > 0 ? argv[0] : JS_UNDEFINED, argc > 1 ? argv[1] : JS_UNDEFINED); }
+
+/* static: Lens.view(l,o) / Lens.set(l,v,o) / Lens.over(l,fn,o) */
+static JSValue js_lens_s_view(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{ (void)this_val; return js_lens_do_view(ctx, argc > 0 ? argv[0] : JS_UNDEFINED, argc > 1 ? argv[1] : JS_UNDEFINED); }
+static JSValue js_lens_s_set(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{ (void)this_val; return js_lens_do_set(ctx, argc > 0 ? argv[0] : JS_UNDEFINED, argc > 1 ? argv[1] : JS_UNDEFINED, argc > 2 ? argv[2] : JS_UNDEFINED); }
+static JSValue js_lens_s_over(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{ (void)this_val; return js_lens_do_over(ctx, argc > 0 ? argv[0] : JS_UNDEFINED, argc > 1 ? argv[1] : JS_UNDEFINED, argc > 2 ? argv[2] : JS_UNDEFINED); }
+
+static const JSCFunctionListEntry js_lens_proto_funcs[] = {
+    JS_CFUNC_DEF("view", 1, js_lens_m_view ),
+    JS_CFUNC_DEF("set",  2, js_lens_m_set ),
+    JS_CFUNC_DEF("over", 2, js_lens_m_over ),
+    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "Lens", JS_PROP_CONFIGURABLE ),
+};
+
+static const JSCFunctionListEntry js_lens_static_funcs[] = {
+    JS_CFUNC_DEF("prop",  1, js_lens_ctor_key ),
+    JS_CFUNC_DEF("index", 1, js_lens_ctor_key ),
+    JS_CFUNC_DEF("path",  1, js_lens_ctor_path ),
+    JS_CFUNC_DEF("lens",  2, js_lens_ctor_custom ),
+    JS_CFUNC_DEF("view",  2, js_lens_s_view ),
+    JS_CFUNC_DEF("set",   3, js_lens_s_set ),
+    JS_CFUNC_DEF("over",  3, js_lens_s_over ),
+    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "Lens", JS_PROP_CONFIGURABLE ),
+};
+
+int JS_AddIntrinsicLens(JSContext *ctx)
+{
+    JSValue proto, lens_obj;
+    proto = JS_NewObject(ctx);
+    if (JS_IsException(proto)) return -1;
+    JS_SetPropertyFunctionList(ctx, proto, js_lens_proto_funcs, countof(js_lens_proto_funcs));
+    lens_obj = JS_NewObject(ctx);
+    if (JS_IsException(lens_obj)) { JS_FreeValue(ctx, proto); return -1; }
+    JS_SetPropertyFunctionList(ctx, lens_obj, js_lens_static_funcs, countof(js_lens_static_funcs));
+    if (JS_DefinePropertyValueStr(ctx, lens_obj, "prototype", proto, 0) < 0) {
+        JS_FreeValue(ctx, lens_obj); return -1;
+    }
+    if (JS_DefinePropertyValueStr(ctx, ctx->global_obj, "Lens", lens_obj,
+                                  JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE) < 0)
+        return -1;
+    return 0;
+}
+
 static const JSCFunctionListEntry js_object_funcs[] = {
     JS_CFUNC_DEF("create", 2, js_object_create ),
     JS_CFUNC_MAGIC_DEF("getPrototypeOf", 1, js_object_getPrototypeOf, 0 ),

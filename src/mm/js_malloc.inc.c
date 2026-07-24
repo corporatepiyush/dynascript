@@ -1458,6 +1458,7 @@ JSContext *JS_NewContext(JSRuntime *rt)
 
     if (JS_AddIntrinsicBaseObjects(ctx) ||
         JS_AddIntrinsicDate(ctx) ||
+        JS_AddIntrinsicLens(ctx) ||
         JS_AddIntrinsicEval(ctx) ||
         JS_AddIntrinsicStringNormalize(ctx) ||
         JS_AddIntrinsicRegExp(ctx) ||
