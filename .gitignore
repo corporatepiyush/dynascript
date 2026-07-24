@@ -52,3 +52,7 @@ fuzz_regexp
 
 # vendored external experiments (mimalloc, etc.)
 third_party/
+
+# PGO artifacts
+pgo-data/
+pgo.profdata

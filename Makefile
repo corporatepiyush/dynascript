@@ -206,6 +206,17 @@ endif
 ifdef CONFIG_MIMALLOC
 CFLAGS+=-DCONFIG_MIMALLOC -Ithird_party/mimalloc/include
 endif
+# Profile-guided optimization (clang PGO). Phase 1 instruments, phase 2 uses the
+# merged profile. Use `make pgo` for the full flow; combine with CONFIG_LTO for
+# the best result. (BOLT is a separate post-link step -- see the `bolt` note.)
+ifdef CONFIG_PGO_GEN
+CFLAGS+=-fprofile-generate=pgo-data
+LDFLAGS+=-fprofile-generate=pgo-data
+endif
+ifdef CONFIG_PGO_USE
+CFLAGS+=-fprofile-use=pgo.profdata -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled -Wno-backend-plugin
+LDFLAGS+=-fprofile-use=pgo.profdata
+endif
 ifdef CONFIG_ASAN
 CFLAGS+=-fsanitize=address -fno-omit-frame-pointer
 LDFLAGS+=-fsanitize=address -fno-omit-frame-pointer
@@ -685,6 +696,30 @@ stats: dynajs$(EXE)
 
 microbench: dynajs$(EXE)
 	$(WINE) ./dynajs$(EXE) --std tests/microbench.js
+
+# Profile-guided optimization, full flow: build instrumented -> run a training
+# set -> merge the profile -> rebuild optimized. Override the training workload
+# with PGO_TRAIN="a.js b.js". On macOS llvm-profdata is behind xcrun.
+LLVM_PROFDATA?=$(shell command -v llvm-profdata 2>/dev/null || echo xcrun llvm-profdata)
+PGO_TRAIN?=tests/microbench.js tests/bench_array_ext.js
+PGO_MAKE=$(MAKE) CONFIG_NATIVE_MODULES=y $(if $(CONFIG_MIMALLOC),CONFIG_MIMALLOC=y) $(if $(CONFIG_LTO),CONFIG_LTO=y)
+pgo:
+	$(MAKE) clean
+	$(PGO_MAKE) CONFIG_PGO_GEN=y dynajs$(EXE)
+	rm -rf pgo-data pgo.profdata
+	for t in $(PGO_TRAIN); do LLVM_PROFILE_FILE="pgo-data/%p-%m.profraw" ./dynajs$(EXE) $$t >/dev/null 2>&1 || true; done
+	$(LLVM_PROFDATA) merge -o pgo.profdata pgo-data/*.profraw
+	$(MAKE) clean
+	$(PGO_MAKE) CONFIG_PGO_USE=y dynajs$(EXE)
+	@echo "PGO build complete (trained on: $(PGO_TRAIN))"
+
+# BOLT (post-link binary optimization) is Linux-only and needs a perf sample:
+#   perf record -e cycles:u -j any,u -o perf.data -- ./dynajs <workload>
+#   perf2bolt -p perf.data -o dynajs.fdata ./dynajs
+#   llvm-bolt ./dynajs -o dynajs.bolt -data=dynajs.fdata \
+#     -reorder-blocks=ext-tsp -reorder-functions=hfsort+ -split-functions -icf=1
+bolt-help:
+	@echo "BOLT is a Linux post-link step; see the recipe comment above 'bolt-help' in the Makefile."
 
 ifeq ($(wildcard test262/features.txt),)
 test2-bootstrap:
