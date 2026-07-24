@@ -2710,6 +2710,401 @@ static JSValue js_string_ext_decodeBase64(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* ===== String text methods (Sugar inflections + helpers) — batch 6 =====
+ * All output is bounded by O(input); tag/pluralize scans are single-pass O(n).
+ * ASCII-oriented (English), matching Sugar; non-ASCII handling documented. */
+
+static inline uint32_t js_str_cu(JSString *p, uint32_t i)
+{
+    return p->is_wide_char ? p->u.str16[i] : p->u.str8[i];
+}
+static inline int js_str_is_alnum_ascii(uint32_t c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+/* count(substr) — number of non-overlapping occurrences. */
+static JSValue js_string_ext_count(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue val, sub;
+    JSString *p, *sp;
+    uint32_t i, plen, slen;
+    int64_t n = 0;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    sub = JS_ToString(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(sub)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    p = JS_VALUE_GET_STRING(val);
+    sp = JS_VALUE_GET_STRING(sub);
+    plen = p->len; slen = sp->len;
+    if (slen == 0 || slen > plen) goto done;
+    if (slen == 1 && !p->is_wide_char && !sp->is_wide_char) {
+        n = (int64_t)simd.count_u8(p->u.str8, sp->u.str8[0], plen);
+        goto done;
+    }
+    i = 0;
+    while (i + slen <= plen) {
+        uint32_t k = 0;
+        while (k < slen && js_str_cu(p, i + k) == js_str_cu(sp, k)) k++;
+        if (k == slen) { n++; i += slen; } else i++;
+    }
+ done:
+    JS_FreeValue(ctx, sub);
+    JS_FreeValue(ctx, val);
+    return JS_NewInt64(ctx, n);
+}
+
+/* toNumber(base=10) — lenient parse (parseFloat for base 10, else parseInt). */
+static JSValue js_string_ext_toNumber(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue val;
+    const char *s;
+    char *end;
+    int base = 10;
+    double d;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (argc > 0 && !JS_IsUndefined(argv[0]) && JS_ToInt32Sat(ctx, &base, argv[0])) {
+        JS_FreeValue(ctx, val); return JS_EXCEPTION;
+    }
+    if (base != 10 && (base < 2 || base > 36)) {
+        JS_FreeValue(ctx, val); return JS_ThrowRangeError(ctx, "base must be 2..36");
+    }
+    s = JS_ToCString(ctx, val);
+    JS_FreeValue(ctx, val);
+    if (!s) return JS_EXCEPTION;
+    if (base == 10) {
+        d = strtod(s, &end);
+        if (end == s) d = NAN;
+    } else {
+        long long ll = strtoll(s, &end, base);
+        d = (end == s) ? NAN : (double)ll;
+    }
+    JS_FreeCString(ctx, s);
+    return JS_NewFloat64(ctx, d);
+}
+
+/* humanize() — "user_name_id" -> "User name". Strips a trailing "_id",
+ * turns each _/- into a space, capitalizes the first letter. */
+static JSValue js_string_ext_humanize(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    uint32_t len, i;
+    int first = 1, m, l;
+    uint32_t res[LRE_CC_RES_LEN_MAX];
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (len >= 3 && js_str_cu(p, len - 3) == '_' &&
+        js_str_cu(p, len - 2) == 'i' && js_str_cu(p, len - 1) == 'd')
+        len -= 3;
+    if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    for (i = 0; i < len; i++) {
+        uint32_t c = js_str_cu(p, i);
+        if (c == '_' || c == '-') { if (string_buffer_putc8(b, ' ')) goto fail; continue; }
+        if (first && js_str_is_alnum_ascii(c)) {
+            l = lre_case_conv(res, c, 0);        /* uppercase */
+            for (m = 0; m < l; m++) if (string_buffer_putc(b, res[m])) goto fail;
+            first = 0;
+        } else {
+            if (string_buffer_putc(b, c)) goto fail;
+            if (js_str_is_alnum_ascii(c)) first = 0;
+        }
+    }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+ fail:
+    string_buffer_free(b);
+    JS_FreeValue(ctx, val);
+    return JS_EXCEPTION;
+}
+
+/* parameterize() — lowercase; runs of non-[a-z0-9] collapse to one '-';
+ * leading/trailing '-' trimmed. Non-ASCII acts as a separator (documented). */
+static JSValue js_string_ext_parameterize(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    uint32_t len, i;
+    int started = 0, pending = 0, m, l;
+    uint32_t res[LRE_CC_RES_LEN_MAX];
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    for (i = 0; i < len; i++) {
+        uint32_t c = js_str_cu(p, i);
+        if (js_str_is_alnum_ascii(c)) {
+            if (pending && started) { if (string_buffer_putc8(b, '-')) goto fail; }
+            pending = 0;
+            l = lre_case_conv(res, c, 1);        /* lowercase */
+            for (m = 0; m < l; m++) if (string_buffer_putc(b, res[m])) goto fail;
+            started = 1;
+        } else {
+            pending = 1;                         /* trailing run is dropped (trim) */
+        }
+    }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+ fail:
+    string_buffer_free(b);
+    JS_FreeValue(ctx, val);
+    return JS_EXCEPTION;
+}
+
+/* titleize() — capitalize each word; lowercase small stop-words unless first. */
+static JSValue js_string_ext_titleize(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    static const char *const stops[] = {
+        "a","an","and","as","at","but","by","en","for","from","if","in","into",
+        "nor","of","on","onto","or","over","per","the","to","v","via","vs","with",
+    };
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    uint32_t len, i;
+    int word_index = 0;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    i = 0;
+    while (i < len) {
+        uint32_t c = js_str_cu(p, i);
+        if (c == ' ' || c == '_' || c == '-' || c == '\t' || c == '\n') {
+            if (string_buffer_putc8(b, ' ')) goto fail;
+            i++;
+            continue;
+        }
+        /* collect one word [i, j) */
+        uint32_t j = i;
+        char lc[32];
+        int lcn = 0;
+        while (j < len) {
+            uint32_t wc = js_str_cu(p, j);
+            if (wc == ' ' || wc == '_' || wc == '-' || wc == '\t' || wc == '\n') break;
+            if (lcn < (int)sizeof(lc) - 1 && wc >= 'A' && wc <= 'Z') lc[lcn++] = (char)(wc + 32);
+            else if (lcn < (int)sizeof(lc) - 1) lc[lcn++] = (char)(wc < 128 ? wc : '?');
+            j++;
+        }
+        lc[lcn] = 0;
+        int is_stop = 0;
+        if (word_index > 0) {
+            unsigned k;
+            for (k = 0; k < countof(stops); k++)
+                if (!strcmp(lc, stops[k])) { is_stop = 1; break; }
+        }
+        /* emit word: stop -> all lowercase; else capitalize first, lowercase rest */
+        {
+            uint32_t k;
+            uint32_t res[LRE_CC_RES_LEN_MAX];
+            int m, l;
+            for (k = i; k < j; k++) {
+                uint32_t wc = js_str_cu(p, k);
+                int upper = (!is_stop && k == i);   /* first letter of a non-stop word */
+                l = lre_case_conv(res, wc, upper ? 0 : 1);
+                for (m = 0; m < l; m++) if (string_buffer_putc(b, res[m])) goto fail;
+            }
+        }
+        word_index++;
+        i = j;
+    }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+ fail:
+    string_buffer_free(b);
+    JS_FreeValue(ctx, val);
+    return JS_EXCEPTION;
+}
+
+/* --- pluralize / singularize (English, ASCII rules + a small table) --- */
+static const char *const js_infl_uncountable[] = {
+    "sheep","fish","series","species","deer","money","information",
+    "equipment","rice","news",
+};
+static const struct { const char *sing, *plur; } js_infl_irregular[] = {
+    {"man","men"},{"woman","women"},{"child","children"},{"person","people"},
+    {"foot","feet"},{"tooth","teeth"},{"goose","geese"},{"mouse","mice"},
+    {"ox","oxen"},{"leaf","leaves"},{"life","lives"},{"knife","knives"},
+    {"half","halves"},{"wife","wives"},{"self","selves"},
+};
+
+static int js_str_ends(const char *s, size_t n, const char *suf)
+{
+    size_t sl = strlen(suf);
+    return n >= sl && memcmp(s + n - sl, suf, sl) == 0;
+}
+
+/* pluralize/singularize(): magic 0 = pluralize, 1 = singularize. Operates on the
+ * UTF-8 form; English ASCII suffix rules + irregular/uncountable tables. */
+static JSValue js_string_ext_inflect_num(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv, int magic)
+{
+    JSValue val, ret;
+    const char *s;
+    size_t n, i;
+    char *lc = NULL, *out = NULL;
+    unsigned k;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    s = JS_ToCString(ctx, val);
+    JS_FreeValue(ctx, val);
+    if (!s) return JS_EXCEPTION;
+    n = strlen(s);
+    lc = js_malloc(ctx, n + 1);
+    if (!lc) { JS_FreeCString(ctx, s); return JS_EXCEPTION; }
+    for (i = 0; i < n; i++) lc[i] = (s[i] >= 'A' && s[i] <= 'Z') ? s[i] + 32 : s[i];
+    lc[n] = 0;
+    /* uncountable -> unchanged */
+    for (k = 0; k < countof(js_infl_uncountable); k++)
+        if (!strcmp(lc, js_infl_uncountable[k])) { ret = js_new_string8(ctx, s); goto done; }
+    /* irregular table (both directions) */
+    for (k = 0; k < countof(js_infl_irregular); k++) {
+        const char *from = magic ? js_infl_irregular[k].plur : js_infl_irregular[k].sing;
+        const char *to   = magic ? js_infl_irregular[k].sing : js_infl_irregular[k].plur;
+        if (!strcmp(lc, from)) { ret = js_new_string8(ctx, to); goto done; }
+    }
+    out = js_malloc(ctx, n + 4);
+    if (!out) { ret = JS_EXCEPTION; goto done; }
+    if (magic == 0) {                                    /* pluralize */
+        if (n >= 2 && js_str_ends(lc, n, "y") &&
+            !strchr("aeiou", lc[n - 2])) {
+            memcpy(out, s, n - 1); memcpy(out + n - 1, "ies", 3); out[n + 2] = 0;
+        } else if (js_str_ends(lc, n, "s") || js_str_ends(lc, n, "x") ||
+                   js_str_ends(lc, n, "z") || js_str_ends(lc, n, "ch") ||
+                   js_str_ends(lc, n, "sh")) {
+            memcpy(out, s, n); memcpy(out + n, "es", 2); out[n + 2] = 0;
+        } else {
+            memcpy(out, s, n); out[n] = 's'; out[n + 1] = 0;
+        }
+    } else {                                             /* singularize */
+        if (js_str_ends(lc, n, "ies") && n > 3) {
+            memcpy(out, s, n - 3); out[n - 3] = 'y'; out[n - 2] = 0;
+        } else if ((js_str_ends(lc, n, "ches") || js_str_ends(lc, n, "shes") ||
+                    js_str_ends(lc, n, "xes") || js_str_ends(lc, n, "zes") ||
+                    js_str_ends(lc, n, "sses")) ) {
+            memcpy(out, s, n - 2); out[n - 2] = 0;
+        } else if (js_str_ends(lc, n, "s") && !js_str_ends(lc, n, "ss") && n > 1) {
+            memcpy(out, s, n - 1); out[n - 1] = 0;
+        } else {
+            memcpy(out, s, n); out[n] = 0;
+        }
+    }
+    ret = JS_NewString(ctx, out);
+ done:
+    js_free(ctx, out);
+    js_free(ctx, lc);
+    JS_FreeCString(ctx, s);
+    return ret;
+}
+
+/* removeTags(tagName?) — remove elements (open tag + content + close tag). With
+ * a name, only that tag; with none, any tag. Single left-to-right O(n) pass:
+ * non-nesting; a matched open with no close drops to end of string. */
+static JSValue js_string_ext_removeTags(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv)
+{
+    JSValue val, nameval = JS_UNDEFINED, ret;
+    JSString *p, *np = NULL;
+    StringBuffer b_s, *b = &b_s;
+    uint32_t len, i;
+    BOOL have_name = (argc > 0 && !JS_IsUndefined(argv[0]));
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (have_name) {
+        nameval = JS_ToString(ctx, argv[0]);
+        if (JS_IsException(nameval)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+        np = JS_VALUE_GET_STRING(nameval);
+    }
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (string_buffer_init(ctx, b, len)) goto fail;
+    i = 0;
+    while (i < len) {
+        uint32_t c = js_str_cu(p, i);
+        if (c == '<' && i + 1 < len &&
+            (js_str_cu(p, i + 1) == '/' ||
+             ((js_str_cu(p, i + 1) | 32) >= 'a' && (js_str_cu(p, i + 1) | 32) <= 'z'))) {
+            uint32_t j = i + 1, ns, ne, k;
+            int closing = (js_str_cu(p, j) == '/');
+            if (closing) j++;
+            ns = j;
+            while (j < len && js_str_is_alnum_ascii(js_str_cu(p, j))) j++;
+            ne = j;
+            while (j < len && js_str_cu(p, j) != '>') j++;       /* to tag end */
+            uint32_t tagend = (j < len) ? j + 1 : len;
+            /* does this tag name match the filter? */
+            int match = 1;
+            if (have_name) {
+                if (ne - ns != np->len) match = 0;
+                else for (k = 0; k < np->len; k++)
+                    if ((js_str_cu(p, ns + k) | 32) != (js_str_cu(np, k) | 32)) { match = 0; break; }
+            }
+            if (!closing && match) {
+                /* skip forward to the matching "</name>" (O(n) overall: no re-scan) */
+                uint32_t nlen = ne - ns, s2 = tagend;
+                while (s2 < len) {
+                    if (js_str_cu(p, s2) == '<' && s2 + 1 < len && js_str_cu(p, s2 + 1) == '/') {
+                        uint32_t m = s2 + 2, q;
+                        int same = 1;
+                        for (q = 0; q < nlen; q++)
+                            if (m + q >= len ||
+                                (js_str_cu(p, m + q) | 32) != (js_str_cu(p, ns + q) | 32)) { same = 0; break; }
+                        if (same) {
+                            uint32_t after = m + nlen;
+                            while (after < len && js_str_cu(p, after) != '>') after++;
+                            i = (after < len) ? after + 1 : len;
+                            goto next;
+                        }
+                    }
+                    s2++;
+                }
+                i = len;                 /* unclosed -> drop to end */
+                goto next;
+            }
+            if (!have_name) {            /* no-name mode: also strip stray/non-paired tags */
+                i = tagend;
+                goto next;
+            }
+            /* non-matching tag: keep it verbatim */
+            for (k = i; k < tagend; k++)
+                if (string_buffer_putc(b, js_str_cu(p, k))) goto fail;
+            i = tagend;
+            goto next;
+        }
+        if (string_buffer_putc(b, c)) goto fail;
+        i++;
+    next: ;
+    }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, nameval);
+    JS_FreeValue(ctx, val);
+    return ret;
+ fail:
+    string_buffer_free(b);
+    JS_FreeValue(ctx, nameval);
+    JS_FreeValue(ctx, val);
+    return JS_EXCEPTION;
+}
+
 static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("isEmpty", 0, js_string_ext_isEmpty ),
     JS_CFUNC_DEF("isBlank", 0, js_string_ext_isBlank ),
@@ -2736,6 +3131,15 @@ static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("escapeHTML", 0, js_string_ext_escapeHTML ),
     JS_CFUNC_DEF("unescapeHTML", 0, js_string_ext_unescapeHTML ),
     JS_CFUNC_DEF("stripTags", 0, js_string_ext_stripTags ),
+    /* batch 6: text methods */
+    JS_CFUNC_DEF("count", 1, js_string_ext_count ),
+    JS_CFUNC_DEF("toNumber", 1, js_string_ext_toNumber ),
+    JS_CFUNC_DEF("humanize", 0, js_string_ext_humanize ),
+    JS_CFUNC_DEF("titleize", 0, js_string_ext_titleize ),
+    JS_CFUNC_DEF("parameterize", 0, js_string_ext_parameterize ),
+    JS_CFUNC_MAGIC_DEF("pluralize", 0, js_string_ext_inflect_num, 0 ),
+    JS_CFUNC_MAGIC_DEF("singularize", 0, js_string_ext_inflect_num, 1 ),
+    JS_CFUNC_DEF("removeTags", 1, js_string_ext_removeTags ),
     JS_CFUNC_DEF("words", 0, js_string_ext_words ),
     JS_CFUNC_DEF("lines", 0, js_string_ext_lines ),
     JS_CFUNC_DEF("encodeBase64", 0, js_string_ext_encodeBase64 ),
