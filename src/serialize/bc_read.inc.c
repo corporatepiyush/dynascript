@@ -2228,15 +2228,12 @@ static JSValue js_object_path_get(JSContext *ctx, JSValueConst obj, JSValueConst
         if (js_get_length64(ctx, &len, path)) { JS_FreeValue(ctx, cur); return JS_EXCEPTION; }
         for (i = 0; i < len; i++) {
             JSValue k, next;
-            JSAtom atom;
             if (JS_IsNull(cur) || JS_IsUndefined(cur)) { JS_FreeValue(ctx, cur); return JS_UNDEFINED; }
             k = JS_GetPropertyInt64(ctx, path, i);
             if (JS_IsException(k)) { JS_FreeValue(ctx, cur); return JS_EXCEPTION; }
-            atom = JS_ValueToAtom(ctx, k);
-            JS_FreeValue(ctx, k);
-            if (atom == JS_ATOM_NULL) { JS_FreeValue(ctx, cur); return JS_EXCEPTION; }
-            next = JS_GetProperty(ctx, cur, atom);
-            JS_FreeAtom(ctx, atom);
+            /* JS_GetPropertyValue consumes k and fast-paths integer indices,
+             * avoiding a per-step ValueToAtom interning round-trip. */
+            next = JS_GetPropertyValue(ctx, cur, k);
             JS_FreeValue(ctx, cur);
             if (JS_IsException(next)) return JS_EXCEPTION;
             cur = next;
@@ -3275,47 +3272,51 @@ static const JSCFunctionListEntry js_function_proto_funcs[] = {
  * non-enumerable on Function.prototype. Names are non-colliding with ES
  * (call/apply/bind/toString/length/name). No R.__ placeholder support. ===== */
 
-/* Build a JS array of [first?, argv...] to carry as closure data. */
-static JSValue js_fn_make_list(JSContext *ctx, JSValueConst first,
-                               int argc, JSValueConst *argv, int include_first)
+/* Build a closure whose func_data is [count(int), fn0, fn1, ...] — the captured
+ * functions live DIRECTLY in the C data array (no JS-array indirection), so the
+ * call path indexes func_data with zero property dispatch. `lead` values are
+ * placed before the [first?,argv...] list (e.g. converge's `after`). */
+static JSValue js_fn_make_closure(JSContext *ctx, JSCFunctionData *cb,
+                                  int length, int magic,
+                                  JSValueConst *lead, int nlead,
+                                  JSValueConst first, int include_first,
+                                  int argc, JSValueConst *argv)
 {
-    JSValue arr = JS_NewArray(ctx);
-    int i;
-    int64_t k = 0;
-    if (JS_IsException(arr)) return arr;
-    if (include_first) {
-        if (JS_DefinePropertyValueInt64(ctx, arr, k++, JS_DupValue(ctx, first),
-                                        JS_PROP_C_W_E | JS_PROP_THROW) < 0) goto fail;
-    }
-    for (i = 0; i < argc; i++) {
-        if (JS_DefinePropertyValueInt64(ctx, arr, k++, JS_DupValue(ctx, argv[i]),
-                                        JS_PROP_C_W_E | JS_PROP_THROW) < 0) goto fail;
-    }
-    return arr;
- fail:
-    JS_FreeValue(ctx, arr);
-    return JS_EXCEPTION;
+    int nf = (include_first ? 1 : 0) + argc;
+    int dlen = 1 + nlead + nf;
+    JSValueConst *data;
+    JSValue r;
+    int i, j = 0;
+    /* func_data is capped at 255 entries (JSCFunctionDataRecord.data_len is a
+     * uint8_t). Refuse to silently truncate — chain .pipe().pipe() for more. */
+    if (dlen > 255)
+        return JS_ThrowRangeError(ctx, "too many functions to combine (max ~253)");
+    data = js_malloc(ctx, sizeof(JSValueConst) * dlen);
+    if (!data) return JS_EXCEPTION;
+    data[j++] = JS_NewInt32(ctx, nf);           /* immediate int, dup/free are no-ops */
+    for (i = 0; i < nlead; i++) data[j++] = lead[i];
+    if (include_first) data[j++] = first;
+    for (i = 0; i < argc; i++) data[j++] = argv[i];
+    r = JS_NewCFunctionData(ctx, cb, length, magic, dlen, data);
+    js_free(ctx, (void *)data);
+    return r;
 }
 
-/* compose/pipe: data[0] = array of fns. magic 0 = pipe (L->R), 1 = compose (R->L). */
+/* compose/pipe: fd[0]=count, fd[1..]=fns. magic 0 = pipe (L->R), 1 = compose (R->L). */
 static JSValue js_fn_chain_call(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv, int magic, JSValue *fd)
 {
-    JSValueConst fns = fd[0];
-    int64_t len, i;
+    int cnt = JS_VALUE_GET_INT(fd[0]);
+    int i;
     JSValue acc = JS_UNDEFINED;
-    if (js_get_length64(ctx, &len, fns)) return JS_EXCEPTION;
-    if (len == 0) return argc > 0 ? JS_DupValue(ctx, argv[0]) : JS_UNDEFINED;
-    for (i = 0; i < len; i++) {
-        int64_t idx = magic ? (len - 1 - i) : i;
-        JSValue f = JS_GetPropertyInt64(ctx, fns, idx);
+    if (cnt == 0) return argc > 0 ? JS_DupValue(ctx, argv[0]) : JS_UNDEFINED;
+    for (i = 0; i < cnt; i++) {
+        JSValueConst f = fd[1 + (magic ? (cnt - 1 - i) : i)];
         JSValue r;
-        if (JS_IsException(f)) { JS_FreeValue(ctx, acc); return JS_EXCEPTION; }
         if (i == 0)
             r = JS_Call(ctx, f, this_val, argc, argv);
         else
             r = JS_Call(ctx, f, this_val, 1, (JSValueConst *)&acc);
-        JS_FreeValue(ctx, f);
         JS_FreeValue(ctx, acc);
         if (JS_IsException(r)) return JS_EXCEPTION;
         acc = r;
@@ -3323,89 +3324,70 @@ static JSValue js_fn_chain_call(JSContext *ctx, JSValueConst this_val,
     return acc;
 }
 
-/* logical: data[0] = array of predicates. magic 0 = AND (both/allPass),
+/* logical: fd[0]=count, fd[1..]=predicates. magic 0 = AND (both/allPass),
  * 1 = OR (either/anyPass), 2 = NOT (complement, single predicate). */
 static JSValue js_fn_logical_call(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv, int magic, JSValue *fd)
 {
-    JSValueConst fns = fd[0];
-    int64_t len, i;
+    int cnt = JS_VALUE_GET_INT(fd[0]);
+    int i, b;
     if (magic == 2) {
-        JSValue f = JS_GetPropertyInt64(ctx, fns, 0);
-        JSValue r;
-        int b;
-        if (JS_IsException(f)) return JS_EXCEPTION;
-        r = JS_Call(ctx, f, this_val, argc, argv);
-        JS_FreeValue(ctx, f);
+        JSValue r = JS_Call(ctx, fd[1], this_val, argc, argv);
         if (JS_IsException(r)) return JS_EXCEPTION;
         b = JS_ToBool(ctx, r);
         JS_FreeValue(ctx, r);
         return JS_NewBool(ctx, !b);
     }
-    if (js_get_length64(ctx, &len, fns)) return JS_EXCEPTION;
-    for (i = 0; i < len; i++) {
-        JSValue f = JS_GetPropertyInt64(ctx, fns, i);
-        JSValue r;
-        int b;
-        if (JS_IsException(f)) return JS_EXCEPTION;
-        r = JS_Call(ctx, f, this_val, argc, argv);
-        JS_FreeValue(ctx, f);
+    for (i = 0; i < cnt; i++) {
+        JSValue r = JS_Call(ctx, fd[1 + i], this_val, argc, argv);
         if (JS_IsException(r)) return JS_EXCEPTION;
         b = JS_ToBool(ctx, r);
         JS_FreeValue(ctx, r);
         if (magic == 0 && !b) return JS_FALSE;   /* AND short-circuit */
         if (magic == 1 && b)  return JS_TRUE;    /* OR short-circuit */
     }
-    return JS_NewBool(ctx, magic == 0);          /* AND: all true; OR: none true */
+    return JS_NewBool(ctx, magic == 0);
 }
 
-/* juxt: data[0] = array of fns -> [f(...args) for f]. */
+/* juxt: fd[0]=count, fd[1..]=fns -> [f(...args) for f]. */
 static JSValue js_fn_juxt_call(JSContext *ctx, JSValueConst this_val,
                                int argc, JSValueConst *argv, int magic, JSValue *fd)
 {
-    JSValueConst fns = fd[0];
+    int cnt = JS_VALUE_GET_INT(fd[0]);
     JSValue res;
-    int64_t len, i;
+    int i;
     (void)magic;
-    if (js_get_length64(ctx, &len, fns)) return JS_EXCEPTION;
     res = JS_NewArray(ctx);
     if (JS_IsException(res)) return res;
-    for (i = 0; i < len; i++) {
-        JSValue f = JS_GetPropertyInt64(ctx, fns, i);
-        JSValue r;
-        if (JS_IsException(f)) { JS_FreeValue(ctx, res); return JS_EXCEPTION; }
-        r = JS_Call(ctx, f, this_val, argc, argv);
-        JS_FreeValue(ctx, f);
+    for (i = 0; i < cnt; i++) {
+        JSValue r = JS_Call(ctx, fd[1 + i], this_val, argc, argv);
         if (JS_IsException(r)) { JS_FreeValue(ctx, res); return JS_EXCEPTION; }
         if (JS_SetPropertyInt64(ctx, res, i, r) < 0) { JS_FreeValue(ctx, res); return JS_EXCEPTION; }
     }
     return res;
 }
 
-/* converge: data[0] = after, data[1] = array of branch fns.
+/* converge: fd[0]=nbranches, fd[1]=after, fd[2..]=branches.
  * (...args) => after(b0(...args), b1(...args), ...). */
 static JSValue js_fn_converge_call(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv, int magic, JSValue *fd)
 {
-    JSValueConst after = fd[0], fns = fd[1];
+    int cnt = JS_VALUE_GET_INT(fd[0]);
+    JSValueConst after = fd[1];
     JSValue *results = NULL, r;
-    int64_t len, i, filled = 0;
+    int i, filled = 0;
     (void)magic;
-    if (js_get_length64(ctx, &len, fns)) return JS_EXCEPTION;
-    if (len > 0) {
-        results = js_malloc(ctx, sizeof(JSValue) * len);
+    if (cnt > 0) {
+        results = js_malloc(ctx, sizeof(JSValue) * cnt);
         if (!results) return JS_EXCEPTION;
     }
-    for (i = 0; i < len; i++) {
-        JSValue f = JS_GetPropertyInt64(ctx, fns, i);
-        if (JS_IsException(f)) goto fail;
-        results[i] = JS_Call(ctx, f, this_val, argc, argv);
-        JS_FreeValue(ctx, f);
+    for (i = 0; i < cnt; i++) {
+        results[i] = JS_Call(ctx, fd[2 + i], this_val, argc, argv);
         if (JS_IsException(results[i])) goto fail;
         filled = i + 1;
     }
-    r = JS_Call(ctx, after, this_val, (int)len, (JSValueConst *)results);
-    for (i = 0; i < len; i++) JS_FreeValue(ctx, results[i]);
+    r = JS_Call(ctx, after, this_val, cnt, (JSValueConst *)results);
+    for (i = 0; i < cnt; i++) JS_FreeValue(ctx, results[i]);
     js_free(ctx, results);
     return r;
  fail:
@@ -3414,31 +3396,28 @@ static JSValue js_fn_converge_call(JSContext *ctx, JSValueConst this_val,
     return JS_EXCEPTION;
 }
 
-/* useWith: data[0] = f, data[1] = array of transformers.
+/* useWith: fd[0]=ntransformers, fd[1]=f, fd[2..]=transformers.
  * (a, b, ...) => f(t0(a), t1(b), ...). */
 static JSValue js_fn_useWith_call(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv, int magic, JSValue *fd)
 {
-    JSValueConst f = fd[0], ts = fd[1];
+    int cnt = JS_VALUE_GET_INT(fd[0]);
+    JSValueConst f = fd[1];
     JSValue *out = NULL, r;
-    int64_t len, i, filled = 0;
+    int i, filled = 0;
     (void)magic;
-    if (js_get_length64(ctx, &len, ts)) return JS_EXCEPTION;
-    if (len > 0) {
-        out = js_malloc(ctx, sizeof(JSValue) * len);
+    if (cnt > 0) {
+        out = js_malloc(ctx, sizeof(JSValue) * cnt);
         if (!out) return JS_EXCEPTION;
     }
-    for (i = 0; i < len; i++) {
-        JSValue t = JS_GetPropertyInt64(ctx, ts, i);
+    for (i = 0; i < cnt; i++) {
         JSValueConst a = i < argc ? argv[i] : JS_UNDEFINED;
-        if (JS_IsException(t)) goto fail;
-        out[i] = JS_Call(ctx, t, JS_UNDEFINED, 1, (JSValueConst *)&a);
-        JS_FreeValue(ctx, t);
+        out[i] = JS_Call(ctx, fd[2 + i], JS_UNDEFINED, 1, (JSValueConst *)&a);
         if (JS_IsException(out[i])) goto fail;
         filled = i + 1;
     }
-    r = JS_Call(ctx, f, this_val, (int)len, (JSValueConst *)out);
-    for (i = 0; i < len; i++) JS_FreeValue(ctx, out[i]);
+    r = JS_Call(ctx, f, this_val, cnt, (JSValueConst *)out);
+    for (i = 0; i < cnt; i++) JS_FreeValue(ctx, out[i]);
     js_free(ctx, out);
     return r;
  fail:
@@ -3511,41 +3490,28 @@ static JSValue js_fn_once_call(JSContext *ctx, JSValueConst this_val,
     return r;
 }
 
-/* partial/partialRight: data[0] = f, data[1] = preset args array.
+/* partial/partialRight: fd[0]=npreset, fd[1]=f, fd[2..]=preset args (borrowed).
  * magic 0 = left (preset ++ args), 1 = right (args ++ preset). */
 static JSValue js_fn_partial_call(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv, int magic, JSValue *fd)
 {
-    JSValueConst f = fd[0], preset = fd[1];
-    JSValue *pv = NULL, r;
-    JSValueConst *na = NULL;
-    int64_t plen, i;
-    int total, j;
+    int np = JS_VALUE_GET_INT(fd[0]);
+    JSValueConst f = fd[1];
+    JSValueConst *na;
+    JSValue r;
+    int total = np + argc, i, j = 0;
     (void)this_val;
-    if (js_get_length64(ctx, &plen, preset)) return JS_EXCEPTION;
-    if (plen > 0) {
-        pv = js_malloc(ctx, sizeof(JSValue) * plen);
-        if (!pv) return JS_EXCEPTION;
-        for (i = 0; i < plen; i++) {
-            pv[i] = JS_GetPropertyInt64(ctx, preset, i);
-            if (JS_IsException(pv[i])) { while (i-- > 0) JS_FreeValue(ctx, pv[i]); js_free(ctx, pv); return JS_EXCEPTION; }
-        }
-    }
-    total = (int)plen + argc;
     na = js_malloc(ctx, sizeof(JSValueConst) * (total ? total : 1));
-    if (!na) { for (i = 0; i < plen; i++) JS_FreeValue(ctx, pv[i]); js_free(ctx, pv); return JS_EXCEPTION; }
-    j = 0;
+    if (!na) return JS_EXCEPTION;
     if (magic == 0) {                              /* preset first */
-        for (i = 0; i < plen; i++) na[j++] = pv[i];
+        for (i = 0; i < np; i++)   na[j++] = fd[2 + i];
         for (i = 0; i < argc; i++) na[j++] = argv[i];
     } else {                                       /* args first */
         for (i = 0; i < argc; i++) na[j++] = argv[i];
-        for (i = 0; i < plen; i++) na[j++] = pv[i];
+        for (i = 0; i < np; i++)   na[j++] = fd[2 + i];
     }
     r = JS_Call(ctx, f, JS_UNDEFINED, total, na);
     js_free(ctx, (void *)na);
-    for (i = 0; i < plen; i++) JS_FreeValue(ctx, pv[i]);
-    js_free(ctx, pv);
     return r;
 }
 
@@ -3600,52 +3566,40 @@ static JSValue js_fn_tryCatch_call(JSContext *ctx, JSValueConst this_val,
     return hr;
 }
 
-/* curry: data[0] = f, data[1] = arity (int), data[2] = accumulated args array. */
+/* curry: fd[0]=accCount, fd[1]=arity, fd[2]=f, fd[3..]=accumulated args
+ * (borrowed). Args accumulate DIRECTLY in func_data — no JS array. When enough
+ * arrive, call f; otherwise spawn a new curried closure carrying the wider set. */
 static JSValue js_fn_curry_call(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv, int magic, JSValue *fd)
 {
-    JSValueConst f = fd[0], acc = fd[2];
-    JSValue combined, r;
-    int64_t alen, i;
-    int n, total;
+    int accn = JS_VALUE_GET_INT(fd[0]);
+    int arity = JS_VALUE_GET_INT(fd[1]);
+    JSValueConst f = fd[2];
+    int total = accn + argc, i, j = 0;
+    JSValue r;
     (void)this_val; (void)magic;
-    if (JS_ToInt32(ctx, &n, fd[1])) return JS_EXCEPTION;
-    if (js_get_length64(ctx, &alen, acc)) return JS_EXCEPTION;
-    combined = JS_NewArray(ctx);
-    if (JS_IsException(combined)) return JS_EXCEPTION;
-    for (i = 0; i < alen; i++) {
-        JSValue v = JS_GetPropertyInt64(ctx, acc, i);
-        if (JS_IsException(v)) { JS_FreeValue(ctx, combined); return JS_EXCEPTION; }
-        if (JS_SetPropertyInt64(ctx, combined, i, v) < 0) { JS_FreeValue(ctx, combined); return JS_EXCEPTION; }
-    }
-    for (i = 0; i < argc; i++) {
-        if (JS_SetPropertyInt64(ctx, combined, alen + i, JS_DupValue(ctx, argv[i])) < 0) {
-            JS_FreeValue(ctx, combined); return JS_EXCEPTION;
-        }
-    }
-    total = (int)(alen + argc);
-    if (total >= n) {
-        JSValue *cv = NULL;
-        if (total > 0) {
-            cv = js_malloc(ctx, sizeof(JSValue) * total);
-            if (!cv) { JS_FreeValue(ctx, combined); return JS_EXCEPTION; }
-            for (i = 0; i < total; i++) {
-                cv[i] = JS_GetPropertyInt64(ctx, combined, i);
-                if (JS_IsException(cv[i])) { while (i-- > 0) JS_FreeValue(ctx, cv[i]); js_free(ctx, cv); JS_FreeValue(ctx, combined); return JS_EXCEPTION; }
-            }
-        }
-        r = JS_Call(ctx, f, JS_UNDEFINED, total, (JSValueConst *)cv);
-        for (i = 0; i < total; i++) JS_FreeValue(ctx, cv[i]);
-        js_free(ctx, cv);
-        JS_FreeValue(ctx, combined);
+    if (total >= arity) {
+        JSValueConst *cv = js_malloc(ctx, sizeof(JSValueConst) * (total ? total : 1));
+        if (!cv) return JS_EXCEPTION;
+        for (i = 0; i < accn; i++) cv[j++] = fd[3 + i];
+        for (i = 0; i < argc; i++) cv[j++] = argv[i];
+        r = JS_Call(ctx, f, JS_UNDEFINED, total, cv);
+        js_free(ctx, (void *)cv);
         return r;
     } else {
-        JSValueConst nd[3];
-        nd[0] = f;
-        nd[1] = fd[1];
-        nd[2] = combined;
-        r = JS_NewCFunctionData(ctx, js_fn_curry_call, n - total, 0, 3, nd);
-        JS_FreeValue(ctx, combined);
+        int dlen = 3 + total;
+        JSValueConst *nd;
+        if (dlen > 255)
+            return JS_ThrowRangeError(ctx, "curry arity too large (max ~252)");
+        nd = js_malloc(ctx, sizeof(JSValueConst) * dlen);
+        if (!nd) return JS_EXCEPTION;
+        nd[j++] = JS_NewInt32(ctx, total);
+        nd[j++] = JS_NewInt32(ctx, arity);
+        nd[j++] = f;
+        for (i = 0; i < accn; i++) nd[j++] = fd[3 + i];
+        for (i = 0; i < argc; i++) nd[j++] = argv[i];
+        r = JS_NewCFunctionData(ctx, js_fn_curry_call, arity - total, 0, dlen, nd);
+        js_free(ctx, (void *)nd);
         return r;
     }
 }
@@ -3655,60 +3609,39 @@ static JSValue js_fn_curry_call(JSContext *ctx, JSValueConst this_val,
 static JSValue js_function_ext_chain(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv, int magic)
 {
-    JSValue list = js_fn_make_list(ctx, this_val, argc, argv, 1), r;
-    if (JS_IsException(list)) return list;
-    r = JS_NewCFunctionData(ctx, js_fn_chain_call, 0, magic, 1, (JSValueConst *)&list);
-    JS_FreeValue(ctx, list);
-    return r;
+    return js_fn_make_closure(ctx, js_fn_chain_call, 0, magic,
+                              NULL, 0, this_val, 1, argc, argv);
 }
 
 static JSValue js_function_ext_logical(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv, int magic)
 {
-    JSValue list = js_fn_make_list(ctx, this_val, argc, argv, 1), r;
-    if (JS_IsException(list)) return list;
-    r = JS_NewCFunctionData(ctx, js_fn_logical_call, 0, magic, 1, (JSValueConst *)&list);
-    JS_FreeValue(ctx, list);
-    return r;
+    return js_fn_make_closure(ctx, js_fn_logical_call, 0, magic,
+                              NULL, 0, this_val, 1, argc, argv);
 }
 
 static JSValue js_function_ext_juxt(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv, int magic)
 {
-    JSValue list = js_fn_make_list(ctx, this_val, argc, argv, 1), r;
     (void)magic;
-    if (JS_IsException(list)) return list;
-    r = JS_NewCFunctionData(ctx, js_fn_juxt_call, 0, 0, 1, (JSValueConst *)&list);
-    JS_FreeValue(ctx, list);
-    return r;
+    return js_fn_make_closure(ctx, js_fn_juxt_call, 0, 0,
+                              NULL, 0, this_val, 1, argc, argv);
 }
 
 static JSValue js_function_ext_converge(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv, int magic)
 {
-    JSValue list = js_fn_make_list(ctx, this_val, argc, argv, 0), r;   /* branches only */
-    JSValueConst nd[2];
-    (void)magic;
-    if (JS_IsException(list)) return list;
-    nd[0] = this_val;
-    nd[1] = list;
-    r = JS_NewCFunctionData(ctx, js_fn_converge_call, 0, 0, 2, nd);
-    JS_FreeValue(ctx, list);
-    return r;
+    (void)magic;   /* lead = [after]; branches = argv */
+    return js_fn_make_closure(ctx, js_fn_converge_call, 0, 0,
+                              &this_val, 1, JS_UNDEFINED, 0, argc, argv);
 }
 
 static JSValue js_function_ext_useWith(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv, int magic)
 {
-    JSValue list = js_fn_make_list(ctx, this_val, argc, argv, 0), r;   /* transformers only */
-    JSValueConst nd[2];
-    (void)magic;
-    if (JS_IsException(list)) return list;
-    nd[0] = this_val;
-    nd[1] = list;
-    r = JS_NewCFunctionData(ctx, js_fn_useWith_call, 0, 0, 2, nd);
-    JS_FreeValue(ctx, list);
-    return r;
+    (void)magic;   /* lead = [f]; transformers = argv */
+    return js_fn_make_closure(ctx, js_fn_useWith_call, 0, 0,
+                              &this_val, 1, JS_UNDEFINED, 0, argc, argv);
 }
 
 static JSValue js_function_ext_flip(JSContext *ctx, JSValueConst this_val,
@@ -3760,14 +3693,9 @@ static JSValue js_function_ext_once(JSContext *ctx, JSValueConst this_val,
 static JSValue js_function_ext_partial(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv, int magic)
 {
-    JSValue preset = js_fn_make_list(ctx, JS_UNDEFINED, argc, argv, 0), r;
-    JSValueConst nd[2];
-    if (JS_IsException(preset)) return preset;
-    nd[0] = this_val;
-    nd[1] = preset;
-    r = JS_NewCFunctionData(ctx, js_fn_partial_call, 0, magic, 2, nd);
-    JS_FreeValue(ctx, preset);
-    return r;
+    /* lead = [f]; preset args = argv -> fd[0]=npreset, fd[1]=f, fd[2..]=preset */
+    return js_fn_make_closure(ctx, js_fn_partial_call, 0, magic,
+                              &this_val, 1, JS_UNDEFINED, 0, argc, argv);
 }
 
 static JSValue js_function_ext_ifElse(JSContext *ctx, JSValueConst this_val,
@@ -3805,7 +3733,7 @@ static JSValue js_function_ext_curry(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv, int magic)
 {
     JSValueConst nd[3];
-    JSValue nv, acc, r;
+    JSValue r;
     int n;
     if (magic) {
         if (JS_ToInt32(ctx, &n, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
@@ -3816,15 +3744,10 @@ static JSValue js_function_ext_curry(JSContext *ctx, JSValueConst this_val,
         JS_FreeValue(ctx, lv);
     }
     if (n < 0) n = 0;
-    acc = JS_NewArray(ctx);
-    if (JS_IsException(acc)) return acc;
-    nv = JS_NewInt32(ctx, n);
-    nd[0] = this_val;
-    nd[1] = nv;
-    nd[2] = acc;
+    nd[0] = JS_NewInt32(ctx, 0);     /* accCount = 0 */
+    nd[1] = JS_NewInt32(ctx, n);     /* arity */
+    nd[2] = this_val;                /* f */
     r = JS_NewCFunctionData(ctx, js_fn_curry_call, n, 0, 3, nd);
-    JS_FreeValue(ctx, nv);
-    JS_FreeValue(ctx, acc);
     return r;
 }
 

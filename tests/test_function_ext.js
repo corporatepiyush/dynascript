@@ -118,6 +118,16 @@ eq(cn(1, 2)(3, 4), 10, "curryN mixed");
     eq(base(1, 2, 3), 6, "curry base reusable");
 }
 
+/* ---- deep composition works; beyond the func_data cap throws RangeError ---- */
+{
+    const fs = [];
+    for (let i = 0; i < 200; i++) fs.push((x) => x + 1);
+    eq(fs[0].pipe(...fs.slice(1))(0), 200, "deep pipe 200");
+    let threw = false;
+    try { fs[0].pipe(...Array(400).fill((x) => x)); } catch (e) { threw = e instanceof RangeError; }
+    assert(threw, "over-cap composition throws RangeError (no silent truncation)");
+}
+
 /* ---- non-enumerable on Function.prototype ---- */
 {
     const d = Object.getOwnPropertyDescriptor(Function.prototype, "compose");
