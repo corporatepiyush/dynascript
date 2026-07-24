@@ -453,7 +453,17 @@ static JSValue js_number_ext_roundp(JSContext *ctx, JSValueConst this_val,
     if (argc > 0 && !JS_IsUndefined(argv[0])) {
         if (JS_ToInt32Sat(ctx, &prec, argv[0])) return JS_EXCEPTION;
     }
-    factor = pow(10.0, (double)prec);
+    /* 10^prec: a small lookup avoids a libm pow() on the common integer
+     * precisions (0..15 dominate real use); fall back to pow() otherwise. */
+    if (prec >= 0 && prec <= 15) {
+        static const double pow10[16] = {
+            1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7,
+            1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+        };
+        factor = pow10[prec];
+    } else {
+        factor = pow(10.0, (double)prec);
+    }
     scaled = d * factor;
     switch (magic) {
     case NUM_EXT_ROUND: scaled = js_math_round(scaled); break;
