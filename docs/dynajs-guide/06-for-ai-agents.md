@@ -38,18 +38,18 @@ Import strings are always `dyna:<name>`.
 | `bits` | `UintSize`, `LeadingZeros/TrailingZeros/OnesCount/Len{8,16,32,64}`, `Reverse{8,16,32,64}`, `ReverseBytes{16,32,64}`, `RotateLeft{8,16,32,64}`, `Add/Sub/Mul/Div/Rem{32,64}` |
 | `container` | classes `Heap List Ring` |
 | `structures` | classes `Vector HashMap` |
-| `file` | classes `FileReader FileWriter`, functions `readFile writeFile` |
+| `file` | classes `FileReader FileWriter`, functions `readFile writeFile` + filesystem: `stat lstat exists readDir makeDir remove removeAll rename symlink readLink realPath chmod glob tempDir makeTempDir makeTempFile` |
 | `uring` | `readFile readFileSync checksum` (Linux io_uring) |
 | `http` | classes `App` (`rpc static upload ws start .port`), `HttpClient`, `HttpServerAsync`, `HttpServer` |
 | `netip` | `parseAddr parsePrefix contains masked canonical isValid compareAddr` |
-| `sys` | `stat lstat exists readDir makeDir remove removeAll rename symlink readLink realPath chmod glob tempDir makeTempDir makeTempFile env getEnv setEnv args cwd chDir platform pid hostName homeDir` |
+| `sys` | process/environment only: `env getEnv setEnv args cwd chDir platform pid hostName homeDir` (filesystem ops are in `file`) |
 | `semver` | `parse isValid clean compare gt gte lt lte eq neq sort major minor patch prerelease inc satisfies maxSatisfying minSatisfying coerce` |
 | `time` | `Nanosecond … Hour`, `durationString parseDuration now nowUnixNano nowMillis monotonicNano formatRFC3339 formatUnix parseRFC3339 date fromUnix` |
 | `simd` | `dot sum scale axpy add sub mul div abs fma addScalar affine normL1 normL2 max min argmax argmin sigmoid relu relu6 leakyRelu elu tanhFast gelu silu softmax logSoftmax vexp vlog vsqrt vrsqrt vinv distL2 distL1 distCos distCheb gemv gemvT gemm clamp threshold topkIndices f64Sum f64Dot f64Max f64Min f64Scale f64Axpy i32Sum i32Min i32Max i32Dot i32Add i32Mul i32Scale cumsum cummax` |
 | `ml` | classes `LinearRegression LogisticRegression KMeans` |
 | `compress` | `gzip gunzip` |
 | `docparse` | `parseJson parseCsv` |
-| `csv` | `create read addRow updateCell removeRow addColumn removeColumn renameColumn readColumnValuesRange readRowRange selectColumnRange` (each takes one options object) |
+| `csv` | class `CSVFile(path)` → methods `create read addRow updateCell removeRow addColumn removeColumn renameColumn readColumnValuesRange readRowRange selectColumnRange` (each takes one options object) |
 | `sort` | `sort binarySearch` |
 | `search` | `indexOf indexOfAll` |
 

@@ -333,14 +333,18 @@ print(isAbsolute("/etc"), isAbsolute("etc")); // true false
 
 Pure path-string logic (POSIX semantics). JavaScript has nothing here; Node's `path` is the model.
 
-### `dyna:file` — buffered file I/O with OS fast paths
+### `dyna:file` — the filesystem module
 
-Buffered `FileReader`/`FileWriter` plus one-shot `readFile`/`writeFile`. Under the hood it uses the
-platform's best primitives — `F_RDAHEAD`/`F_PREALLOCATE`/`F_FULLFSYNC` on macOS, `fadvise`/
+Buffered `FileReader`/`FileWriter` plus one-shot `readFile`/`writeFile`, **and all filesystem
+operations** — `stat`/`lstat`/`exists`, `readDir`/`makeDir`/`remove`/`removeAll`/`rename`,
+`symlink`/`readLink`/`realPath`/`chmod`, `glob`, and `tempDir`/`makeTempDir`/`makeTempFile` (these
+moved here from `dyna:sys`, which now holds only process/environment). Under the hood the content I/O
+uses the platform's best primitives — `F_RDAHEAD`/`F_PREALLOCATE`/`F_FULLFSYNC` on macOS, `fadvise`/
 `fallocate`/io_uring on Linux — behind one identical API.
 
 ```js
-import { readFile, writeFile, FileReader, FileWriter } from "dyna:file";
+import { readFile, writeFile, FileReader, FileWriter,
+         stat, readDir, makeDir, glob } from "dyna:file";
 
 // One-shot:
 writeFile("/tmp/demo.txt", "line one\nline two\n");
@@ -696,28 +700,30 @@ data-ingestion path uses.
 
 Where `docparse.parseCsv` parses a CSV *string*, `dyna:csv` treats a CSV *file* as an editable
 dataset — create it, page through it, mutate rows and columns — with RFC-4180 quoting, a
-SIMD-accelerated parse, and **atomic writes** (a crash mid-write never corrupts the file). Every
-function takes an options object; row indices are 0-based over data rows.
+SIMD-accelerated parse, and **atomic writes** (a crash mid-write never corrupts the file). The module
+exports a single class, **`CSVFile`**: construct it with a path, then call methods on it. Each method
+takes an options object; row indices are 0-based over data rows.
 
 ```js
-import * as csv from "dyna:csv";
+import { CSVFile } from "dyna:csv";
 
-csv.create({ path: "/tmp/people.csv", headers: ["Name", "Age", "City"],
-             rows: [["Alice", "30", "NYC"]], overwrite: true });
-csv.addRow({ path: "/tmp/people.csv", rows: [{ Name: "Bob", Age: "25", City: "LA" }] });
-csv.updateCell({ path: "/tmp/people.csv", row: 0, column: "City", value: "Brooklyn" });
-csv.addColumn({ path: "/tmp/people.csv", column: "Active", defaultValue: "yes" });
+const people = new CSVFile("/tmp/people.csv");
+people.create({ headers: ["Name", "Age", "City"],
+                rows: [["Alice", "30", "NYC"]], overwrite: true });
+people.addRow({ rows: [{ Name: "Bob", Age: "25", City: "LA" }] });
+people.updateCell({ row: 0, column: "City", value: "Brooklyn" });
+people.addColumn({ column: "Active", defaultValue: "yes" });
 
-const page = csv.read({ path: "/tmp/people.csv", offset: 0, limit: 50, columns: ["Name", "City"] });
+const page = people.read({ offset: 0, limit: 50, columns: ["Name", "City"] });
 print(page.headers, page.rows, "of", page.totalRows);
 // ["Name","City"] [["Alice","Brooklyn"],["Bob","LA"]] of 2
 ```
 
-The eleven operations — `create`, `read`, `addRow`, `updateCell`, `removeRow`, `addColumn`,
-`removeColumn`, `renameColumn`, `readColumnValuesRange`, `readRowRange`, `selectColumnRange` — are
-each a single-options-object call (easy to expose as an MCP tool). Reads mmap the file; a 100k-row
-file creates and reads back in a few milliseconds each. See the [API Reference](API.md#csv) for
-every option.
+The eleven methods — `create`, `read`, `addRow`, `updateCell`, `removeRow`, `addColumn`,
+`removeColumn`, `renameColumn`, `readColumnValuesRange`, `readRowRange`, `selectColumnRange` — each
+take a single options object (easy to expose as an MCP tool). The path is bound once at construction,
+so a single instance is reused across operations. Reads mmap the file; a 100k-row file creates and
+reads back in a few milliseconds each. See the [API Reference](API.md#csv) for every option.
 
 ### `dyna:sort` — sorting & binary search
 
@@ -748,18 +754,16 @@ scalar scan it replaced).
 
 ---
 
-## 4.10 System: filesystem, directories, process (`dyna:sys`)
+## 4.10 System: filesystem and process (`dyna:file` + `dyna:sys`)
 
-`dyna:sys` is the unified **system-interface** module — filesystem metadata, directories,
-globbing, and process/environment — deliberately *not* split the way Node (`fs` / `os` / `process`,
-plus `glob` / `rimraf` / `mkdirp`) or Go (`os` / `path/filepath`) split it. One synchronous module.
-(Path-*string* logic stays in `dyna:path`; buffered file *content* I/O stays in `dyna:file` — no
-duplication.)
+The **filesystem** surface lives in `dyna:file` (alongside buffered content I/O, §4.5): metadata,
+directories, globbing, links, and temp files. `dyna:sys` keeps only the **process/environment**
+surface. (Path-*string* logic stays in `dyna:path` — no duplication.) Everything is synchronous.
 
 ```js
 import { stat, readDir, makeDir, removeAll, glob, exists,
-         makeTempDir, getEnv, platform } from "dyna:sys";
-import { writeFile } from "dyna:file";
+         makeTempDir, writeFile } from "dyna:file";
+import { getEnv, platform } from "dyna:sys";
 
 const root = makeTempDir("demo-");               // fresh unique temp dir
 makeDir(root + "/a/b", { recursive: true });
@@ -778,10 +782,10 @@ print(exists(root));                             // false
 Highlights: `glob` is a self-contained matcher (`*`, `**`, `?`, `[...]`, ranges, negation),
 symlink-cycle-safe; `removeAll` uses `openat` + `O_NOFOLLOW` so it can never delete outside the tree
 through a symlink; every error throws an `Error` carrying `.code` (`"ENOENT"`) and `.errno`; `readDir`
-returns sorted `{ name, isDir, isFile, isSymlink }` entries. Full surface: `stat`/`lstat`/`exists`,
-`readDir`/`makeDir`/`remove`/`removeAll`/`rename`, `symlink`/`readLink`/`realPath`/`chmod`, `glob`,
-`tempDir`/`makeTempDir`/`makeTempFile`, and `env`/`getEnv`/`setEnv`/`args`/`cwd`/`chDir`/`platform`/
-`pid`/`hostName`/`homeDir`.
+returns sorted `{ name, isDir, isFile, isSymlink }` entries. Filesystem surface (`dyna:file`):
+`stat`/`lstat`/`exists`, `readDir`/`makeDir`/`remove`/`removeAll`/`rename`,
+`symlink`/`readLink`/`realPath`/`chmod`, `glob`, `tempDir`/`makeTempDir`/`makeTempFile`. Process
+surface (`dyna:sys`): `env`/`getEnv`/`setEnv`/`args`/`cwd`/`chDir`/`platform`/`pid`/`hostName`/`homeDir`.
 
 ## 4.11 Semantic versioning (`dyna:semver`)
 

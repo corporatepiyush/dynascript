@@ -2,26 +2,38 @@
  * dyna:csv -- file-oriented CSV CRUD with SIMD-accelerated parsing and
  * optimized I/O. Self-contained, in-repo (no external deps).
  *
- *   import * as csv from "dyna:csv";
- *   csv.create({ path, headers, rows?, overwrite? });
- *   csv.read({ path, offset?, limit?, columns? });        -> { headers, rows, totalRows }
- *   csv.addRow({ path, rows });                            rows: [[...]] or [{col:val}]
- *   csv.updateCell({ path, row, column|columnIndex, value });
- *   csv.removeRow({ path, row });
- *   csv.addColumn({ path, column, defaultValue? });
- *   csv.removeColumn({ path, column|columnIndex });
- *   csv.renameColumn({ path, oldName, newName });
- *   csv.readColumnValuesRange({ path, column, start?, end? });   -> string[]
- *   csv.readRowRange({ path, start?, end? });                    -> { headers, rows }
- *   csv.selectColumnRange({ path, columns, start?, end? });      -> { columns, rows }
+ * The module exports a single class, CSVFile, whose constructor binds a file
+ * path; every operation is a method on that instance. The path is passed once
+ * (to the constructor), never per call.
  *
- * Model: mutations are load-modify-store (parse the whole file, edit the table,
- * serialize, write atomically). Reads mmap the file for a zero-copy scan. The
- * structural scan (delimiters, row count) runs on the shared SIMD kernels. Every
- * write is atomic+durable (temp file, fsync, rename), so a crash mid-write never
+ *   import { CSVFile } from "dyna:csv";
+ *   const f = new CSVFile("data.csv");
+ *   f.create({ headers, rows?, overwrite? });
+ *   f.read({ offset?, limit?, columns? });          -> { headers, rows, totalRows }
+ *   f.addRow({ rows });                              rows: [[...]] or [{col:val}]
+ *   f.updateCell({ row, column|columnIndex, value });
+ *   f.removeRow({ row });
+ *   f.addColumn({ column, defaultValue? });
+ *   f.removeColumn({ column|columnIndex });
+ *   f.renameColumn({ oldName, newName });
+ *   f.readColumnValuesRange({ column, start?, end? });     -> string[]
+ *   f.readRowRange({ start?, end? });                      -> { headers, rows }
+ *   f.selectColumnRange({ columns, start?, end? });        -> { columns, rows }
+ *   f.close();   // release the instance (also via [Symbol.dispose])
+ *
+ * Model: the instance is stateless apart from the path -- every method is a
+ * self-contained load-modify-store (parse the whole file, edit the table,
+ * serialize, write atomically); there is no open file handle and no explicit
+ * save. Reads mmap the file for a zero-copy scan. The structural scan
+ * (delimiters, row count) runs on the shared SIMD kernels. Every write is
+ * atomic+durable (temp file, fsync, rename), so a crash mid-write never
  * corrupts the CSV. Row indices are 0-based over DATA rows (row 0 = first row
- * after the header). Parsing/serialization are RFC 4180 (quoted fields, embedded
- * commas/newlines/quotes, "" escaping).
+ * after the header). Parsing/serialization are RFC 4180 (quoted fields,
+ * embedded commas/newlines/quotes, "" escaping).
+ *
+ * Reentrancy: each method copies the instance path into a private local BEFORE
+ * coercing any argument, so a re-entrant `{valueOf(){ f.close(); }}` argument
+ * cannot free the path out from under an in-flight call.
  */
 #include "dyna-nat.h"
 
@@ -223,8 +235,9 @@ static int csv_write_atomic(const char *path, const char *data, size_t len) {
 /* ============================ JS option helpers ============================ */
 /* obj[key] as an owned C string, or NULL (absent/undefined). *present set. */
 static char *opt_str(JSContext *ctx, JSValueConst obj, const char *key, int *present) {
-    JSValue v = JS_GetPropertyStr(ctx, obj, key);
     if (present) *present = 0;
+    if (!JS_IsObject(obj)) return NULL;
+    JSValue v = JS_GetPropertyStr(ctx, obj, key);
     if (JS_IsUndefined(v) || JS_IsNull(v)) { JS_FreeValue(ctx, v); return NULL; }
     const char *s = JS_ToCString(ctx, v);
     JS_FreeValue(ctx, v);
@@ -237,8 +250,9 @@ static char *opt_str(JSContext *ctx, JSValueConst obj, const char *key, int *pre
 /* obj[key] as an int with a default; sets *present if the key was given. */
 static int opt_int(JSContext *ctx, JSValueConst obj, const char *key, int64_t def,
                    int64_t *out, int *present) {
-    JSValue v = JS_GetPropertyStr(ctx, obj, key);
     if (present) *present = 0;
+    if (!JS_IsObject(obj)) { *out = def; return 0; }
+    JSValue v = JS_GetPropertyStr(ctx, obj, key);
     if (JS_IsUndefined(v) || JS_IsNull(v)) { JS_FreeValue(ctx, v); *out = def; return 0; }
     int r = JS_ToInt64(ctx, out, v);
     JS_FreeValue(ctx, v);
@@ -247,6 +261,7 @@ static int opt_int(JSContext *ctx, JSValueConst obj, const char *key, int64_t de
     return 0;
 }
 static int opt_bool(JSContext *ctx, JSValueConst obj, const char *key) {
+    if (!JS_IsObject(obj)) return 0;
     JSValue v = JS_GetPropertyStr(ctx, obj, key);
     int b = JS_ToBool(ctx, v);
     JS_FreeValue(ctx, v);
@@ -256,6 +271,7 @@ static int opt_bool(JSContext *ctx, JSValueConst obj, const char *key) {
  * *arr NULL if the key is absent (returns 0). */
 static int opt_str_array(JSContext *ctx, JSValueConst obj, const char *key, char ***arr) {
     *arr = NULL;
+    if (!JS_IsObject(obj)) return 0;
     JSValue v = JS_GetPropertyStr(ctx, obj, key);
     if (JS_IsUndefined(v) || JS_IsNull(v)) { JS_FreeValue(ctx, v); return 0; }
     if (!JS_IsArray(ctx, v)) { JS_FreeValue(ctx, v); JS_ThrowTypeError(ctx, "csv: '%s' must be an array", key); return -1; }
@@ -314,24 +330,66 @@ static JSValue row_to_js(JSContext *ctx, const Table *t, size_t r, size_t ncols)
     return a;
 }
 
-/* first argument must be the options object */
+/* ============================ CSVFile class ============================ */
+/* The instance owns nothing but its file path; every method load-modify-stores
+ * that file. `path` is immutable after construction. */
+typedef struct { char *path; } DynCsvFile;
+
+static JSClassID dyn_csvfile_class_id;
+
+static void dyn_csvfile_dispose(void *native) {
+    DynCsvFile *f = (DynCsvFile *)native;
+    if (!f) return;
+    free(f->path);
+    free(f);
+}
+
+static const JSClassDef dyn_csvfile_class = {
+    "CSVFile",
+    .finalizer = dyn_res_finalizer,
+};
+
+/* new CSVFile(path) -- binds a path; does not touch the disk. */
+static JSValue js_csvfile_ctor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    (void)new_target;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "CSVFile(path) requires a path string");
+    const char *s = JS_ToCString(ctx, argv[0]);
+    if (!s) return JS_EXCEPTION;
+    DynCsvFile *f = (DynCsvFile *)calloc(1, sizeof(*f));
+    if (!f) { JS_FreeCString(ctx, s); return JS_ThrowOutOfMemory(ctx); }
+    f->path = strdup(s);
+    JS_FreeCString(ctx, s);
+    if (!f->path) { free(f); return JS_ThrowOutOfMemory(ctx); }
+    return dyn_res_wrap(ctx, dyn_csvfile_class_id, f, dyn_csvfile_dispose);
+}
+
+/* Resolve `this` to a PRIVATE owned copy of its path (caller frees), or NULL
+ * (throwing). Copying up front makes the method reentrancy-safe: a later
+ * argument coercion may close `this` and free the instance, but not our copy. */
+static char *csvfile_path(JSContext *ctx, JSValueConst this_val) {
+    DynResource *r = dyn_res_get(ctx, this_val, dyn_csvfile_class_id);
+    if (!r) return NULL;
+    char *p = strdup(((DynCsvFile *)r->native)->path);
+    if (!p) { JS_ThrowOutOfMemory(ctx); return NULL; }
+    return p;
+}
+
+/* the options object (may be absent -- QuickJS pads argv to the method's
+ * declared arity, so argv[0] is `undefined` when omitted, and the opt_* helpers
+ * treat a non-object as "all keys absent"); data methods validate it via
+ * need_obj. */
 #define OPTS argv[0]
+/* require an options object (for methods whose data lives in it) */
 static int need_obj(JSContext *ctx, int argc, JSValueConst *argv) {
     if (argc < 1 || !JS_IsObject(argv[0])) { JS_ThrowTypeError(ctx, "csv: expected an options object"); return -1; }
     return 0;
 }
-static char *need_path(JSContext *ctx, JSValueConst obj) {
-    int present; char *p = opt_str(ctx, obj, "path", &present);
-    if (!p) { if (!JS_HasException(ctx)) JS_ThrowTypeError(ctx, "csv: 'path' is required"); }
-    return p;
-}
 
 /* ============================ create ============================ */
 static JSValue js_csv_create(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
+    if (need_obj(ctx, argc, argv)) { free(path); return JS_EXCEPTION; }
     char **headers = NULL; int nh = opt_str_array(ctx, OPTS, "headers", &headers);
     JSValue ret = JS_EXCEPTION;
     if (nh < 0) { free(path); return JS_EXCEPTION; }
@@ -383,9 +441,8 @@ done:
 
 /* ============================ read ============================ */
 static JSValue js_csv_read(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    (void)argc;
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
@@ -442,10 +499,9 @@ done:
 
 /* ============================ addRow ============================ */
 static JSValue js_csv_add_row(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
+    if (need_obj(ctx, argc, argv)) { free(path); return JS_EXCEPTION; }
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
     size_t ncols = table_ncols(&t);
@@ -505,10 +561,9 @@ static int resolve_column(JSContext *ctx, JSValueConst obj, const Table *t) {
 
 /* ============================ updateCell ============================ */
 static JSValue js_csv_update_cell(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
+    if (need_obj(ctx, argc, argv)) { free(path); return JS_EXCEPTION; }
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
     JSValue ret = JS_EXCEPTION;
@@ -539,10 +594,9 @@ done:
 
 /* ============================ removeRow ============================ */
 static JSValue js_csv_remove_row(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
+    if (need_obj(ctx, argc, argv)) { free(path); return JS_EXCEPTION; }
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
     JSValue ret = JS_EXCEPTION;
@@ -565,10 +619,9 @@ done:
 
 /* ============================ addColumn ============================ */
 static JSValue js_csv_add_column(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
+    if (need_obj(ctx, argc, argv)) { free(path); return JS_EXCEPTION; }
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
     JSValue ret = JS_EXCEPTION;
@@ -597,10 +650,9 @@ done:
 
 /* ============================ removeColumn ============================ */
 static JSValue js_csv_remove_column(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
+    if (need_obj(ctx, argc, argv)) { free(path); return JS_EXCEPTION; }
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
     JSValue ret = JS_EXCEPTION;
@@ -624,10 +676,9 @@ done:
 
 /* ============================ renameColumn ============================ */
 static JSValue js_csv_rename_column(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
+    if (need_obj(ctx, argc, argv)) { free(path); return JS_EXCEPTION; }
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
     JSValue ret = JS_EXCEPTION;
@@ -672,10 +723,9 @@ static int range_window(JSContext *ctx, JSValueConst obj, size_t total, size_t m
 
 /* ============================ readColumnValuesRange ============================ */
 static JSValue js_csv_read_column_values_range(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
+    if (need_obj(ctx, argc, argv)) { free(path); return JS_EXCEPTION; }
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
     JSValue ret = JS_EXCEPTION;
@@ -696,9 +746,8 @@ done:
 
 /* ============================ readRowRange ============================ */
 static JSValue js_csv_read_row_range(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    (void)argc;
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
@@ -730,10 +779,9 @@ done:
 
 /* ============================ selectColumnRange ============================ */
 static JSValue js_csv_select_column_range(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (need_obj(ctx, argc, argv)) return JS_EXCEPTION;
-    char *path = need_path(ctx, OPTS);
+    char *path = csvfile_path(ctx, this_val);
     if (!path) return JS_EXCEPTION;
+    if (need_obj(ctx, argc, argv)) { free(path); return JS_EXCEPTION; }
     Table t;
     if (csv_load(ctx, path, &t)) { free(path); return JS_EXCEPTION; }
     char **cols = NULL; int ncsel = opt_str_array(ctx, OPTS, "columns", &cols);
@@ -765,7 +813,8 @@ done:
 }
 
 /* ============================ registration ============================ */
-static const JSCFunctionListEntry csv_funcs[] = {
+/* the CSVFile prototype methods (all operate on the instance path) */
+static const JSCFunctionListEntry csvfile_methods[] = {
     JS_CFUNC_DEF("create", 1, js_csv_create),
     JS_CFUNC_DEF("read", 1, js_csv_read),
     JS_CFUNC_DEF("addRow", 1, js_csv_add_row),
@@ -780,14 +829,17 @@ static const JSCFunctionListEntry csv_funcs[] = {
 };
 
 static int csv_module_init(JSContext *ctx, JSModuleDef *m) {
-    return JS_SetModuleExportList(ctx, m, csv_funcs, countof(csv_funcs));
+    return dyn_register_class(ctx, m, &dyn_csvfile_class_id, &dyn_csvfile_class,
+                              csvfile_methods, countof(csvfile_methods),
+                              js_csvfile_ctor, "CSVFile");
 }
 
 int js_nat_init_csv(JSContext *ctx) {
     simd_init(); /* select the best find_first_of / count_u8 kernels */
     JSModuleDef *m = JS_NewCModule(ctx, "dyna:csv", csv_module_init);
     if (!m) return -1;
-    return JS_AddModuleExportList(ctx, m, csv_funcs, countof(csv_funcs));
+    JS_AddModuleExport(ctx, m, "CSVFile");
+    return 0;
 }
 
 #endif /* CONFIG_NATIVE_MODULES && CONFIG_NATIVE_MODULE_CSV */

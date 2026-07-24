@@ -1,14 +1,16 @@
-/* test_sys.js -- dyna:sys (unified filesystem + process/environment module).
+/* test_sys.js -- dyna:file filesystem ops + dyna:sys process/environment.
  * Run: dynajs (built with CONFIG_NATIVE_MODULES=y) tests/test_sys.js
  * Prints "test_sys: all tests passed (N assertions)" on success; throws on
  * failure.
  *
+ * The filesystem surface (metadata, directories, links, globbing, temp) lives
+ * in dyna:file (alongside buffered content I/O); dyna:sys keeps only the
+ * process/environment surface. This test exercises both.
+ *
  * HERMETIC + IDEMPOTENT: every filesystem mutation happens inside a private
  * temp directory created with makeTempDir(); the whole tree (plus the few
  * makeTempFile/makeTempDir siblings) is removed at the end (and, on failure,
- * in a finally block), so a successful OR failed run leaves nothing behind.
- * File CONTENT is written through dyna:file (this module owns metadata /
- * structure, not buffered content I/O). */
+ * in a finally block), so a successful OR failed run leaves nothing behind. */
 
 import {
     stat, lstat, exists,
@@ -16,6 +18,8 @@ import {
     symlink, readLink, realPath, chmod,
     glob,
     tempDir, makeTempDir, makeTempFile,
+} from "dyna:file";
+import {
     env, getEnv, setEnv, args, cwd, chDir, platform, pid, hostName, homeDir,
 } from "dyna:sys";
 import { writeFile } from "dyna:file";

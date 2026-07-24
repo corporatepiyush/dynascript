@@ -1018,76 +1018,12 @@ Keys are JavaScript values compared by identity/value as appropriate.
 
 # sys
 
-`import { stat, lstat, exists, readDir, makeDir, remove, removeAll, rename, symlink, readLink, realPath, chmod, glob, tempDir, makeTempDir, makeTempFile, env, getEnv, setEnv, args, cwd, chDir, platform, pid, hostName, homeDir } from "dyna:sys";`
+`import { env, getEnv, setEnv, args, cwd, chDir, platform, pid, hostName, homeDir } from "dyna:sys";`
 
-Unified, synchronous system interface: filesystem metadata, directory operations, globbing, and
-process/environment access. (Path-string logic is in `dyna:path`; buffered file *content* I/O is
-in `dyna:file`.) On failure, functions throw an `Error` whose `.code` (e.g. `"ENOENT"`) and
-`.errno` identify the OS error.
-
-### `stat(path)` · `lstat(path)`
-
-Return file metadata. `lstat` does not follow a final symlink.
-
-| Parameter | Type | Description |
-|---|---|---|
-| `path` | `string` | The target path. |
-
-**Returns** an object: `{ size, mode, isDir, isFile, isSymlink, mtimeMs, atimeMs, ctimeMs, uid, gid, ino, nlink }`. `mode` is the full Unix `st_mode`; times are milliseconds (float). **Throws** on a missing path.
-
-### `exists(path)`
-
-**Returns** `boolean` — whether the path exists. Does **not** throw.
-
-### `readDir(path)`
-
-| Parameter | Type | Description |
-|---|---|---|
-| `path` | `string` | A directory. |
-
-**Returns** `{ name, isDir, isFile, isSymlink }[]` — entries sorted by name, excluding `.` and `..`. **Throws** if `path` is not a readable directory.
-
-### `makeDir(path, options?)` · `remove(path)` · `removeAll(path)` · `rename(from, to)`
-
-| Function | Parameters | Behavior |
-|---|---|---|
-| `makeDir(path, { recursive?, mode? })` | `string`, options | Create a directory. `recursive: true` creates parents. `mode` sets permissions. |
-| `remove(path)` | `string` | Remove a file or empty directory. Throws if a directory is non-empty. |
-| `removeAll(path)` | `string` | Recursively remove `path`. Symlink-safe (never deletes through a symlink out of the tree). A missing `path` is a **no-op** (no throw). |
-| `rename(from, to)` | `string, string` | Rename/move. |
-
-### `symlink(target, linkPath)` · `readLink(path)` · `realPath(path)` · `chmod(path, mode)`
-
-| Function | Signature | Description |
-|---|---|---|
-| `symlink(target, linkPath)` | `(string, string) → void` | Create `linkPath` pointing at `target`. |
-| `readLink(path)` | `(string) → string` | The target of a symlink. |
-| `realPath(path)` | `(string) → string` | The canonicalized absolute path (resolving symlinks). |
-| `chmod(path, mode)` | `(string, number) → void` | Set permission bits (e.g. `0o755`). |
-
-### `glob(pattern, options?)`
-
-Expand a shell-style glob against the filesystem.
-
-| Parameter | Type | Description |
-|---|---|---|
-| `pattern` | `string` | Supports `*` (not crossing `/`), `**` (crossing directories), `?`, and `[...]` character classes (ranges and `[!...]` negation). |
-| `options` | `{ cwd? }?` | `cwd` sets the base for a relative pattern. |
-
-**Returns** `string[]` — matching paths, sorted and de-duplicated. Symlink cycles terminate (never infinite-loop).
-
-```js
-glob("src/**/*.js");     // every .js under src, at any depth
-glob("data/file-[0-9].csv");
-```
-
-### Temp paths — `tempDir()` · `makeTempDir(prefix)` · `makeTempFile(prefix)`
-
-| Function | Signature | Description |
-|---|---|---|
-| `tempDir()` | `() → string` | The OS temporary directory. |
-| `makeTempDir(prefix)` | `(string) → string` | Atomically create and return a unique temp directory. |
-| `makeTempFile(prefix)` | `(string) → string` | Create and return a unique temp file path. |
+Process and environment access. **The filesystem surface — metadata, directories, links, globbing
+and temp files — moved to [`dyna:file`](#file)**, which now owns all filesystem operations alongside
+buffered content I/O; path-string logic is in [`dyna:path`](#path). On failure, functions throw an
+`Error` whose `.code` (e.g. `"ENOENT"`) and `.errno` identify the OS error.
 
 ### Process & environment
 
@@ -1107,10 +1043,14 @@ glob("data/file-[0-9].csv");
 
 # file
 
-`import { readFile, writeFile, FileReader, FileWriter } from "dyna:file";`
+`import { readFile, writeFile, FileReader, FileWriter, stat, lstat, exists, readDir, makeDir, remove, removeAll, rename, symlink, readLink, realPath, chmod, glob, tempDir, makeTempDir, makeTempFile } from "dyna:file";`
 
-Buffered file content I/O with per-OS fast paths (macOS `F_RDAHEAD`/`F_PREALLOCATE`/`F_FULLFSYNC`;
-Linux `fadvise`/`fallocate`/io_uring) behind one API.
+The filesystem module: buffered file content I/O (with per-OS fast paths — macOS
+`F_RDAHEAD`/`F_PREALLOCATE`/`F_FULLFSYNC`; Linux `fadvise`/`fallocate`/io_uring) **plus all
+filesystem operations** (metadata, directories, links, globbing, temp files — moved here from
+`dyna:sys`). Path-string logic (join/normalize/dirname/…) is in [`dyna:path`](#path); process and
+environment access is in [`dyna:sys`](#sys). Filesystem functions throw an `Error` whose `.code`
+(e.g. `"ENOENT"`) and `.errno` identify the OS error.
 
 ### `readFile(path)` · `writeFile(path, data)`
 
@@ -1164,6 +1104,70 @@ const w = new FileWriter("/tmp/out", { bufferSize: 1 << 16, preallocate: 1 << 20
 try { for (let i = 0; i < 100000; i++) w.write(`row ${i}\n`); w.sync(); }
 finally { w.close(); }
 ```
+
+### `stat(path)` · `lstat(path)`
+
+Return file metadata. `lstat` does not follow a final symlink.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `path` | `string` | The target path. |
+
+**Returns** an object: `{ size, mode, isDir, isFile, isSymlink, mtimeMs, atimeMs, ctimeMs, uid, gid, ino, nlink }`. `mode` is the full Unix `st_mode`; times are milliseconds (float). **Throws** on a missing path.
+
+### `exists(path)`
+
+**Returns** `boolean` — whether the path exists (uses `lstat`, so `true` even for a dangling symlink). Does **not** throw.
+
+### `readDir(path)`
+
+| Parameter | Type | Description |
+|---|---|---|
+| `path` | `string` | A directory. |
+
+**Returns** `{ name, isDir, isFile, isSymlink }[]` — entries sorted by name, excluding `.` and `..`. **Throws** if `path` is not a readable directory.
+
+### `makeDir(path, options?)` · `remove(path)` · `removeAll(path)` · `rename(from, to)`
+
+| Function | Parameters | Behavior |
+|---|---|---|
+| `makeDir(path, { recursive?, mode? })` | `string`, options | Create a directory. `recursive: true` creates parents. `mode` sets permissions. |
+| `remove(path)` | `string` | Remove a file or empty directory. Throws if a directory is non-empty. |
+| `removeAll(path)` | `string` | Recursively remove `path`. Symlink-safe (never deletes through a symlink out of the tree). A missing `path` is a **no-op** (no throw). |
+| `rename(from, to)` | `string, string` | Rename/move. |
+
+### `symlink(target, linkPath)` · `readLink(path)` · `realPath(path)` · `chmod(path, mode)`
+
+| Function | Signature | Description |
+|---|---|---|
+| `symlink(target, linkPath)` | `(string, string) → void` | Create `linkPath` pointing at `target`. |
+| `readLink(path)` | `(string) → string` | The target of a symlink. |
+| `realPath(path)` | `(string) → string` | The canonicalized absolute path (resolving symlinks). |
+| `chmod(path, mode)` | `(string, number) → void` | Set permission bits (e.g. `0o755`). |
+
+### `glob(pattern, options?)`
+
+Expand a shell-style glob against the filesystem.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `pattern` | `string` | Supports `*` (not crossing `/`), `**` (crossing directories), `?`, and `[...]` character classes (ranges and `[!...]` negation). |
+| `options` | `{ cwd? }?` | `cwd` sets the base for a relative pattern. |
+
+**Returns** `string[]` — matching paths, sorted and de-duplicated. Symlink cycles terminate (never infinite-loop).
+
+```js
+glob("src/**/*.js");     // every .js under src, at any depth
+glob("data/file-[0-9].csv");
+```
+
+### Temp paths — `tempDir()` · `makeTempDir(prefix)` · `makeTempFile(prefix)`
+
+| Function | Signature | Description |
+|---|---|---|
+| `tempDir()` | `() → string` | The OS temporary directory. |
+| `makeTempDir(prefix)` | `(string) → string` | Atomically create and return a unique temp directory. |
+| `makeTempFile(prefix)` | `(string) → string` | Create and return a unique temp file path. |
 
 ---
 
@@ -1605,41 +1609,48 @@ parseJson('{"x":[1,2,3]}').x[2];   // 3
 
 # csv
 
-`import * as csv from "dyna:csv";`
+`import { CSVFile } from "dyna:csv";`
 
 File-oriented CSV create/read/update/delete, RFC 4180 (quoted fields, embedded commas/newlines/quotes,
-`""` escaping). Each function takes a single **options object**. Mutations are load-modify-store and
-write **atomically** (temp file + fsync + rename); reads mmap the file; the structural scan is
-SIMD-accelerated. **Row indices are 0-based over data rows** — row `0` is the first row after the
-header. Errors throw `Error`/`TypeError`/`RangeError`.
+`""` escaping). The module exports one class, **`CSVFile`**, whose constructor binds a file path; every
+operation is a method on that instance and takes a single **options object** (the `path` is passed
+once, to the constructor — never per call). Mutations are load-modify-store and write **atomically**
+(temp file + fsync + rename); reads mmap the file; the structural scan is SIMD-accelerated. **Row
+indices are 0-based over data rows** — row `0` is the first row after the header. Errors throw
+`Error`/`TypeError`/`RangeError`.
+
+### `new CSVFile(path)`
+
+Binds `path`; does **not** touch the disk. The instance is stateless apart from the path — there is no
+open file handle and no explicit save, so a single instance can be reused across operations (each
+method re-reads the file). Release it with `.close()` / `[Symbol.dispose]` (optional; a `CSVFile`
+holds no OS handle, only the path string). Each method copies the path before coercing arguments, so a
+re-entrant `{ valueOf() { f.close(); } }` argument cannot use-after-free.
 
 ### `create(options)`
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | Destination. Parent directories are created automatically. |
 | `headers` | `string[]` | Column names (≥ 1). |
 | `rows` | `string[][]?` | Initial rows; each must have exactly `headers.length` values. |
-| `overwrite` | `boolean?` | If `false` (default), **throws** when `path` exists. |
+| `overwrite` | `boolean?` | If `false` (default), **throws** when the file exists. |
 
-**Returns** `{ path, rows }` (`rows` = data rows written). **Throws** if the file exists without `overwrite`, `headers` is empty, or a row's width ≠ `headers.length`.
+Creates the file at the instance path (parent directories are created automatically). **Returns** `{ path, rows }` (`rows` = data rows written). **Throws** if the file exists without `overwrite`, `headers` is empty, or a row's width ≠ `headers.length`.
 
-### `read(options)`
+### `read(options?)`
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `offset` | `number?` | Data rows to skip (default `0`). |
 | `limit` | `number?` | Max rows returned (default: all). |
 | `columns` | `string[]?` | Column names to include, in order (default: all). |
 
-**Returns** `{ headers: string[], rows: string[][], totalRows: number }` — `totalRows` is the full count regardless of pagination. **Throws** on a missing file or unknown column.
+Called with no argument, reads the whole file. **Returns** `{ headers: string[], rows: string[][], totalRows: number }` — `totalRows` is the full count regardless of pagination. **Throws** on a missing file or unknown column.
 
 ### `addRow(options)`
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `rows` | `(string[] \| object)[]` | Each row is a positional `string[]` (column order) **or** an object `{ column: value }` (missing columns → `""`, extra keys ignored). |
 
 **Returns** `{ added: number, totalRows: number }`.
@@ -1648,7 +1659,6 @@ header. Errors throw `Error`/`TypeError`/`RangeError`.
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `row` | `number` | 0-based data-row index. |
 | `column` | `string?` | Column by name (mutually exclusive with `columnIndex`). |
 | `columnIndex` | `number?` | Column by 0-based index. |
@@ -1660,7 +1670,6 @@ header. Errors throw `Error`/`TypeError`/`RangeError`.
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `row` | `number` | 0-based data-row index. Remaining rows shift up. |
 
 **Returns** `{ removed: number, totalRows: number }`. **Throws** `RangeError` if out of range.
@@ -1669,7 +1678,6 @@ header. Errors throw `Error`/`TypeError`/`RangeError`.
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `column` | `string` | New column name (must not exist). |
 | `defaultValue` | `string?` | Fill for existing rows (default `""`). |
 
@@ -1679,7 +1687,6 @@ header. Errors throw `Error`/`TypeError`/`RangeError`.
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `column` | `string?` | By name (mutually exclusive with `columnIndex`). |
 | `columnIndex` | `number?` | By 0-based index. |
 
@@ -1689,7 +1696,6 @@ header. Errors throw `Error`/`TypeError`/`RangeError`.
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `oldName` | `string` | Existing column (must exist). |
 | `newName` | `string` | New name (must not exist unless equal to `oldName` → no-op). |
 
@@ -1699,18 +1705,16 @@ header. Errors throw `Error`/`TypeError`/`RangeError`.
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `column` | `string` | Column name. |
 | `start` | `number?` | First data row (inclusive, default `0`). |
 | `end` | `number?` | End row (exclusive, default: all). Max **requested** window (`end - start`) is **1000**. |
 
 **Returns** `string[]`.
 
-### `readRowRange(options)`
+### `readRowRange(options?)`
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `start` | `number?` | First data row (inclusive, default `0`). |
 | `end` | `number?` | End row (exclusive, default `start + 1`). Max window **100**. |
 
@@ -1722,7 +1726,6 @@ Project specific columns over a range (like `SELECT col…` with no `WHERE`).
 
 | Option | Type | Description |
 |---|---|---|
-| `path` | `string` | The CSV file. |
 | `columns` | `string[]` | Column names, in output order (non-empty; all must exist). |
 | `start` | `number?` | First data row (inclusive, default `0`). |
 | `end` | `number?` | End row (exclusive, default: all). Max window **100**. |
@@ -1730,10 +1733,11 @@ Project specific columns over a range (like `SELECT col…` with no `WHERE`).
 **Returns** `{ columns: string[], rows: string[][] }`.
 
 ```js
-csv.create({ path: "/tmp/u.csv", headers: ["Name","Age"], rows: [["Alice","30"]], overwrite: true });
-csv.addRow({ path: "/tmp/u.csv", rows: [{ Name: "Bob", Age: "25" }] });
-csv.updateCell({ path: "/tmp/u.csv", row: 0, column: "Age", value: "31" });
-csv.read({ path: "/tmp/u.csv" });
+const users = new CSVFile("/tmp/u.csv");
+users.create({ headers: ["Name","Age"], rows: [["Alice","30"]], overwrite: true });
+users.addRow({ rows: [{ Name: "Bob", Age: "25" }] });
+users.updateCell({ row: 0, column: "Age", value: "31" });
+users.read();
 // { headers:["Name","Age"], rows:[["Alice","31"],["Bob","25"]], totalRows:2 }
 ```
 

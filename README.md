@@ -88,9 +88,9 @@ library** — one `import` each, no dependencies:
 | `dyna:bits` | Go `math/bits`: leading/trailing zeros, popcount, rotate, and 64‑bit carry arithmetic |
 | `dyna:container` | A `Heap` (priority queue), a doubly-linked `List`, and a `Ring` buffer |
 | `dyna:structures` | A growable `Vector` and a native-backed `HashMap` |
-| `dyna:sys` | Filesystem metadata + directories + glob + process/environment, unified |
+| `dyna:sys` | Process & environment (env, args, cwd, platform, pid, hostName, homeDir) |
 | `dyna:path` | POSIX path manipulation (join/resolve/normalize/dirname/relative) |
-| `dyna:file` | Buffered file reader/writer with per-OS fast paths (`F_FULLFSYNC`, io_uring) |
+| `dyna:file` | Filesystem: buffered reader/writer (per-OS fast paths) + metadata, dirs, glob, links, temp |
 | `dyna:uring` | High-queue-depth bulk file reads via Linux io_uring |
 | `dyna:http` | An HTTP client and a single-thread kqueue/epoll/io_uring reactor server |
 | `dyna:time` | Nanosecond durations, a monotonic clock, and RFC 3339 formatting |
