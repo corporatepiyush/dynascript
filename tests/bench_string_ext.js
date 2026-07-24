@@ -57,4 +57,22 @@ row("codes",
     () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= base.repeat(200).codes().length; return s; },
     () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= [...base.repeat(200)].map(c=>c.charCodeAt(0)).length; return s; });
 
+print("=== HTML methods (SIMD scan) vs JS regex ===");
+const htmlDoc = ('<div class="x">Hello & welcome to <b>Sugar</b> &amp; <i>SIMD</i>! ' +
+                 'Values: a < b > c, and "quotes" too. </div>\n').repeat(600);  // ~60KB narrow
+print("htmlDoc len=" + htmlDoc.length);
+
+row("escapeHTML",
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= htmlDoc.escapeHTML().length; return s; },
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= htmlDoc.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").length; return s; });
+
+const escaped = htmlDoc.escapeHTML();
+row("unescapeHTML",
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= escaped.unescapeHTML().length; return s; },
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= escaped.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").length; return s; });
+
+row("stripTags",
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= htmlDoc.stripTags().length; return s; },
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= htmlDoc.replace(/<[^]+?>/g,"").length; return s; });
+
 print("done");

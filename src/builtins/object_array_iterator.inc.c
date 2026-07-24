@@ -5979,6 +5979,202 @@ static JSValue js_string_ext_truncate(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* Append a NUL-terminated ASCII literal to a StringBuffer. */
+static int sb_put_ascii(StringBuffer *b, const char *s)
+{
+    while (*s)
+        if (string_buffer_putc8(b, (uint8_t)*s++)) return -1;
+    return 0;
+}
+
+/* escapeHTML() -> replaces &, <, > with &amp;, &lt;, &gt; (Sugar escapes ONLY
+ * these three; quotes are left alone). Long narrow strings jump each clean run
+ * with the find_first_of SIMD kernel and bulk-copy it (like compact); short and
+ * wide strings scan scalar. Differential oracle: kernel path vs scalar path. */
+static JSValue js_string_ext_escapeHTML(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    uint32_t i, len;
+    static const uint8_t set[3] = { '&', '<', '>' };
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    i = 0;
+    if (!p->is_wide_char && len >= STRING_EXT_SIMD_MIN) {
+        const uint8_t *s8 = p->u.str8;
+        while (i < len) {
+            size_t r = simd.find_first_of(s8 + i, (size_t)(len - i), set, 3);
+            uint32_t run_end = (r == SIZE_MAX) ? len : (uint32_t)(i + r);
+            string_buffer_concat(b, p, i, run_end);        /* clean run, bulk-copied */
+            if (run_end >= len) break;
+            switch (s8[run_end]) {
+            case '&': if (sb_put_ascii(b, "&amp;")) goto fail; break;
+            case '<': if (sb_put_ascii(b, "&lt;"))  goto fail; break;
+            default:  if (sb_put_ascii(b, "&gt;"))  goto fail; break;
+            }
+            i = run_end + 1;
+        }
+    } else {
+        for (i = 0; i < len; i++) {
+            uint32_t c = string_get(p, i);
+            if (c == '&') { if (sb_put_ascii(b, "&amp;")) goto fail; }
+            else if (c == '<') { if (sb_put_ascii(b, "&lt;")) goto fail; }
+            else if (c == '>') { if (sb_put_ascii(b, "&gt;")) goto fail; }
+            else if (string_buffer_putc16(b, (uint16_t)c)) goto fail;
+        }
+    }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+ fail:
+    string_buffer_free(b);
+    JS_FreeValue(ctx, val);
+    return JS_EXCEPTION;
+}
+
+/* Decode a single named/numeric HTML entity in p starting just after '&' at
+ * `start` (the index of '&'). On success writes the code point to *cp and
+ * returns the index just past the ';'. On no match returns start (caller emits
+ * the literal '&'). Named set matches Sugar's unescapeHTML. */
+static uint32_t js_str_decode_entity(JSString *p, uint32_t start, uint32_t len, uint32_t *cp)
+{
+    uint32_t i = start + 1, semi;
+    if (i >= len) return start;
+    if (string_get(p, i) == '#') {                 /* numeric &#dd; or &#xhh; */
+        uint32_t v = 0, hex = 0, digits = 0;
+        i++;
+        if (i < len && (string_get(p, i) == 'x' || string_get(p, i) == 'X')) { hex = 1; i++; }
+        for (; i < len; i++) {
+            uint32_t d = string_get(p, i), dv;
+            if (d >= '0' && d <= '9') dv = d - '0';
+            else if (hex && d >= 'a' && d <= 'f') dv = d - 'a' + 10;
+            else if (hex && d >= 'A' && d <= 'F') dv = d - 'A' + 10;
+            else break;
+            v = v * (hex ? 16 : 10) + dv;
+            digits++;
+            if (v > 0x10FFFF) v = 0xFFFD;          /* clamp out-of-range */
+        }
+        if (!digits || i >= len || string_get(p, i) != ';') return start;
+        *cp = v;
+        return i + 1;
+    }
+    /* named: scan to ';' within a short window, compare against the known set */
+    for (semi = i; semi < len && semi < i + 10; semi++)
+        if (string_get(p, semi) == ';') break;
+    if (semi >= len || string_get(p, semi) != ';') return start;
+    {
+        static const struct { const char *name; uint32_t cp; } ents[] = {
+            { "lt", '<' }, { "gt", '>' }, { "amp", '&' },
+            { "nbsp", ' ' }, { "quot", '"' }, { "apos", '\'' },
+        };
+        uint32_t nlen = semi - i, k;
+        for (k = 0; k < countof(ents); k++) {
+            uint32_t m, en = 0;
+            const char *nm = ents[k].name;
+            while (nm[en]) en++;
+            if (en != nlen) continue;
+            for (m = 0; m < nlen; m++)
+                if (string_get(p, i + m) != (uint8_t)nm[m]) break;
+            if (m == nlen) { *cp = ents[k].cp; return semi + 1; }
+        }
+    }
+    return start;
+}
+
+/* unescapeHTML() -> decodes &lt; &gt; &amp; &nbsp; &quot; &apos; and numeric
+ * &#dd; / &#xhh; entities (Sugar). Long narrow strings jump to each '&' with the
+ * find_u8 SIMD kernel and bulk-copy the run before it. */
+static JSValue js_string_ext_unescapeHTML(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    uint32_t i, len;
+    int simd_path;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    simd_path = (!p->is_wide_char && len >= STRING_EXT_SIMD_MIN);
+    i = 0;
+    while (i < len) {
+        uint32_t amp, cp, next;
+        if (simd_path) {
+            size_t r = simd.find_u8(p->u.str8 + i, (uint8_t)'&', (size_t)(len - i));
+            amp = (r == SIZE_MAX) ? len : (uint32_t)(i + r);
+        } else {
+            for (amp = i; amp < len && string_get(p, amp) != '&'; amp++) ;
+        }
+        string_buffer_concat(b, p, i, amp);            /* run before '&' */
+        if (amp >= len) break;
+        next = js_str_decode_entity(p, amp, len, &cp);
+        if (next == amp) {                              /* not an entity: literal '&' */
+            if (string_buffer_putc8(b, '&')) goto fail;
+            i = amp + 1;
+        } else {
+            if (string_buffer_putc(b, cp)) goto fail;
+            i = next;
+        }
+    }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+ fail:
+    string_buffer_free(b);
+    JS_FreeValue(ctx, val);
+    return JS_EXCEPTION;
+}
+
+/* stripTags() -> removes every `<...>` tag (Sugar `/<.+?>/g`) keeping the inner
+ * text; `<>` (empty) is left literal, matching the `.+?` requirement. Long
+ * narrow strings find each '<' with the find_u8 SIMD kernel. (Tag-name filtering
+ * and removeTags' content deletion are a later batch.) */
+static JSValue js_string_ext_stripTags(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    uint32_t i, len;
+    int simd_path;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    simd_path = (!p->is_wide_char && len >= STRING_EXT_SIMD_MIN);
+    i = 0;
+    while (i < len) {
+        uint32_t lt, gt;
+        if (simd_path) {
+            size_t r = simd.find_u8(p->u.str8 + i, (uint8_t)'<', (size_t)(len - i));
+            lt = (r == SIZE_MAX) ? len : (uint32_t)(i + r);
+        } else {
+            for (lt = i; lt < len && string_get(p, lt) != '<'; lt++) ;
+        }
+        string_buffer_concat(b, p, i, lt);             /* text before the tag */
+        if (lt >= len) break;
+        /* closing '>' must be >= lt+2: the tag body is >=1 char (Sugar /<.+?>/),
+         * so a '>' right after '<' is body, not a close, and "<>" stays literal. */
+        for (gt = lt + 2; gt < len && string_get(p, gt) != '>'; gt++) ;
+        if (gt >= len) { string_buffer_concat(b, p, lt, len); break; }  /* no close: rest literal */
+        i = gt + 1;                                     /* drop the whole tag [lt, gt] */
+    }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("isEmpty", 0, js_string_ext_isEmpty ),
     JS_CFUNC_DEF("isBlank", 0, js_string_ext_isBlank ),
@@ -6002,6 +6198,9 @@ static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("camelize", 1, js_string_ext_camelize ),
     JS_CFUNC_MAGIC_DEF("truncate", 3, js_string_ext_truncate, 0 ),
     JS_CFUNC_MAGIC_DEF("truncateOnWord", 3, js_string_ext_truncate, 1 ),
+    JS_CFUNC_DEF("escapeHTML", 0, js_string_ext_escapeHTML ),
+    JS_CFUNC_DEF("unescapeHTML", 0, js_string_ext_unescapeHTML ),
+    JS_CFUNC_DEF("stripTags", 0, js_string_ext_stripTags ),
 };
 
 static const JSCFunctionListEntry js_string_proto_funcs[] = {

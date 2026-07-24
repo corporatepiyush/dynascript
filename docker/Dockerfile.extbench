@@ -24,5 +24,9 @@ RUN echo "=== SIMD dispatch selected ===" \
  && clang -O2 -Isrc /tmp/caps.c .obj/dyna-simd-*.o -lpthread -lm -o /tmp/caps && /tmp/caps
 RUN echo "=== correctness: test_array_ext ===" && ./dynajs tests/test_array_ext.js
 RUN echo "=== correctness: test_typedarray_ext (SIMD reductions) ===" && ./dynajs tests/test_typedarray_ext.js
+RUN echo "=== correctness: test_string_ext (x86 SIMD scan kernels: escapeHTML/stripTags/compact) ===" \
+ && ./dynajs tests/test_string_ext.js
 RUN echo "=== benchmark (ratios are the trustworthy metric under qemu) ===" \
  && ./dynajs tests/bench_array_ext.js
+RUN echo "=== benchmark: string ext (SIMD scan methods) ===" \
+ && ./dynajs tests/bench_string_ext.js

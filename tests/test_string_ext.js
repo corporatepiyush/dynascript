@@ -300,4 +300,42 @@ eq("hi".truncate(-3), "...", "truncate negative length clamps to 0 (ellipsis sti
     eq("hello world".truncate(5, { toString() { return "right"; } }, "!"), "hello!", "truncate coerces from + ellipsis");
 }
 
+/* ---- batch 4: HTML escape / unescape / stripTags (SIMD scan + scalar oracle) ---- */
+eq("a<b>&c".escapeHTML(), "a&lt;b&gt;&amp;c", "escapeHTML basic");
+eq('"\'quotes'.escapeHTML(), '"\'quotes', "escapeHTML leaves quotes (Sugar)");
+eq("a&lt;b&gt;&amp;c".unescapeHTML(), "a<b>&c", "unescapeHTML named");
+eq("&nbsp;&quot;&apos;".unescapeHTML(), " \"'", "unescapeHTML nbsp/quot/apos");
+eq("&#65;&#x42;&#x1F600;".unescapeHTML(), "AB\u{1F600}", "unescapeHTML numeric dec/hex/astral");
+eq("&bogus; &amp".unescapeHTML(), "&bogus; &amp", "unescapeHTML leaves unknown/unterminated literal");
+eq("<p>just <b>some</b> text</p>".stripTags(), "just some text", "stripTags keeps inner text");
+eq("a<>b".stripTags(), "a<>b", "stripTags leaves empty <>");
+eq("open <tag no close".stripTags(), "open <tag no close", "stripTags unterminated is literal");
+
+{   /* differential oracles over BOTH the scalar (<64) and SIMD (>=64) paths */
+    const escRef = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const stripRef = s => s.replace(/<[^]+?>/g, "");        /* [^] = any incl newline, matches C */
+    const toks = ["hello", " ", "&", "<b>", "</b>", "world", ">", "<", "x&y", "café".slice(0,3), "\n", "<a href>"];
+    let rng = 20240724;
+    const rand = () => (rng = (rng * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let t = 0; t < 3000; t++) {
+        let s = "";
+        const nt = 1 + ((rng >> 3) % 40);                  /* spans both sides of the 64B gate */
+        for (let k = 0; k < nt; k++) s += toks[(rand() * toks.length) | 0];
+        eq(s.escapeHTML(), escRef(s), "escapeHTML differential t=" + t + " len=" + s.length);
+        eq(s.stripTags(), stripRef(s), "stripTags differential t=" + t + " len=" + s.length);
+        /* round-trip: escapeHTML then unescapeHTML restores the original (no bare & to confuse) */
+        const clean = s.replace(/&/g, "n");
+        eq(clean.escapeHTML().unescapeHTML(), clean, "escape/unescape round-trip t=" + t);
+    }
+    /* explicit long narrow input to force the SIMD path */
+    const big = "plain text <b>bold</b> & more ".repeat(8);   /* >64, narrow */
+    assert(big.length >= 64 && ![...big].some(c => c.charCodeAt(0) > 255), "HTML SIMD input is long+narrow");
+    eq(big.escapeHTML(), escRef(big), "escapeHTML SIMD path");
+    eq(big.stripTags(), stripRef(big), "stripTags SIMD path");
+    /* wide-string path (specials are ASCII, rest is wide) */
+    const w = "π<b>δ</b>&ε".repeat(10);
+    eq(w.escapeHTML(), escRef(w), "escapeHTML wide path");
+    eq(w.stripTags(), stripRef(w), "stripTags wide path");
+}
+
 print("test_string_ext: all tests passed (" + n + " assertions)");
