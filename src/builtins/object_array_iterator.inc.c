@@ -3547,6 +3547,264 @@ static JSValue js_number_toPrecision(JSContext *ctx, JSValueConst this_val,
     return js_dtoa2(ctx, d, 10, p, JS_DTOA_FORMAT_FIXED);
 }
 
+/* --- SugarJS 2.0 + Ramda 0.32 non-ECMAScript Number.prototype methods ---
+ * (SUGAR_RAMDA_NATIVE.md, phase 3). Installed non-enumerable on Number.prototype.
+ * Every method coerces `this` to a double first (js_thisNumberValue) so it also
+ * works on Number wrapper objects; numeric results normalize via JS_NewFloat64.
+ * No native handle is held across argument coercion, so there is no reentrancy
+ * hazard from a {valueOf}-armed argument. */
+
+static double js_math_round(double a);   /* defined later in this TU (Math.round) */
+
+enum {   /* js_number_ext_unary (0 args) */
+    NUM_EXT_ABS, NUM_EXT_SQRT, NUM_EXT_EXP, NUM_EXT_SIN, NUM_EXT_COS,
+    NUM_EXT_TAN, NUM_EXT_ASIN, NUM_EXT_ACOS, NUM_EXT_ATAN,
+    NUM_EXT_NEGATE, NUM_EXT_INC, NUM_EXT_DEC,
+};
+
+static JSValue js_number_ext_unary(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv, int magic)
+{
+    JSValue val;
+    double d;
+    (void)argc; (void)argv;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToFloat64Free(ctx, &d, val)) return JS_EXCEPTION;
+    switch (magic) {
+    case NUM_EXT_ABS:    d = fabs(d); break;
+    case NUM_EXT_SQRT:   d = sqrt(d); break;
+    case NUM_EXT_EXP:    d = exp(d); break;
+    case NUM_EXT_SIN:    d = sin(d); break;
+    case NUM_EXT_COS:    d = cos(d); break;
+    case NUM_EXT_TAN:    d = tan(d); break;
+    case NUM_EXT_ASIN:   d = asin(d); break;
+    case NUM_EXT_ACOS:   d = acos(d); break;
+    case NUM_EXT_ATAN:   d = atan(d); break;
+    case NUM_EXT_NEGATE: d = -d; break;
+    case NUM_EXT_INC:    d = d + 1; break;
+    case NUM_EXT_DEC:    d = d - 1; break;
+    }
+    return JS_NewFloat64(ctx, d);
+}
+
+enum {   /* js_number_ext_binary (1 arg, coerced to double) */
+    NUM_EXT_ADD, NUM_EXT_SUB, NUM_EXT_MUL, NUM_EXT_DIV, NUM_EXT_MOD, NUM_EXT_POW,
+};
+
+static JSValue js_number_ext_binary(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    JSValue val;
+    double d, a;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToFloat64Free(ctx, &d, val)) return JS_EXCEPTION;
+    if (JS_ToFloat64(ctx, &a, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+    switch (magic) {
+    case NUM_EXT_ADD: d = d + a; break;
+    case NUM_EXT_SUB: d = d - a; break;
+    case NUM_EXT_MUL: d = d * a; break;
+    case NUM_EXT_DIV: d = d / a; break;
+    case NUM_EXT_MOD: d = fmod(d, a); break;   /* JS `%` on doubles == fmod */
+    case NUM_EXT_POW: d = js_pow(d, a); break;
+    }
+    return JS_NewFloat64(ctx, d);
+}
+
+enum {   /* js_number_ext_compare (1 arg) -> boolean */
+    NUM_EXT_GT, NUM_EXT_GTE, NUM_EXT_LT, NUM_EXT_LTE,
+};
+
+static JSValue js_number_ext_compare(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv, int magic)
+{
+    JSValue val;
+    double d, a;
+    BOOL r = FALSE;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToFloat64Free(ctx, &d, val)) return JS_EXCEPTION;
+    if (JS_ToFloat64(ctx, &a, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+    switch (magic) {   /* NaN comparisons are false by construction */
+    case NUM_EXT_GT:  r = d >  a; break;
+    case NUM_EXT_GTE: r = d >= a; break;
+    case NUM_EXT_LT:  r = d <  a; break;
+    case NUM_EXT_LTE: r = d <= a; break;
+    }
+    return JS_NewBool(ctx, r);
+}
+
+enum {   /* js_number_ext_predicate (0 args) -> boolean */
+    NUM_EXT_IS_INTEGER, NUM_EXT_IS_ODD, NUM_EXT_IS_EVEN,
+};
+
+static JSValue js_number_ext_predicate(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv, int magic)
+{
+    JSValue val;
+    double d;
+    BOOL is_int, r = FALSE;
+    (void)argc; (void)argv;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToFloat64Free(ctx, &d, val)) return JS_EXCEPTION;
+    is_int = isfinite(d) && floor(d) == d;
+    switch (magic) {
+    case NUM_EXT_IS_INTEGER: r = is_int; break;
+    case NUM_EXT_IS_ODD:     r = is_int && fmod(d, 2.0) != 0.0; break;
+    case NUM_EXT_IS_EVEN:    r = is_int && fmod(d, 2.0) == 0.0; break;
+    }
+    return JS_NewBool(ctx, r);
+}
+
+/* isMultipleOf(n) -> this % n === 0 (Sugar). n==0 or NaN -> false via fmod. */
+static JSValue js_number_ext_isMultipleOf(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
+{
+    JSValue val;
+    double d, a;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToFloat64Free(ctx, &d, val)) return JS_EXCEPTION;
+    if (JS_ToFloat64(ctx, &a, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+    return JS_NewBool(ctx, a != 0.0 && fmod(d, a) == 0.0);
+}
+
+/* mathMod(n) -> Ramda: NaN unless both are integers and n >= 1, else a
+ * non-negative modulus ((m % n) + n) % n. */
+static JSValue js_number_ext_mathMod(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValue val;
+    double d, a, r;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToFloat64Free(ctx, &d, val)) return JS_EXCEPTION;
+    if (JS_ToFloat64(ctx, &a, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+    if (!(isfinite(d) && floor(d) == d) ||
+        !(isfinite(a) && floor(a) == a) || a < 1.0)
+        return JS_NewFloat64(ctx, NAN);
+    r = fmod(fmod(d, a) + a, a);
+    return JS_NewFloat64(ctx, r);
+}
+
+/* clamp(min, max) -> Ramda clamp with `this` as the value. */
+static JSValue js_number_ext_clamp(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue val;
+    double d, lo, hi;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToFloat64Free(ctx, &d, val)) return JS_EXCEPTION;
+    if (JS_ToFloat64(ctx, &lo, argc > 0 ? argv[0] : JS_UNDEFINED)) return JS_EXCEPTION;
+    if (JS_ToFloat64(ctx, &hi, argc > 1 ? argv[1] : JS_UNDEFINED)) return JS_EXCEPTION;
+    return JS_NewFloat64(ctx, d < lo ? lo : (d > hi ? hi : d));
+}
+
+/* log(base=e) -> Sugar: change-of-base logarithm. */
+static JSValue js_number_ext_log(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    JSValue val;
+    double d, base;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToFloat64Free(ctx, &d, val)) return JS_EXCEPTION;
+    if (argc > 0 && !JS_IsUndefined(argv[0])) {
+        if (JS_ToFloat64(ctx, &base, argv[0])) return JS_EXCEPTION;
+        return JS_NewFloat64(ctx, log(d) / log(base));
+    }
+    return JS_NewFloat64(ctx, log(d));
+}
+
+enum {   /* js_number_ext_roundp (1 optional arg: decimal places) */
+    NUM_EXT_ROUND, NUM_EXT_CEIL, NUM_EXT_FLOOR,
+};
+
+/* round/ceil/floor(precision=0) -> Sugar: round to `precision` decimal places
+ * (negative rounds to tens/hundreds/...). */
+static JSValue js_number_ext_roundp(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    JSValue val;
+    double d, factor, scaled;
+    int prec = 0;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToFloat64Free(ctx, &d, val)) return JS_EXCEPTION;
+    if (argc > 0 && !JS_IsUndefined(argv[0])) {
+        if (JS_ToInt32Sat(ctx, &prec, argv[0])) return JS_EXCEPTION;
+    }
+    factor = pow(10.0, (double)prec);
+    scaled = d * factor;
+    switch (magic) {
+    case NUM_EXT_ROUND: scaled = js_math_round(scaled); break;
+    case NUM_EXT_CEIL:  scaled = ceil(scaled); break;
+    case NUM_EXT_FLOOR: scaled = floor(scaled); break;
+    }
+    return JS_NewFloat64(ctx, scaled / factor);
+}
+
+/* chr() -> the single character for this code (Sugar, fromCharCode semantics). */
+static JSValue js_number_ext_chr(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    JSValue val;
+    StringBuffer b_s, *b = &b_s;
+    int32_t c;
+    (void)argc; (void)argv;
+    val = js_thisNumberValue(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (JS_ToInt32(ctx, &c, val)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    JS_FreeValue(ctx, val);
+    if (string_buffer_init(ctx, b, 1)) return JS_EXCEPTION;
+    if (string_buffer_putc16(b, c & 0xffff)) { string_buffer_free(b); return JS_EXCEPTION; }
+    return string_buffer_end(b);
+}
+
+static const JSCFunctionListEntry js_number_ext_funcs[] = {
+    /* Sugar math wrappers + Ramda unary */
+    JS_CFUNC_MAGIC_DEF("abs",    0, js_number_ext_unary, NUM_EXT_ABS ),
+    JS_CFUNC_MAGIC_DEF("sqrt",   0, js_number_ext_unary, NUM_EXT_SQRT ),
+    JS_CFUNC_MAGIC_DEF("exp",    0, js_number_ext_unary, NUM_EXT_EXP ),
+    JS_CFUNC_MAGIC_DEF("sin",    0, js_number_ext_unary, NUM_EXT_SIN ),
+    JS_CFUNC_MAGIC_DEF("cos",    0, js_number_ext_unary, NUM_EXT_COS ),
+    JS_CFUNC_MAGIC_DEF("tan",    0, js_number_ext_unary, NUM_EXT_TAN ),
+    JS_CFUNC_MAGIC_DEF("asin",   0, js_number_ext_unary, NUM_EXT_ASIN ),
+    JS_CFUNC_MAGIC_DEF("acos",   0, js_number_ext_unary, NUM_EXT_ACOS ),
+    JS_CFUNC_MAGIC_DEF("atan",   0, js_number_ext_unary, NUM_EXT_ATAN ),
+    JS_CFUNC_MAGIC_DEF("negate", 0, js_number_ext_unary, NUM_EXT_NEGATE ),
+    JS_CFUNC_MAGIC_DEF("inc",    0, js_number_ext_unary, NUM_EXT_INC ),
+    JS_CFUNC_MAGIC_DEF("dec",    0, js_number_ext_unary, NUM_EXT_DEC ),
+    /* Ramda Math (binary) */
+    JS_CFUNC_MAGIC_DEF("add",      1, js_number_ext_binary, NUM_EXT_ADD ),
+    JS_CFUNC_MAGIC_DEF("subtract", 1, js_number_ext_binary, NUM_EXT_SUB ),
+    JS_CFUNC_MAGIC_DEF("multiply", 1, js_number_ext_binary, NUM_EXT_MUL ),
+    JS_CFUNC_MAGIC_DEF("divide",   1, js_number_ext_binary, NUM_EXT_DIV ),
+    JS_CFUNC_MAGIC_DEF("modulo",   1, js_number_ext_binary, NUM_EXT_MOD ),
+    JS_CFUNC_MAGIC_DEF("pow",      1, js_number_ext_binary, NUM_EXT_POW ),
+    /* Ramda relational */
+    JS_CFUNC_MAGIC_DEF("gt",  1, js_number_ext_compare, NUM_EXT_GT ),
+    JS_CFUNC_MAGIC_DEF("gte", 1, js_number_ext_compare, NUM_EXT_GTE ),
+    JS_CFUNC_MAGIC_DEF("lt",  1, js_number_ext_compare, NUM_EXT_LT ),
+    JS_CFUNC_MAGIC_DEF("lte", 1, js_number_ext_compare, NUM_EXT_LTE ),
+    /* Sugar predicates */
+    JS_CFUNC_MAGIC_DEF("isInteger", 0, js_number_ext_predicate, NUM_EXT_IS_INTEGER ),
+    JS_CFUNC_MAGIC_DEF("isOdd",     0, js_number_ext_predicate, NUM_EXT_IS_ODD ),
+    JS_CFUNC_MAGIC_DEF("isEven",    0, js_number_ext_predicate, NUM_EXT_IS_EVEN ),
+    JS_CFUNC_DEF("isMultipleOf", 1, js_number_ext_isMultipleOf ),
+    /* Ramda mathMod / clamp, Sugar log / precision round */
+    JS_CFUNC_DEF("mathMod", 1, js_number_ext_mathMod ),
+    JS_CFUNC_DEF("clamp",   2, js_number_ext_clamp ),
+    JS_CFUNC_DEF("log",     1, js_number_ext_log ),
+    JS_CFUNC_MAGIC_DEF("round", 1, js_number_ext_roundp, NUM_EXT_ROUND ),
+    JS_CFUNC_MAGIC_DEF("ceil",  1, js_number_ext_roundp, NUM_EXT_CEIL ),
+    JS_CFUNC_MAGIC_DEF("floor", 1, js_number_ext_roundp, NUM_EXT_FLOOR ),
+    JS_CFUNC_DEF("chr", 0, js_number_ext_chr ),
+};
+
 static const JSCFunctionListEntry js_number_proto_funcs[] = {
     JS_CFUNC_DEF("toExponential", 1, js_number_toExponential ),
     JS_CFUNC_DEF("toFixed", 1, js_number_toFixed ),

@@ -463,7 +463,12 @@ int JS_AddIntrinsicBaseObjects(JSContext *ctx)
     JS_FreeValue(ctx, obj1);
     if (JS_SetObjectData(ctx, ctx->class_proto[JS_CLASS_NUMBER], JS_NewInt32(ctx, 0)))
         return -1;
-    
+
+    /* SugarJS/RamdaJS non-ECMAScript methods (SUGAR_RAMDA_NATIVE.md, phase 3),
+     * installed non-enumerable on Number.prototype. */
+    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_NUMBER],
+                               js_number_ext_funcs, countof(js_number_ext_funcs));
+
     /* Boolean */
     obj1 = JS_NewCConstructor(ctx, JS_CLASS_BOOLEAN, "Boolean",
                                      js_boolean_constructor, 1, JS_CFUNC_constructor_or_func, 0,
