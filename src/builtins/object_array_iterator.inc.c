@@ -5325,6 +5325,149 @@ static const JSCFunctionListEntry js_string_funcs[] = {
     JS_CFUNC_DEF("raw", 1, js_string_raw ),
 };
 
+/* ---- SugarJS/RamdaJS String.prototype extensions (see STRING_EXT_DESIGN.md).
+ * After JS_ToStringCheckObject the value is a FLAT JSString (ropes linearized);
+ * semantics are UTF-16 code units. Registered non-enumerable; names never shadow
+ * an ES String.prototype method. Batch 1: predicates + substring access. ---- */
+
+/* isEmpty() -> length === 0 */
+static JSValue js_string_ext_isEmpty(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValue val;
+    BOOL empty;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    empty = (JS_VALUE_GET_STRING(val)->len == 0);
+    JS_FreeValue(ctx, val);
+    return JS_NewBool(ctx, empty);
+}
+
+/* isBlank() -> true if empty or every code unit is whitespace (matches trim()). */
+static JSValue js_string_ext_isBlank(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValue val;
+    JSString *p;
+    BOOL blank = TRUE;
+    uint32_t i;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    for (i = 0; i < p->len; i++) {
+        if (!lre_is_space(string_get(p, i))) { blank = FALSE; break; }
+    }
+    JS_FreeValue(ctx, val);
+    return JS_NewBool(ctx, blank);
+}
+
+/* first(n=1) -> the first n code units; last(n=1) -> the last n. magic 0/1. */
+static JSValue js_string_ext_firstlast(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv, int magic)
+{
+    JSValue val, ret;
+    JSString *p;
+    int64_t n = 1, len;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (argc > 0 && !JS_IsUndefined(argv[0])) {
+        if (JS_ToInt64Sat(ctx, &n, argv[0])) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    }
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (n < 0) n = 0;
+    if (n > len) n = len;
+    ret = (magic == 0) ? js_sub_string(ctx, p, 0, (int)n)
+                       : js_sub_string(ctx, p, (int)(len - n), (int)len);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* from(index=0) -> substring [index, end); to(index=end) -> substring [0, index).
+ * Negative index counts from the end. magic 0/1. */
+static JSValue js_string_ext_fromto(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    JSValue val, ret;
+    JSString *p;
+    int64_t idx = 0, len;
+    BOOL have = (argc > 0 && !JS_IsUndefined(argv[0]));
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (have && JS_ToInt64Sat(ctx, &idx, argv[0])) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (!have && magic == 1) idx = len;      /* to() with no arg -> whole string */
+    if (idx < 0) idx += len;
+    if (idx < 0) idx = 0;
+    if (idx > len) idx = len;
+    ret = (magic == 0) ? js_sub_string(ctx, p, (int)idx, (int)len)
+                       : js_sub_string(ctx, p, 0, (int)idx);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* chars() -> array of single code-unit strings. */
+static JSValue js_string_ext_chars(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue val, result, ret = JS_EXCEPTION;
+    JSString *p;
+    uint32_t i;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < p->len; i++) {
+        JSValue s = js_new_string_char(ctx, string_get(p, i));
+        if (JS_IsException(s)) { JS_FreeValue(ctx, result); goto done; }
+        if (JS_DefinePropertyValueInt64(ctx, result, i, s, JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, result); goto done; }
+    }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* codes() -> array of UTF-16 code-unit values. */
+static JSValue js_string_ext_codes(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue val, result, ret = JS_EXCEPTION;
+    JSString *p;
+    uint32_t i;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < p->len; i++) {
+        if (JS_DefinePropertyValueInt64(ctx, result, i, JS_NewInt32(ctx, string_get(p, i)), JS_PROP_C_W_E) < 0) {
+            JS_FreeValue(ctx, result); goto done;
+        }
+    }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+static const JSCFunctionListEntry js_string_ext_funcs[] = {
+    JS_CFUNC_DEF("isEmpty", 0, js_string_ext_isEmpty ),
+    JS_CFUNC_DEF("isBlank", 0, js_string_ext_isBlank ),
+    JS_CFUNC_MAGIC_DEF("first", 1, js_string_ext_firstlast, 0 ),
+    JS_CFUNC_MAGIC_DEF("last", 1, js_string_ext_firstlast, 1 ),
+    JS_CFUNC_MAGIC_DEF("from", 1, js_string_ext_fromto, 0 ),
+    JS_CFUNC_MAGIC_DEF("to", 1, js_string_ext_fromto, 1 ),
+    JS_CFUNC_DEF("chars", 0, js_string_ext_chars ),
+    JS_CFUNC_DEF("codes", 0, js_string_ext_codes ),
+};
+
 static const JSCFunctionListEntry js_string_proto_funcs[] = {
     JS_PROP_INT32_DEF("length", 0, JS_PROP_CONFIGURABLE ),
     JS_CFUNC_MAGIC_DEF("at", 1, js_string_charAt, 1 ),

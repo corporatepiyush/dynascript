@@ -490,6 +490,11 @@ int JS_AddIntrinsicBaseObjects(JSContext *ctx)
     if (JS_SetObjectData(ctx, ctx->class_proto[JS_CLASS_STRING], JS_AtomToString(ctx, JS_ATOM_empty_string)))
         return -1;
 
+    /* SugarJS/RamdaJS non-ECMAScript methods (STRING_EXT_DESIGN.md), installed
+     * non-enumerable on String.prototype. */
+    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_STRING],
+                               js_string_ext_funcs, countof(js_string_ext_funcs));
+
     ctx->class_proto[JS_CLASS_STRING_ITERATOR] =
         JS_NewObjectProtoList(ctx, ctx->class_proto[JS_CLASS_ITERATOR], 
                               js_string_iterator_proto_funcs,
