@@ -3105,6 +3105,115 @@ static JSValue js_string_ext_removeTags(JSContext *ctx, JSValueConst this_val,
     return JS_EXCEPTION;
 }
 
+/* forEach(fn) — call fn(char, index) per code point; returns the array of chars. */
+static JSValue js_string_ext_forEach(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSValue val, arr;
+    JSString *p;
+    JSValueConst fn = argc > 0 ? argv[0] : JS_UNDEFINED;
+    BOOL has_fn = JS_IsFunction(ctx, fn);
+    uint32_t i;
+    int64_t idx = 0;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) { JS_FreeValue(ctx, val); return arr; }
+    i = 0;
+    while (i < p->len) {
+        uint32_t start = i;
+        uint32_t c = string_getc(p, (int *)&i);
+        JSValue ch, item;
+        (void)c;
+        ch = js_sub_string(ctx, p, start, i);       /* the code point as a string */
+        if (JS_IsException(ch)) goto fail;
+        if (has_fn) {
+            JSValueConst args[2];
+            JSValue iv = JS_NewInt64(ctx, idx);
+            args[0] = ch; args[1] = iv;
+            item = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
+            JS_FreeValue(ctx, iv);
+            if (JS_IsException(item)) { JS_FreeValue(ctx, ch); goto fail; }
+            JS_FreeValue(ctx, item);
+        }
+        if (JS_SetPropertyInt64(ctx, arr, idx++, ch) < 0) goto fail;
+    }
+    JS_FreeValue(ctx, val);
+    return arr;
+ fail:
+    JS_FreeValue(ctx, arr);
+    JS_FreeValue(ctx, val);
+    return JS_EXCEPTION;
+}
+
+/* format(...args) — "{0}{1}" / "{key}" substitution. Numeric token -> args[n];
+ * named token -> args[0][name]. `{{`/`}}` are literal braces. */
+static JSValue js_string_ext_format(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue val, ret = JS_EXCEPTION;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    uint32_t len, i;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    for (i = 0; i < len; i++) {
+        uint32_t c = js_str_cu(p, i);
+        if (c == '{' && i + 1 < len && js_str_cu(p, i + 1) == '{') { if (string_buffer_putc8(b, '{')) goto fail; i++; continue; }
+        if (c == '}' && i + 1 < len && js_str_cu(p, i + 1) == '}') { if (string_buffer_putc8(b, '}')) goto fail; i++; continue; }
+        if (c == '{') {
+            uint32_t j = i + 1, all_digit = 1, tlen;
+            char tok[64];
+            int tn = 0;
+            JSValue rep;
+            while (j < len && js_str_cu(p, j) != '}') {
+                uint32_t tc = js_str_cu(p, j);
+                if (tc < '0' || tc > '9') all_digit = 0;
+                if (tn < (int)sizeof(tok) - 1) tok[tn++] = (char)(tc < 128 ? tc : '?');
+                j++;
+            }
+            tok[tn] = 0;
+            tlen = tn;
+            if (j >= len) {                          /* unterminated '{' -> literal */
+                if (string_buffer_putc8(b, '{')) goto fail;
+                continue;
+            }
+            if (all_digit && tlen > 0) {
+                int ai = atoi(tok) + 1;              /* args[0] is the format string's owner? no: argv[0..] */
+                rep = (ai - 1 < argc) ? JS_DupValue(ctx, argv[ai - 1]) : JS_UNDEFINED;
+            } else if (tlen > 0 && argc > 0) {
+                rep = JS_GetPropertyStr(ctx, argv[0], tok);
+                if (JS_IsException(rep)) goto fail;
+            } else {
+                rep = JS_UNDEFINED;
+            }
+            if (!JS_IsUndefined(rep)) {
+                JSValue s = JS_ToString(ctx, rep);
+                JS_FreeValue(ctx, rep);
+                if (JS_IsException(s)) goto fail;
+                if (string_buffer_concat_value(b, s)) { JS_FreeValue(ctx, s); goto fail; }
+                JS_FreeValue(ctx, s);
+            } else {
+                JS_FreeValue(ctx, rep);
+            }
+            i = j;
+            continue;
+        }
+        if (string_buffer_putc(b, c)) goto fail;
+    }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+ fail:
+    string_buffer_free(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("isEmpty", 0, js_string_ext_isEmpty ),
     JS_CFUNC_DEF("isBlank", 0, js_string_ext_isBlank ),
@@ -3140,6 +3249,8 @@ static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_MAGIC_DEF("pluralize", 0, js_string_ext_inflect_num, 0 ),
     JS_CFUNC_MAGIC_DEF("singularize", 0, js_string_ext_inflect_num, 1 ),
     JS_CFUNC_DEF("removeTags", 1, js_string_ext_removeTags ),
+    JS_CFUNC_DEF("forEach", 1, js_string_ext_forEach ),
+    JS_CFUNC_DEF("format", 1, js_string_ext_format ),
     JS_CFUNC_DEF("words", 0, js_string_ext_words ),
     JS_CFUNC_DEF("lines", 0, js_string_ext_lines ),
     JS_CFUNC_DEF("encodeBase64", 0, js_string_ext_encodeBase64 ),
