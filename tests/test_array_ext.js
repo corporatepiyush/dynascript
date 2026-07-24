@@ -92,4 +92,42 @@ eq([]._take(3), [], "_take of empty → []");
 /* _take/_drop do not mutate the receiver */
 b._drop(2); eq(b, [1, 2, 3, 4, 5], "_drop does not mutate");
 
+/* ---- batch 3: _sortBy (mapper + desc + stability variants) ---- */
+eq([3, 1, 2, 10]._sortBy(), [1, 2, 3, 10], "_sortBy() numeric (not lexical)");
+eq(["banana", "apple", "cherry"]._sortBy(), ["apple", "banana", "cherry"], "_sortBy() string");
+eq([{ a: 3 }, { a: 1 }, { a: 2 }]._sortBy("a").map(x => x.a), [1, 2, 3], "_sortBy(prop)");
+eq([{ a: 3 }, { a: 1 }]._sortBy(x => x.a).map(x => x.a), [1, 3], "_sortBy(fn)");
+eq([1, 2, 3]._sortBy(undefined, true), [3, 2, 1], "_sortBy(_, desc)");
+/* stability: equal keys keep original order, asc AND desc */
+const st = [{ k: 1, id: "a" }, { k: 0, id: "b" }, { k: 1, id: "c" }, { k: 0, id: "d" }];
+eq(st._sortBy("k").map(x => x.id), ["b", "d", "a", "c"], "_sortBy stable asc");
+eq(st._sortBy("k", true).map(x => x.id), ["a", "c", "b", "d"], "_sortBy stable desc");
+eq([]._sortBy(), [], "_sortBy of empty → []");
+const so = [3, 1, 2]; so._sortBy(); eq(so, [3, 1, 2], "_sortBy does not mutate");
+
+/* ---- batch 3: _groupBy (mapper variants) ---- */
+eq([1, 2, 3, 4, 5, 6]._groupBy(x => x % 2 ? "odd" : "even"), { odd: [1, 3, 5], even: [2, 4, 6] }, "_groupBy(fn)");
+eq([{ t: "x", v: 1 }, { t: "y", v: 2 }, { t: "x", v: 3 }]._groupBy("t"),
+   { x: [{ t: "x", v: 1 }, { t: "x", v: 3 }], y: [{ t: "y", v: 2 }] }, "_groupBy(prop) preserves order");
+eq([]._groupBy(x => x), {}, "_groupBy of empty → {}");
+
+/* ---- batch 3: _shuffle (invariants — randomised) ---- */
+const src = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const shuf = src._shuffle();
+assert(shuf.length === src.length, "_shuffle preserves length");
+eq([...shuf].sort((a, b) => a - b), src, "_shuffle preserves the multiset");
+eq(src, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "_shuffle does not mutate the original");
+eq([]._shuffle(), [], "_shuffle of empty → []");
+eq([7]._shuffle(), [7], "_shuffle of one → same");
+
+/* ---- batch 3: _sample (single + n variants) ---- */
+assert(src.includes(src._sample()), "_sample() → an element of the array");
+assert([]._sample() === undefined, "_sample() of empty → undefined");
+const s3 = src._sample(3);
+assert(s3.length === 3 && new Set(s3).size === 3, "_sample(n) → n distinct elements");
+assert(s3.every(x => src.includes(x)), "_sample(n) elements come from the array");
+assert(src._sample(99).length === src.length, "_sample(n>len) → all");
+eq(src._sample(0), [], "_sample(0) → []");
+eq(src, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "_sample does not mutate the original");
+
 print("test_array_ext: all tests passed (" + n + " assertions)");

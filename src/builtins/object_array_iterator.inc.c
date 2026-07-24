@@ -1052,6 +1052,8 @@ static const JSCFunctionListEntry js_array_unscopables_funcs[] = {
  * like the standard methods; nothing native escapes. Phase 1, batch 1.
  * ========================================================================== */
 
+static uint64_t xorshift64star(uint64_t *pstate); /* the Math.random PRNG, below */
+
 /* read element i of a (possibly array-like) object; *pval is owned, set to
  * JS_UNDEFINED for a missing index. returns -1 (exception) or 0. */
 static int js_array_ext_getel(JSContext *ctx, JSValueConst obj, int64_t i,
@@ -1412,6 +1414,246 @@ static JSValue js_array_ext_take(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* ---- _sortBy: decorate / stable-merge-sort / undecorate ---- */
+typedef struct {
+    JSValue val;      /* owned element */
+    double dkey;      /* numeric sort key (is_num) */
+    char *skey;       /* string sort key, owned (else) */
+    uint32_t idx;     /* original index (unused: merge sort is already stable) */
+    int is_num;
+} DynSortItem;
+
+static int dyn_sortby_cmp(const DynSortItem *a, const DynSortItem *b)
+{
+    if (a->is_num && b->is_num)
+        return a->dkey < b->dkey ? -1 : a->dkey > b->dkey ? 1 : 0;
+    if (!a->is_num && !b->is_num)
+        return strcmp(a->skey, b->skey);
+    return a->is_num ? -1 : 1; /* numbers sort before strings */
+}
+
+/* stable bottom-up merge sort; `desc` reverses the order (ties keep original
+ * order in both directions). Returns 0, or -1 on OOM. */
+static int dyn_sortby_sort(JSContext *ctx, DynSortItem *items, int64_t n, int desc)
+{
+    DynSortItem *tmp;
+    int64_t width;
+    if (n < 2)
+        return 0;
+    tmp = js_malloc(ctx, (size_t)n * sizeof(*tmp));
+    if (!tmp)
+        return -1;
+    for (width = 1; width < n; width *= 2) {
+        int64_t i;
+        for (i = 0; i < n; i += 2 * width) {
+            int64_t mid = i + width < n ? i + width : n;
+            int64_t hi = i + 2 * width < n ? i + 2 * width : n;
+            int64_t l = i, r = mid, k = i;
+            while (l < mid && r < hi) {
+                int c = dyn_sortby_cmp(&items[l], &items[r]);
+                if (desc)
+                    c = -c;
+                tmp[k++] = (c <= 0) ? items[l++] : items[r++]; /* stable: left on tie */
+            }
+            while (l < mid) tmp[k++] = items[l++];
+            while (r < hi)  tmp[k++] = items[r++];
+        }
+        memcpy(items, tmp, (size_t)n * sizeof(*tmp));
+    }
+    js_free(ctx, tmp);
+    return 0;
+}
+
+static void dyn_sortby_free(JSContext *ctx, DynSortItem *items, int64_t n)
+{
+    int64_t i;
+    for (i = 0; i < n; i++) {
+        JS_FreeValue(ctx, items[i].val);
+        js_free(ctx, items[i].skey);
+    }
+    js_free(ctx, items);
+}
+
+/* _sortBy(map?, desc?) -> a new array sorted by the mapped value (identity /
+ * function / property-name). Numeric keys compare numerically, others by their
+ * string form (byte order); stable; desc reverses. */
+static JSValue js_array_ext_sortby(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj, arr, *pval, ret = JS_EXCEPTION;
+    JSValueConst map = argc > 0 ? argv[0] : JS_UNDEFINED;
+    DynSortItem *items = NULL;
+    JSObject *p;
+    int64_t len, i;
+    int desc = argc > 1 ? JS_ToBool(ctx, argv[1]) : 0;
+
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj))
+        goto done;
+    if (len == 0) { ret = JS_NewArray(ctx); goto done; }
+
+    items = js_mallocz(ctx, (size_t)len * sizeof(*items));
+    if (!items) { JS_ThrowOutOfMemory(ctx); goto done; }
+    for (i = 0; i < len; i++) {
+        JSValue el, key;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto fail;
+        items[i].val = el;               /* owned; cleanup frees it */
+        items[i].idx = (uint32_t)i;
+        key = js_array_ext_mapval(ctx, map, el);
+        if (JS_IsException(key)) goto fail;
+        if (JS_IsNumber(key)) {
+            items[i].is_num = 1;
+            JS_ToFloat64(ctx, &items[i].dkey, key);
+            JS_FreeValue(ctx, key);
+        } else {
+            const char *s = JS_ToCString(ctx, key);
+            JS_FreeValue(ctx, key);
+            if (!s) goto fail;
+            items[i].skey = js_strdup(ctx, s);
+            JS_FreeCString(ctx, s);
+            if (!items[i].skey) { JS_ThrowOutOfMemory(ctx); goto fail; }
+        }
+    }
+    if (dyn_sortby_sort(ctx, items, len, desc)) { JS_ThrowOutOfMemory(ctx); goto fail; }
+
+    arr = js_allocate_fast_array(ctx, len);
+    if (JS_IsException(arr)) goto fail;
+    p = JS_VALUE_GET_OBJ(arr);
+    pval = p->u.array.u.values;
+    for (i = 0; i < len; i++) {
+        pval[i] = items[i].val;          /* transfer ownership */
+        js_free(ctx, items[i].skey);
+    }
+    js_free(ctx, items);
+    items = NULL;
+    ret = arr;
+    goto done;
+ fail:
+    dyn_sortby_free(ctx, items, len);
+    items = NULL;
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _groupBy(map?) -> an object mapping each mapped key (identity / function /
+ * property-name) to the array of elements that produced it. */
+static JSValue js_array_ext_groupby(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue obj, result, ret = JS_EXCEPTION;
+    JSValueConst map = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, i;
+
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj))
+        goto done;
+    result = JS_NewObject(ctx);
+    if (JS_IsException(result))
+        goto done;
+    for (i = 0; i < len; i++) {
+        JSValue el, key, bucket;
+        JSAtom atom;
+        int64_t blen;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto fail;
+        key = js_array_ext_mapval(ctx, map, el);
+        if (JS_IsException(key)) { JS_FreeValue(ctx, el); goto fail; }
+        atom = JS_ValueToAtom(ctx, key);
+        JS_FreeValue(ctx, key);
+        if (atom == JS_ATOM_NULL) { JS_FreeValue(ctx, el); goto fail; }
+        bucket = JS_GetProperty(ctx, result, atom);
+        if (JS_IsException(bucket)) { JS_FreeAtom(ctx, atom); JS_FreeValue(ctx, el); goto fail; }
+        if (!JS_IsArray(ctx, bucket)) {
+            JS_FreeValue(ctx, bucket);
+            bucket = JS_NewArray(ctx);
+            if (JS_IsException(bucket) ||
+                JS_SetProperty(ctx, result, atom, JS_DupValue(ctx, bucket)) < 0) {
+                JS_FreeValue(ctx, bucket); JS_FreeAtom(ctx, atom); JS_FreeValue(ctx, el); goto fail;
+            }
+        }
+        JS_FreeAtom(ctx, atom);
+        if (js_get_length64(ctx, &blen, bucket) ||
+            JS_SetPropertyInt64(ctx, bucket, blen, el) < 0) { /* el consumed */
+            JS_FreeValue(ctx, bucket); goto fail;
+        }
+        JS_FreeValue(ctx, bucket);
+    }
+    ret = result;
+    goto done;
+ fail:
+    JS_FreeValue(ctx, result);
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _shuffle() -> a new array with the elements in uniformly-random order
+ * (Fisher-Yates over a fast-array copy, using the engine's Math.random PRNG). */
+static JSValue js_array_ext_shuffle(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue obj, arr;
+    JSObject *p;
+    JSValue *vals;
+    int64_t len, i;
+    (void)argc; (void)argv;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) {
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
+    arr = js_array_ext_build_range(ctx, obj, 0, len);
+    JS_FreeValue(ctx, obj);
+    if (JS_IsException(arr) || len < 2)
+        return arr;
+    p = JS_VALUE_GET_OBJ(arr);
+    vals = p->u.array.u.values;
+    for (i = len - 1; i > 0; i--) {
+        int64_t j = (int64_t)(xorshift64star(&ctx->random_state) % (uint64_t)(i + 1));
+        JSValue t = vals[i]; vals[i] = vals[j]; vals[j] = t;
+    }
+    return arr;
+}
+
+/* _sample(n?) -> a uniformly-random element (undefined if empty), or a new array
+ * of n distinct random elements (n>len -> all, shuffled). */
+static JSValue js_array_ext_sample(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj, full, ret = JS_EXCEPTION;
+    JSObject *p;
+    JSValue *vals;
+    int64_t len, i, n;
+
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj))
+        goto done;
+    if (argc == 0 || JS_IsUndefined(argv[0])) {          /* single element */
+        if (len == 0) ret = JS_UNDEFINED;
+        else {
+            int64_t j = (int64_t)(xorshift64star(&ctx->random_state) % (uint64_t)len);
+            if (js_array_ext_getel(ctx, obj, j, &ret)) ret = JS_EXCEPTION;
+        }
+        goto done;
+    }
+    if (JS_ToInt64Sat(ctx, &n, argv[0])) goto done;
+    if (n < 0) n = 0;
+    if (n > len) n = len;
+    full = js_array_ext_build_range(ctx, obj, 0, len);   /* fast-array copy */
+    if (JS_IsException(full)) goto done;
+    p = JS_VALUE_GET_OBJ(full);
+    vals = p->u.array.u.values;
+    for (i = len - 1; i > 0; i--) {                      /* full Fisher-Yates */
+        int64_t j = (int64_t)(xorshift64star(&ctx->random_state) % (uint64_t)(i + 1));
+        JSValue t = vals[i]; vals[i] = vals[j]; vals[j] = t;
+    }
+    ret = js_array_ext_build_range(ctx, full, 0, n);     /* first n */
+    JS_FreeValue(ctx, full);
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("_isEmpty", 0, js_array_ext_isEmpty ),
     JS_CFUNC_DEF("_first", 0, js_array_ext_first ),
@@ -1430,6 +1672,10 @@ static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_MAGIC_DEF("_drop", 1, js_array_ext_take, 1 ),
     JS_CFUNC_MAGIC_DEF("_takeLast", 1, js_array_ext_take, 2 ),
     JS_CFUNC_MAGIC_DEF("_dropLast", 1, js_array_ext_take, 3 ),
+    JS_CFUNC_DEF("_sortBy", 1, js_array_ext_sortby ),
+    JS_CFUNC_DEF("_groupBy", 1, js_array_ext_groupby ),
+    JS_CFUNC_DEF("_shuffle", 0, js_array_ext_shuffle ),
+    JS_CFUNC_DEF("_sample", 0, js_array_ext_sample ),
 };
 
 static const JSCFunctionListEntry js_array_proto_funcs[] = {

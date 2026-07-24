@@ -55,4 +55,14 @@ row("_compact",
     () => nums._compact(),
     () => nums.filter(x => x !== null && x !== undefined));
 
+/* batch 3: sortBy (numeric key) vs Array.sort with a comparator */
+row("_sortBy",
+    () => nums._sortBy(),
+    () => nums.slice().sort((a, b) => a - b));
+
+/* groupBy (mod-10 buckets) vs a hand-written reduce */
+row("_groupBy",
+    () => nums._groupBy(x => x % 10),
+    () => nums.reduce((acc, x) => { const k = x % 10; (acc[k] || (acc[k] = [])).push(x); return acc; }, {}));
+
 print("done");
