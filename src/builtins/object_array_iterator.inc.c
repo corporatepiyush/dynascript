@@ -6175,6 +6175,41 @@ static JSValue js_string_ext_stripTags(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* The spec URI encoders live later in the unity build (promise_async.inc.c);
+ * escapeURL/unescapeURL delegate to them so the reserved-set and malformed-
+ * sequence rules stay in one spec-tested place. magic 0=URI, 1=Component. */
+static JSValue js_global_encodeURI(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic);
+static JSValue js_global_decodeURI(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic);
+
+/* escapeURL(param=false) -> encodeURI(this), or encodeURIComponent(this) when
+ * param is truthy (Sugar: `param ? encodeURIComponent(str) : encodeURI(str)`). */
+static JSValue js_string_ext_escapeURL(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    int magic = ((argc > 0) && JS_ToBool(ctx, argv[0])) ? 1 : 0;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    ret = js_global_encodeURI(ctx, JS_UNDEFINED, 1, (JSValueConst *)&val, magic);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* unescapeURL(param=false) -> decodeURIComponent(this), or decodeURI(this) when
+ * param is truthy (Sugar: `param ? decodeURI(str) : decodeURIComponent(str)` —
+ * deliberately asymmetric to escapeURL). */
+static JSValue js_string_ext_unescapeURL(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    int magic = ((argc > 0) && JS_ToBool(ctx, argv[0])) ? 0 : 1;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    ret = js_global_decodeURI(ctx, JS_UNDEFINED, 1, (JSValueConst *)&val, magic);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
 /* words() -> array of whitespace-separated tokens (Sugar /\S+/g, empties
  * dropped). Tokens are short, so per-word SIMD find_first_of is the measured
  * short-span regression (see docparse); the boundary scan stays SCALAR. The
@@ -6352,6 +6387,8 @@ static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("lines", 0, js_string_ext_lines ),
     JS_CFUNC_DEF("encodeBase64", 0, js_string_ext_encodeBase64 ),
     JS_CFUNC_DEF("decodeBase64", 0, js_string_ext_decodeBase64 ),
+    JS_CFUNC_DEF("escapeURL", 1, js_string_ext_escapeURL ),
+    JS_CFUNC_DEF("unescapeURL", 1, js_string_ext_unescapeURL ),
 };
 
 static const JSCFunctionListEntry js_string_proto_funcs[] = {

@@ -384,4 +384,22 @@ eq("café ☕ π".encodeBase64().decodeBase64(), "café ☕ π", "base64 unicode
     eq(big.lines(), linesRef(big), "lines SIMD path");
 }
 
+/* ---- batch 5b: escapeURL / unescapeURL (delegate to spec URI builtins) ---- */
+eq("a b/c?d=e&f".escapeURL(), encodeURI("a b/c?d=e&f"), "escapeURL = encodeURI");
+eq("a b/c?d=e&f".escapeURL(true), encodeURIComponent("a b/c?d=e&f"), "escapeURL(true) = encodeURIComponent");
+eq("a%20b%2Fc".unescapeURL(), decodeURIComponent("a%20b%2Fc"), "unescapeURL = decodeURIComponent");
+eq("a%20b%2Fc".unescapeURL(true), decodeURI("a%20b%2Fc"), "unescapeURL(true) = decodeURI (asymmetric)");
+{
+    let rng = 31337;
+    const rand = () => (rng = (rng * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let t = 0; t < 500; t++) {
+        let s = "";
+        const nc = (rand() * 30) | 0;
+        for (let k = 0; k < nc; k++) s += String.fromCodePoint(0x20 + ((rand() * 0x3000) | 0));
+        eq(s.escapeURL(), encodeURI(s), "escapeURL differential t=" + t);
+        eq(s.escapeURL(true), encodeURIComponent(s), "escapeURL(true) differential t=" + t);
+        eq(s.escapeURL(true).unescapeURL(), s, "URL component round-trip t=" + t);
+    }
+}
+
 print("test_string_ext: all tests passed (" + n + " assertions)");
