@@ -6175,6 +6175,153 @@ static JSValue js_string_ext_stripTags(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* words() -> array of whitespace-separated tokens (Sugar /\S+/g, empties
+ * dropped). Tokens are short, so per-word SIMD find_first_of is the measured
+ * short-span regression (see docparse); the boundary scan stays SCALAR. The
+ * array is pre-sized by a first counting pass (no per-element property dispatch). */
+static JSValue js_string_ext_words(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue val, result, ret = JS_EXCEPTION;
+    JSString *p;
+    JSValue *dst;
+    uint32_t i, len, idx, nwords = 0;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    for (i = 0; i < len;) {                          /* count word runs */
+        while (i < len && lre_is_space(string_get(p, i))) i++;
+        if (i >= len) break;
+        nwords++;
+        while (i < len && !lre_is_space(string_get(p, i))) i++;
+    }
+    if (nwords == 0) { ret = JS_NewArray(ctx); goto done; }
+    result = js_allocate_fast_array(ctx, nwords);
+    if (JS_IsException(result)) goto done;
+    dst = JS_VALUE_GET_OBJ(result)->u.array.u.values;
+    idx = 0; i = 0;
+    while (idx < nwords) {
+        uint32_t ws;
+        while (i < len && lre_is_space(string_get(p, i))) i++;
+        ws = i;
+        while (i < len && !lre_is_space(string_get(p, i))) i++;
+        dst[idx] = js_sub_string(ctx, p, (int)ws, (int)i);
+        if (JS_IsException(dst[idx])) { JS_FreeValue(ctx, result); goto done; }
+        idx++;
+    }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* lines() -> array of lines (Sugar: trims first, splits on '\n', a trailing
+ * '\r' is stripped per line). Long narrow strings count newlines with count_u8
+ * (pre-size) and locate each with find_u8; wide/short scan scalar. */
+static JSValue js_string_ext_lines(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue val, result, ret = JS_EXCEPTION;
+    JSString *p;
+    JSValue *dst;
+    uint32_t start, end, i, seg, idx, nlines, nl_count = 0;
+    int narrow_long;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    start = 0; end = p->len;
+    while (start < end && lre_is_space(string_get(p, start))) start++;   /* trim */
+    while (end > start && lre_is_space(string_get(p, end - 1))) end--;
+    narrow_long = (!p->is_wide_char && (end - start) >= STRING_EXT_SIMD_MIN);
+    if (narrow_long)
+        nl_count = (uint32_t)simd.count_u8(p->u.str8 + start, (uint8_t)'\n', (size_t)(end - start));
+    else
+        for (i = start; i < end; i++) if (string_get(p, i) == '\n') nl_count++;
+    nlines = nl_count + 1;
+    result = js_allocate_fast_array(ctx, nlines);
+    if (JS_IsException(result)) goto done;
+    dst = JS_VALUE_GET_OBJ(result)->u.array.u.values;
+    seg = start; idx = 0; i = start;
+    while (idx < nlines) {
+        uint32_t nl, le;
+        if (narrow_long && (end - i) >= STRING_EXT_SIMD_MIN) {
+            size_t r = simd.find_u8(p->u.str8 + i, (uint8_t)'\n', (size_t)(end - i));
+            nl = (r == SIZE_MAX) ? end : (uint32_t)(i + r);
+        } else {
+            for (nl = i; nl < end && string_get(p, nl) != '\n'; nl++) ;
+        }
+        le = nl;
+        if (le > seg && string_get(p, le - 1) == '\r') le--;    /* strip trailing \r */
+        dst[idx] = js_sub_string(ctx, p, (int)seg, (int)le);
+        if (JS_IsException(dst[idx])) { JS_FreeValue(ctx, result); goto done; }
+        idx++;
+        if (nl >= end) break;
+        i = nl + 1; seg = i;
+    }
+    ret = result;
+ done:
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* encodeBase64() -> RFC 4648 base64 of the string's UTF-8 bytes (Sugar handles
+ * Unicode). SIMD base64_encode kernel. */
+static JSValue js_string_ext_encodeBase64(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
+{
+    JSValue val, ret = JS_EXCEPTION;
+    const char *utf8;
+    char *out;
+    size_t ulen, outlen;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    utf8 = JS_ToCStringLen(ctx, &ulen, val);
+    if (!utf8) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    out = js_malloc(ctx, 4 * ((ulen + 2) / 3) + 1);
+    if (!out) goto done;
+    outlen = simd.base64_encode((const uint8_t *)utf8, ulen, out);
+    ret = js_new_string8_len(ctx, out, (int)outlen);
+    js_free(ctx, out);
+ done:
+    JS_FreeCString(ctx, utf8);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* decodeBase64() -> the UTF-8 string decoded from RFC 4648 base64. SIMD
+ * base64_decode kernel; throws on an invalid character / bad length. */
+static JSValue js_string_ext_decodeBase64(JSContext *ctx, JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
+{
+    JSValue val, ret = JS_EXCEPTION;
+    const char *src;
+    uint8_t *out;
+    size_t slen, outlen;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    src = JS_ToCStringLen(ctx, &slen, val);
+    if (!src) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    out = js_malloc(ctx, 3 * (slen / 4) + 4);
+    if (!out) goto done;
+    outlen = simd.base64_decode(src, slen, out);
+    if (outlen == (size_t)-1) {
+        js_free(ctx, out);
+        JS_ThrowTypeError(ctx, "decodeBase64: invalid base64 input");
+        goto done;
+    }
+    ret = JS_NewStringLen(ctx, (const char *)out, outlen);   /* UTF-8 decode */
+    js_free(ctx, out);
+ done:
+    JS_FreeCString(ctx, src);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("isEmpty", 0, js_string_ext_isEmpty ),
     JS_CFUNC_DEF("isBlank", 0, js_string_ext_isBlank ),
@@ -6201,6 +6348,10 @@ static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("escapeHTML", 0, js_string_ext_escapeHTML ),
     JS_CFUNC_DEF("unescapeHTML", 0, js_string_ext_unescapeHTML ),
     JS_CFUNC_DEF("stripTags", 0, js_string_ext_stripTags ),
+    JS_CFUNC_DEF("words", 0, js_string_ext_words ),
+    JS_CFUNC_DEF("lines", 0, js_string_ext_lines ),
+    JS_CFUNC_DEF("encodeBase64", 0, js_string_ext_encodeBase64 ),
+    JS_CFUNC_DEF("decodeBase64", 0, js_string_ext_decodeBase64 ),
 };
 
 static const JSCFunctionListEntry js_string_proto_funcs[] = {

@@ -75,4 +75,30 @@ row("stripTags",
     () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= htmlDoc.stripTags().length; return s; },
     () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= htmlDoc.replace(/<[^]+?>/g,"").length; return s; });
 
+print("=== words / lines (SIMD scan) + base64 (SIMD kernel) ===");
+const prose = ("The quick brown fox jumps over the lazy dog and then some more words here.\n").repeat(800); // ~60KB
+print("prose len=" + prose.length);
+
+row("words",
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= prose.words().length; return s; },
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= (prose.match(/\S+/g) || []).length; return s; });
+
+row("lines",
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= prose.lines().length; return s; },
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= prose.trim().split("\n").length; return s; });
+
+const b64src = prose.slice(0, 30000);
+const jsB64 = (s) => { /* naive JS base64 of char codes (ASCII slice) — reference only */
+    const T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let o = "", i = 0;
+    for (; i + 2 < s.length; i += 3) {
+        const n = (s.charCodeAt(i) << 16) | (s.charCodeAt(i+1) << 8) | s.charCodeAt(i+2);
+        o += T[(n>>18)&63] + T[(n>>12)&63] + T[(n>>6)&63] + T[n&63];
+    }
+    return o;
+};
+row("encodeBase64",
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= b64src.encodeBase64().length; return s; },
+    () => { let s = 0; for (let i = 0; i < ITER; i++) s ^= jsB64(b64src).length; return s; });
+
 print("done");

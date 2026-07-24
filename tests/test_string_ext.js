@@ -338,4 +338,50 @@ eq("open <tag no close".stripTags(), "open <tag no close", "stripTags unterminat
     eq(w.stripTags(), stripRef(w), "stripTags wide path");
 }
 
+/* ---- batch 5: words / lines (SIMD scan) + base64 (SIMD kernel) ---- */
+eq("  the quick  brown\tfox ".words(), ["the", "quick", "brown", "fox"], "words basic");
+eq("".words(), [], "words empty -> []");
+eq("   ".words(), [], "words all-ws -> []");
+eq("one".words(), ["one"], "words single");
+eq("a\nb\r\nc".lines(), ["a", "b", "c"], "lines LF + CRLF");
+eq("  \n line1 \n\n line3 \n ".lines(), ["line1 ", "", " line3"], "lines trim whole, keep interior spaces");
+eq("".lines(), [""], "lines empty -> ['']");
+eq("solo".lines(), ["solo"], "lines single");
+eq("Man".encodeBase64(), "TWFu", "base64 Man");
+eq("hello".encodeBase64(), "aGVsbG8=", "base64 hello (padding)");
+eq("hi".encodeBase64(), "aGk=", "base64 hi");
+eq("TWFu".decodeBase64(), "Man", "base64 decode");
+eq("café ☕ π".encodeBase64().decodeBase64(), "café ☕ π", "base64 unicode round-trip");
+{ let threw = false; try { "not valid!!".decodeBase64(); } catch (e) { threw = true; } assert(threw, "decodeBase64 throws on invalid"); }
+
+{   /* differential oracles, fuzzed over BOTH scalar and SIMD (>=64B) paths */
+    const wordsRef = s => s.match(/\S+/g) || [];
+    const linesRef = s => {
+        const t = s.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+        if (t === "") return [""];
+        return t.split("\n").map(l => l.endsWith("\r") ? l.slice(0, -1) : l);
+    };
+    const toks = ["word", " ", "  ", "\t", "\n", "\r\n", "aVeryLongUnbrokenTokenThatExceedsSixtyFourBytesForSureXXXXXXXXXXXX", "x", "\r"];
+    let rng = 55555;
+    const rand = () => (rng = (rng * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let t = 0; t < 3000; t++) {
+        let s = "";
+        const nt = 1 + ((rng >> 3) % 30);
+        for (let k = 0; k < nt; k++) s += toks[(rand() * toks.length) | 0];
+        eq(s.words(), wordsRef(s), "words differential t=" + t + " len=" + s.length);
+        eq(s.lines(), linesRef(s), "lines differential t=" + t + " len=" + s.length);
+    }
+    /* base64 round-trip fuzz (ASCII + unicode) */
+    for (let t = 0; t < 500; t++) {
+        let s = "";
+        const nc = (rand() * 40) | 0;
+        for (let k = 0; k < nc; k++) s += String.fromCodePoint(1 + ((rand() * 0x2000) | 0));
+        eq(s.encodeBase64().decodeBase64(), s, "base64 round-trip t=" + t);
+    }
+    /* explicit long narrow input forces the lines SIMD path */
+    const big = ("line of text number here\n").repeat(6);   /* >64, narrow, many \n */
+    assert(big.length >= 64, "lines SIMD input long");
+    eq(big.lines(), linesRef(big), "lines SIMD path");
+}
+
 print("test_string_ext: all tests passed (" + n + " assertions)");
