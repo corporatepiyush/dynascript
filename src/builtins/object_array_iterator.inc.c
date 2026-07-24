@@ -5549,8 +5549,26 @@ static JSValue js_string_ext_remove(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* The Latin1 whitespace bytes, DERIVED from the engine's own ctype table (never
+ * hardcoded), so a narrow-string SIMD scan agrees exactly with lre_is_space.
+ * Returns the count (<= sizeof set); the set fits the find_first_of vector path
+ * when count <= 8, which it is for this engine's Latin1 whitespace. */
+static int js_string_ext_ws_bytes(uint8_t set[16])
+{
+    int c, n = 0;
+    for (c = 0; c < 256 && n < 16; c++)
+        if (lre_is_space_byte((uint8_t)c))
+            set[n++] = (uint8_t)c;
+    return n;
+}
+
+/* Below this length the indirect SIMD-kernel call does not amortize (per the
+ * measured short-span find_first_of regression); scan scalar instead. */
+#define STRING_EXT_SIMD_MIN 64
+
 /* compact() -> trims the ends and collapses every internal whitespace run to a
- * single space (whitespace per lre_is_space, matching trim()). */
+ * single space (whitespace per lre_is_space, matching trim()). Long narrow
+ * strings bound each clean run with a SIMD whitespace search and bulk-copy it. */
 static JSValue js_string_ext_compact(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv)
 {
@@ -5558,21 +5576,48 @@ static JSValue js_string_ext_compact(JSContext *ctx, JSValueConst this_val,
     JSString *p;
     StringBuffer b_s, *b = &b_s;
     uint32_t i, len;
-    int in_ws = 0, wrote = 0;
+    int wrote = 0;
     (void)argc; (void)argv;
     val = JS_ToStringCheckObject(ctx, this_val);
     if (JS_IsException(val)) return val;
     p = JS_VALUE_GET_STRING(val);
     len = p->len;
     if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
-    for (i = 0; i < len; i++) {
-        int c = string_get(p, i);
-        if (lre_is_space(c)) {
-            in_ws = 1;
-        } else {
-            if (in_ws && wrote) string_buffer_putc8(b, ' ');
-            in_ws = 0;
-            string_buffer_putc16(b, c);
+    i = 0;
+    if (!p->is_wide_char && len >= STRING_EXT_SIMD_MIN) {
+        const uint8_t *s8 = p->u.str8;
+        uint8_t wsset[16];
+        int wsn = js_string_ext_ws_bytes(wsset);
+        while (i < len) {
+            uint32_t ws_start = i, run_end;
+            size_t r;
+            while (i < len && lre_is_space_byte(s8[i]))       /* skip a ws run (short) */
+                i++;
+            if (i >= len)
+                break;
+            r = simd.find_first_of(s8 + i, (size_t)(len - i), wsset, (size_t)wsn);
+            run_end = (r == SIZE_MAX) ? len : (uint32_t)(i + r);   /* end of clean run */
+            if (i > ws_start && wrote)
+                string_buffer_putc8(b, ' ');
+            string_buffer_concat(b, p, i, run_end);          /* bulk-copy the clean run */
+            wrote = 1;
+            i = run_end;
+        }
+    } else {
+        while (i < len) {
+            uint32_t ws_start = i, run_start;
+            int had_ws;
+            while (i < len && lre_is_space(string_get(p, i)))
+                i++;
+            had_ws = (i > ws_start);
+            if (i >= len)
+                break;
+            run_start = i;
+            while (i < len && !lre_is_space(string_get(p, i)))
+                i++;
+            if (had_ws && wrote)
+                string_buffer_putc8(b, ' ');
+            string_buffer_concat(b, p, run_start, i);
             wrote = 1;
         }
     }

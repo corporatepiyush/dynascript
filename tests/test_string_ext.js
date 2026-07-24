@@ -113,4 +113,25 @@ eq("".compact(), "", "compact empty");
 /* reentrant valueOf/toString args must not corrupt the result */
 eq("hello".insert({ toString() { return "!" } }, { valueOf() { return 2 } }), "he!llo", "insert with object args");
 
+/* compact differential oracle: native (SIMD path >= 64 narrow chars, scalar
+ * below) must byte-match `s.trim().replace(/\s+/g,' ')` — an exact reference
+ * because trim() and \s share this engine's lre_is_space whitespace set. Cross
+ * the 64-byte threshold and include NBSP (a Latin1 whitespace byte). */
+{
+    const ref = s => s.trim().replace(/\s+/g, " ");
+    const parts = ["word", "  ", "\t", " ", "x", "  \n ", "aVeryLongTokenIndeed", " "];
+    let rng = 123456789;
+    const rand = () => (rng = (rng * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let t = 0; t < 4000; t++) {
+        let s = "";
+        const par8 = 1 + ((rng >> 3) % 40);          /* vary length across the 64 threshold */
+        for (let k = 0; k < par8; k++) s += parts[(rand() * parts.length) | 0];
+        eq(s.compact(), ref(s), "compact differential t=" + t + " len=" + s.length);
+    }
+    /* explicit long narrow with NBSP exercises the SIMD path's derived ws set */
+    const nb = ("alpha\u00A0\u00A0beta   gamma\t").repeat(8);  /* > 64, narrow, NBSP */
+    eq(nb.compact(), ref(nb), "compact SIMD path collapses NBSP runs");
+    assert(nb.length >= 64 && ![...nb].some(c => c.charCodeAt(0) > 255), "NBSP test string is long + narrow");
+}
+
 print("test_string_ext: all tests passed (" + n + " assertions)");
