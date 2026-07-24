@@ -5886,6 +5886,99 @@ static JSValue js_string_ext_camelize(JSContext *ctx, JSValueConst this_val,
     return string_buffer_end(b);
 }
 
+/* Largest prefix length <= want that does not split the trailing word (word =
+ * a run of non-whitespace code units), with trailing whitespace trimmed. Used
+ * by truncateOnWord's 'right'/front side. */
+static uint32_t js_str_word_prefix_cut(JSString *p, uint32_t want)
+{
+    uint32_t cut = want;
+    if (cut < p->len && !lre_is_space(string_get(p, cut)) &&
+        cut > 0 && !lre_is_space(string_get(p, cut - 1)))
+        while (cut > 0 && !lre_is_space(string_get(p, cut - 1)))   /* back off partial word */
+            cut--;
+    while (cut > 0 && lre_is_space(string_get(p, cut - 1)))        /* trim trailing ws */
+        cut--;
+    return cut;
+}
+
+/* Smallest start index so [start,len) is at most `want` code units and does not
+ * split the leading word, with leading whitespace trimmed. truncateOnWord 'left'/back. */
+static uint32_t js_str_word_suffix_start(JSString *p, uint32_t want)
+{
+    uint32_t len = p->len, start = (want >= len) ? 0 : len - want;
+    if (start > 0 && !lre_is_space(string_get(p, start)) &&
+        !lre_is_space(string_get(p, start - 1)))
+        while (start < len && !lre_is_space(string_get(p, start)))  /* skip partial word */
+            start++;
+    while (start < len && lre_is_space(string_get(p, start)))       /* trim leading ws */
+        start++;
+    return start;
+}
+
+/* Shared truncate(length, from='right', ellipsis='...') / truncateOnWord (magic
+ * bit 1 = on-word). Returns the string unchanged (dup) when len <= length; the
+ * ellipsis is added OUTSIDE the kept length (Sugar). from: 'left'|'middle'|else right. */
+static JSValue js_string_ext_truncate(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv, int magic)
+{
+    JSValue val, ellv = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSString *p, *ell = NULL;
+    StringBuffer b_s, *b = &b_s;
+    const char *from = NULL;
+    int32_t length = 0;
+    int on_word = magic & 1, mode;   /* mode: 0 right, 1 left, 2 middle */
+    uint32_t len, want, front, back, fc, ss;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (argc > 0 && !JS_IsUndefined(argv[0]) && JS_ToInt32(ctx, &length, argv[0])) goto done;
+    if (argc > 1 && !JS_IsUndefined(argv[1])) {
+        from = JS_ToCString(ctx, argv[1]);
+        if (!from) goto done;
+    }
+    if (argc > 2 && !JS_IsUndefined(argv[2])) {
+        ellv = JS_ToString(ctx, argv[2]);
+        if (JS_IsException(ellv)) goto done;
+    } else {
+        ellv = js_new_string8_len(ctx, "...", 3);   /* Sugar default ellipsis */
+        if (JS_IsException(ellv)) goto done;
+    }
+    mode = (from && !strcmp(from, "left")) ? 1 : (from && !strcmp(from, "middle")) ? 2 : 0;
+    p = JS_VALUE_GET_STRING(val);
+    ell = JS_VALUE_GET_STRING(ellv);
+    len = p->len;
+    if (length < 0) length = 0;
+    want = (uint32_t)length;
+    if (len <= want) { ret = JS_DupValue(ctx, val); goto done; }   /* no truncation */
+    if (string_buffer_init2(ctx, b, want + ell->len, p->is_wide_char || ell->is_wide_char))
+        goto done;
+    switch (mode) {
+    case 1:   /* left: ellipsis + suffix */
+        ss = on_word ? js_str_word_suffix_start(p, want) : len - want;
+        string_buffer_concat(b, ell, 0, ell->len);
+        string_buffer_concat(b, p, ss, len);
+        break;
+    case 2:   /* middle: front + ellipsis + back, front gets the odd char */
+        front = (want + 1) / 2; back = want - front;
+        fc = on_word ? js_str_word_prefix_cut(p, front) : front;
+        ss = on_word ? js_str_word_suffix_start(p, back) : len - back;
+        string_buffer_concat(b, p, 0, fc);
+        string_buffer_concat(b, ell, 0, ell->len);
+        string_buffer_concat(b, p, ss, len);
+        break;
+    default:  /* right: prefix + ellipsis */
+        fc = on_word ? js_str_word_prefix_cut(p, want) : want;
+        string_buffer_concat(b, p, 0, fc);
+        string_buffer_concat(b, ell, 0, ell->len);
+        break;
+    }
+    ret = string_buffer_end(b);
+ done:
+    if (from) JS_FreeCString(ctx, from);
+    JS_FreeValue(ctx, ellv);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("isEmpty", 0, js_string_ext_isEmpty ),
     JS_CFUNC_DEF("isBlank", 0, js_string_ext_isBlank ),
@@ -5907,6 +6000,8 @@ static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_MAGIC_DEF("dasherize", 0, js_string_ext_inflect, '-' ),
     JS_CFUNC_MAGIC_DEF("spacify", 0, js_string_ext_inflect, ' ' ),
     JS_CFUNC_DEF("camelize", 1, js_string_ext_camelize ),
+    JS_CFUNC_MAGIC_DEF("truncate", 3, js_string_ext_truncate, 0 ),
+    JS_CFUNC_MAGIC_DEF("truncateOnWord", 3, js_string_ext_truncate, 1 ),
 };
 
 static const JSCFunctionListEntry js_string_proto_funcs[] = {

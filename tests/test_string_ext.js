@@ -235,4 +235,69 @@ eq("".underscore(), "", "underscore empty");
     eq("x".pad({ valueOf() { return 5; } }, "-"), "--x--", "pad coerces num arg");
 }
 
+/* ---- batch 3b: truncate / truncateOnWord ---- */
+eq("just sittin on the dock".truncate(18), "just sittin on the...", "truncate right (Sugar)");
+eq("sittin on the dock".truncate(10, "left"), "...n the dock", "truncate left (Sugar)");
+eq("hello".truncate(10), "hello", "truncate no-op when short");
+eq("hello".truncate(5), "hello", "truncate no-op at exact length");
+eq("hello world".truncate(5), "hello...", "truncate right, ellipsis is extra");
+eq("hello world".truncate(5, "right", "…"), "hello…", "truncate custom ellipsis");
+eq("here we go".truncateOnWord(5), "here...", "truncateOnWord trims to word");
+eq("here we go".truncateOnWord(6), "here...", "truncateOnWord backs off a partial word");
+eq("abcdefghij".truncate(4, "middle"), "ab...ij", "truncate middle even");
+eq("abcdefghij".truncate(5, "middle"), "abc...ij", "truncate middle odd -> front");
+eq("hi".truncate(-3), "...", "truncate negative length clamps to 0 (ellipsis still added)");
+
+{   /* differential oracle mirroring the C truncation rules, fuzzed */
+    const isWs = c => /\s/.test(c);
+    function wordPrefixCut(s, want) {
+        let cut = Math.min(want, s.length);
+        if (cut < s.length && !isWs(s[cut]) && cut > 0 && !isWs(s[cut - 1]))
+            while (cut > 0 && !isWs(s[cut - 1])) cut--;
+        while (cut > 0 && isWs(s[cut - 1])) cut--;
+        return cut;
+    }
+    function wordSuffixStart(s, want) {
+        let start = want >= s.length ? 0 : s.length - want;
+        if (start > 0 && !isWs(s[start]) && !isWs(s[start - 1]))
+            while (start < s.length && !isWs(s[start])) start++;
+        while (start < s.length && isWs(s[start])) start++;
+        return start;
+    }
+    function truncRef(s, length, from, ell, onWord) {
+        if (length < 0) length = 0;
+        if (s.length <= length) return s;
+        if (from === "left") {
+            const ss = onWord ? wordSuffixStart(s, length) : s.length - length;
+            return ell + s.slice(ss);
+        }
+        if (from === "middle") {
+            const front = (length + 1) >> 1, back = length - front;
+            const fc = onWord ? wordPrefixCut(s, front) : front;
+            const ss = onWord ? wordSuffixStart(s, back) : s.length - back;
+            return s.slice(0, fc) + ell + s.slice(ss);
+        }
+        const fc = onWord ? wordPrefixCut(s, length) : length;
+        return s.slice(0, fc) + ell;
+    }
+    const words = ["alpha", "b", "quick", "fox", "  ", " ", "hi", "x"];
+    let rng = 424242;
+    const rand = () => (rng = (rng * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let t = 0; t < 2500; t++) {
+        let s = "";
+        const nt = 1 + ((rng >> 4) % 8);
+        for (let k = 0; k < nt; k++) s += words[(rand() * words.length) | 0] + " ";
+        const length = (rand() * (s.length + 3)) | 0;
+        for (const from of ["right", "left", "middle"]) {
+            eq(s.truncate(length, from), truncRef(s, length, from, "...", false), "truncate diff t=" + t);
+            eq(s.truncateOnWord(length, from), truncRef(s, length, from, "...", true), "truncateOnWord diff t=" + t);
+        }
+    }
+}
+
+{   /* reentrancy: length/from/ellipsis coerced before the receiver is read */
+    eq("hello world".truncate({ valueOf() { return 5; } }), "hello...", "truncate coerces length");
+    eq("hello world".truncate(5, { toString() { return "right"; } }, "!"), "hello!", "truncate coerces from + ellipsis");
+}
+
 print("test_string_ext: all tests passed (" + n + " assertions)");
