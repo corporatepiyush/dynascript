@@ -384,6 +384,10 @@ int JS_AddIntrinsicBaseObjects(JSContext *ctx)
     if (JS_IsException(obj1))
         return -1;
     ctx->function_ctor = obj1;
+    /* RamdaJS/SugarJS Function.prototype combinators (SUGAR_RAMDA_NATIVE.md,
+     * phase 5), installed non-enumerable on Function.prototype. */
+    JS_SetPropertyFunctionList(ctx, ctx->function_proto, js_function_ext_funcs,
+                               countof(js_function_ext_funcs));
 
     /* Iterator */
     obj2 = JS_NewCConstructor(ctx, JS_CLASS_ITERATOR, "Iterator",
