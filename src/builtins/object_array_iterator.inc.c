@@ -1065,6 +1065,40 @@ static int js_array_ext_getel(JSContext *ctx, JSValueConst obj, int64_t i,
     return 0;
 }
 
+/* Build a fresh array from obj[start..end) (both already clamped, start<=end).
+ * Uses a pre-sized fast array + a direct bulk dup when the source is a fast
+ * array (the common case; matches js_array_slice's speed), falling back to the
+ * generic per-index read otherwise. js_allocate_fast_array pre-fills every slot
+ * with JS_UNDEFINED, so bailing mid-fill and freeing the array is safe. */
+static JSValue js_array_ext_build_range(JSContext *ctx, JSValueConst obj,
+                                        int64_t start, int64_t end)
+{
+    JSValue arr, *arrp, *pval;
+    JSObject *p;
+    int64_t i, n = end - start;
+    uint32_t count32;
+
+    if (n <= 0)
+        return JS_NewArray(ctx);
+    arr = js_allocate_fast_array(ctx, n);
+    if (JS_IsException(arr))
+        return arr;
+    p = JS_VALUE_GET_OBJ(arr);
+    pval = p->u.array.u.values;
+    if (js_get_fast_array(ctx, obj, &arrp, &count32) && (int64_t)count32 >= end) {
+        for (i = start; i < end; i++, pval++)
+            *pval = JS_DupValue(ctx, arrp[i]);
+    } else {
+        for (i = start; i < end; i++, pval++) {
+            if (JS_TryGetPropertyInt64(ctx, obj, i, pval) < 0) {
+                JS_FreeValue(ctx, arr);
+                return JS_EXCEPTION;
+            }
+        }
+    }
+    return arr;
+}
+
 /* _isEmpty() -> length === 0 */
 static JSValue js_array_ext_isEmpty(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv)
@@ -1087,7 +1121,7 @@ static JSValue js_array_ext_first(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
 {
     JSValue obj, ret = JS_EXCEPTION;
-    int64_t len, i, n;
+    int64_t len, n;
     obj = JS_ToObject(ctx, this_val);
     if (js_get_length64(ctx, &len, obj))
         goto done;
@@ -1104,23 +1138,7 @@ static JSValue js_array_ext_first(JSContext *ctx, JSValueConst this_val,
         n = 0;
     if (n > len)
         n = len;
-    {
-        JSValue a = JS_NewArray(ctx);
-        if (JS_IsException(a))
-            goto done;
-        for (i = 0; i < n; i++) {
-            JSValue v;
-            if (js_array_ext_getel(ctx, obj, i, &v)) {
-                JS_FreeValue(ctx, a);
-                goto done;
-            }
-            if (JS_DefinePropertyValueInt64(ctx, a, i, v, JS_PROP_C_W_E) < 0) {
-                JS_FreeValue(ctx, a);
-                goto done;
-            }
-        }
-        ret = a;
-    }
+    ret = js_array_ext_build_range(ctx, obj, 0, n);
  done:
     JS_FreeValue(ctx, obj);
     return ret;
@@ -1132,7 +1150,7 @@ static JSValue js_array_ext_last(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
 {
     JSValue obj, ret = JS_EXCEPTION;
-    int64_t len, i, n, start;
+    int64_t len, n;
     obj = JS_ToObject(ctx, this_val);
     if (js_get_length64(ctx, &len, obj))
         goto done;
@@ -1149,24 +1167,7 @@ static JSValue js_array_ext_last(JSContext *ctx, JSValueConst this_val,
         n = 0;
     if (n > len)
         n = len;
-    start = len - n;
-    {
-        JSValue a = JS_NewArray(ctx);
-        if (JS_IsException(a))
-            goto done;
-        for (i = 0; i < n; i++) {
-            JSValue v;
-            if (js_array_ext_getel(ctx, obj, start + i, &v)) {
-                JS_FreeValue(ctx, a);
-                goto done;
-            }
-            if (JS_DefinePropertyValueInt64(ctx, a, i, v, JS_PROP_C_W_E) < 0) {
-                JS_FreeValue(ctx, a);
-                goto done;
-            }
-        }
-        ret = a;
-    }
+    ret = js_array_ext_build_range(ctx, obj, len - n, len);
  done:
     JS_FreeValue(ctx, obj);
     return ret;
@@ -1238,6 +1239,179 @@ static JSValue js_array_ext_compact(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* Apply a Sugar/Ramda "mapper" to an element: undefined -> the element itself;
+ * a function -> fn(element); anything else -> element[key] (a property name).
+ * Returns an owned JSValue or JS_EXCEPTION. `el` is borrowed. */
+static JSValue js_array_ext_mapval(JSContext *ctx, JSValueConst map,
+                                   JSValueConst el)
+{
+    if (JS_IsUndefined(map))
+        return JS_DupValue(ctx, el);
+    if (JS_IsFunction(ctx, map))
+        return JS_Call(ctx, map, JS_UNDEFINED, 1, &el);
+    {
+        JSAtom a = JS_ValueToAtom(ctx, map);
+        JSValue v;
+        if (a == JS_ATOM_NULL)
+            return JS_EXCEPTION;
+        v = JS_GetProperty(ctx, el, a);
+        JS_FreeAtom(ctx, a);
+        return v;
+    }
+}
+
+/* Match a Sugar/Ramda "matcher" against an element: a function -> ToBool(fn(el));
+ * otherwise SameValueZero(matcher, el). Returns 1, 0, or -1 (exception). */
+static int js_array_ext_match(JSContext *ctx, JSValueConst match,
+                              JSValueConst el)
+{
+    if (JS_IsFunction(ctx, match)) {
+        JSValue r = JS_Call(ctx, match, JS_UNDEFINED, 1, &el);
+        int b;
+        if (JS_IsException(r))
+            return -1;
+        b = JS_ToBool(ctx, r);
+        JS_FreeValue(ctx, r);
+        return b;
+    }
+    return JS_SameValueZero(ctx, match, el) ? 1 : 0;
+}
+
+/* _count(match?) -> length with no argument; else the number of elements the
+ * matcher accepts (a value by SameValueZero, or a predicate function). */
+static JSValue js_array_ext_count(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv)
+{
+    JSValue obj, ret = JS_EXCEPTION;
+    int64_t len, i, c = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj))
+        goto done;
+    if (argc == 0 || JS_IsUndefined(argv[0])) {
+        ret = JS_NewInt64(ctx, len);
+        goto done;
+    }
+    for (i = 0; i < len; i++) {
+        JSValue el;
+        int m;
+        if (js_array_ext_getel(ctx, obj, i, &el))
+            goto done;
+        m = js_array_ext_match(ctx, argv[0], el);
+        JS_FreeValue(ctx, el);
+        if (m < 0)
+            goto done;
+        c += m;
+    }
+    ret = JS_NewInt64(ctx, c);
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _none / _any / _all (magic 0/1/2) against a value or predicate matcher. */
+static JSValue js_array_ext_quantify(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv, int magic)
+{
+    JSValue obj, ret = JS_EXCEPTION;
+    int64_t len, i;
+    JSValueConst match = argc > 0 ? argv[0] : JS_UNDEFINED;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj))
+        goto done;
+    for (i = 0; i < len; i++) {
+        JSValue el;
+        int m;
+        if (js_array_ext_getel(ctx, obj, i, &el))
+            goto done;
+        m = js_array_ext_match(ctx, match, el);
+        JS_FreeValue(ctx, el);
+        if (m < 0)
+            goto done;
+        if (magic == 1 && m) { ret = JS_TRUE;  goto done; } /* any: found  */
+        if (magic == 0 && m) { ret = JS_FALSE; goto done; } /* none: found */
+        if (magic == 2 && !m){ ret = JS_FALSE; goto done; } /* all: missed */
+    }
+    ret = (magic == 1) ? JS_FALSE : JS_TRUE; /* any->false, none/all->true */
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _min / _max (magic 0/1): return the ELEMENT whose mapped value (undefined =
+ * identity, a function, or a property name) is numerically smallest/largest
+ * (first on a tie). Empty -> undefined. */
+static JSValue js_array_ext_minmax(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv, int magic)
+{
+    JSValue obj, best = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValueConst map = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, i;
+    double best_key = 0;
+    int have = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj))
+        goto fail;
+    for (i = 0; i < len; i++) {
+        JSValue el, key;
+        double d;
+        int r;
+        if (js_array_ext_getel(ctx, obj, i, &el))
+            goto fail;
+        key = js_array_ext_mapval(ctx, map, el);
+        if (JS_IsException(key)) {
+            JS_FreeValue(ctx, el);
+            goto fail;
+        }
+        r = JS_ToFloat64(ctx, &d, key);
+        JS_FreeValue(ctx, key);
+        if (r) {
+            JS_FreeValue(ctx, el);
+            goto fail;
+        }
+        if (!have || (magic == 0 ? d < best_key : d > best_key)) {
+            JS_FreeValue(ctx, best);
+            best = el;
+            best_key = d;
+            have = 1;
+        } else {
+            JS_FreeValue(ctx, el);
+        }
+    }
+    ret = best;          /* transfer ownership (JS_UNDEFINED if empty) */
+    best = JS_UNDEFINED;
+ fail:
+    JS_FreeValue(ctx, best);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _take / _drop / _takeLast / _dropLast (magic 0/1/2/3) -> a new array. n is
+ * clamped to [0,len]; a negative or missing n is treated as 0. */
+static JSValue js_array_ext_take(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv, int magic)
+{
+    JSValue obj, ret = JS_EXCEPTION;
+    int64_t len, n;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj))
+        goto done;
+    if (JS_ToInt64Sat(ctx, &n, argc > 0 ? argv[0] : JS_UNDEFINED))
+        goto done;
+    if (n < 0)
+        n = 0;
+    if (n > len)
+        n = len;
+    switch (magic) {
+    case 0: ret = js_array_ext_build_range(ctx, obj, 0, n); break;       /* take */
+    case 1: ret = js_array_ext_build_range(ctx, obj, n, len); break;     /* drop */
+    case 2: ret = js_array_ext_build_range(ctx, obj, len - n, len); break;/* takeLast */
+    default:ret = js_array_ext_build_range(ctx, obj, 0, len - n); break; /* dropLast */
+    }
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("_isEmpty", 0, js_array_ext_isEmpty ),
     JS_CFUNC_DEF("_first", 0, js_array_ext_first ),
@@ -1246,6 +1420,16 @@ static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_MAGIC_DEF("_average", 0, js_array_ext_sum_avg, 1 ),
     JS_ALIAS_DEF("_mean", "_average" ),
     JS_CFUNC_DEF("_compact", 0, js_array_ext_compact ),
+    JS_CFUNC_DEF("_count", 1, js_array_ext_count ),
+    JS_CFUNC_MAGIC_DEF("_none", 1, js_array_ext_quantify, 0 ),
+    JS_CFUNC_MAGIC_DEF("_any", 1, js_array_ext_quantify, 1 ),
+    JS_CFUNC_MAGIC_DEF("_all", 1, js_array_ext_quantify, 2 ),
+    JS_CFUNC_MAGIC_DEF("_min", 1, js_array_ext_minmax, 0 ),
+    JS_CFUNC_MAGIC_DEF("_max", 1, js_array_ext_minmax, 1 ),
+    JS_CFUNC_MAGIC_DEF("_take", 1, js_array_ext_take, 0 ),
+    JS_CFUNC_MAGIC_DEF("_drop", 1, js_array_ext_take, 1 ),
+    JS_CFUNC_MAGIC_DEF("_takeLast", 1, js_array_ext_take, 2 ),
+    JS_CFUNC_MAGIC_DEF("_dropLast", 1, js_array_ext_take, 3 ),
 };
 
 static const JSCFunctionListEntry js_array_proto_funcs[] = {

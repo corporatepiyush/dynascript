@@ -45,4 +45,51 @@ eq(Array.prototype._first.call({ 0: "a", 1: "b", length: 2 }, 2), ["a", "b"], "_
 /* a re-entrant valueOf arg must not corrupt the result */
 eq([1, 2, 3]._first({ valueOf() { return 2; } }), [1, 2], "_first coerces an object arg");
 
+/* ---- batch 2: _count / _none / _any / _all (matcher variants) ---- */
+/* _count variants: no-arg → length; value (SameValueZero); predicate fn */
+eq([1, 2, 2, 3, 2]._count(), 5, "_count() → length");
+eq([1, 2, 2, 3, 2]._count(2), 3, "_count(value) counts equal");
+eq([1, 2, 3, 4, 5]._count(x => x % 2 === 0), 2, "_count(fn) counts predicate");
+eq([NaN, 1, NaN]._count(NaN), 2, "_count(NaN) uses SameValueZero");
+eq([]._count(x => true), 0, "_count of empty → 0");
+/* _none / _any / _all — value variant */
+assert([1, 2, 3]._none(4) === true, "_none(value) true when absent");
+assert([1, 2, 3]._none(2) === false, "_none(value) false when present");
+assert([1, 2, 3]._any(2) === true, "_any(value) true when present");
+assert([1, 2, 3]._any(9) === false, "_any(value) false when absent");
+/* _none / _any / _all — predicate variant */
+assert([2, 4, 6]._all(x => x % 2 === 0) === true, "_all(fn) true");
+assert([2, 4, 5]._all(x => x % 2 === 0) === false, "_all(fn) false");
+assert([1, 3, 5]._none(x => x % 2 === 0) === true, "_none(fn) true");
+assert([1, 3, 4]._any(x => x % 2 === 0) === true, "_any(fn) true");
+/* empty-array quantifiers (vacuous truth) */
+assert([]._all(x => false) === true, "_all of empty → true (vacuous)");
+assert([]._any(x => true) === false, "_any of empty → false");
+assert([]._none(x => true) === true, "_none of empty → true");
+
+/* ---- batch 2: _min / _max (mapper variants) ---- */
+eq([3, 1, 4, 1, 5]._min(), 1, "_min() numeric");
+eq([3, 1, 4, 1, 5]._max(), 5, "_max() numeric");
+eq([]._min(), undefined, "_min() of empty → undefined");
+eq([]._max(), undefined, "_max() of empty → undefined");
+eq([{ a: 3 }, { a: 1 }, { a: 2 }]._min("a"), { a: 1 }, "_min(prop) returns the element");
+eq([{ a: 3 }, { a: 1 }, { a: 2 }]._max(p => p.a), { a: 3 }, "_max(fn) returns the element");
+eq([{ a: 1, id: "x" }, { a: 1, id: "y" }]._min("a"), { a: 1, id: "x" }, "_min ties → first");
+
+/* ---- batch 2: _take / _drop / _takeLast / _dropLast ---- */
+const b = [1, 2, 3, 4, 5];
+eq(b._take(2), [1, 2], "_take(n)");
+eq(b._take(0), [], "_take(0) → []");
+eq(b._take(99), [1, 2, 3, 4, 5], "_take(n>len) clamps");
+eq(b._take(-1), [], "_take(-1) → []");
+eq(b._drop(2), [3, 4, 5], "_drop(n)");
+eq(b._drop(99), [], "_drop(n>len) → []");
+eq(b._takeLast(2), [4, 5], "_takeLast(n)");
+eq(b._takeLast(99), [1, 2, 3, 4, 5], "_takeLast(n>len) clamps");
+eq(b._dropLast(2), [1, 2, 3], "_dropLast(n)");
+eq(b._dropLast(99), [], "_dropLast(n>len) → []");
+eq([]._take(3), [], "_take of empty → []");
+/* _take/_drop do not mutate the receiver */
+b._drop(2); eq(b, [1, 2, 3, 4, 5], "_drop does not mutate");
+
 print("test_array_ext: all tests passed (" + n + " assertions)");

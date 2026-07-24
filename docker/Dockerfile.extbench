@@ -1,0 +1,24 @@
+# Lean amd64 image to correctness-check + benchmark the SugarJS/RamdaJS native
+# `_`-prefixed methods under emulated linux/amd64 (x86 codegen). Mirrors the
+# early layers of Dockerfile.amd64 verbatim so the (slow, qemu-compiled) engine
+# build layer is reused from cache; only the final bench steps re-run.
+#   docker build --platform linux/amd64 -f docker/Dockerfile.extbench -t dyna:extbench .
+FROM debian:trixie-slim
+
+ENV QEMU_CPU=Haswell
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      clang lld make libc6-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+RUN make clean || true
+# build the engine + native modules (compiles the real x86 SIMD kernels)
+RUN make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y -j"$(nproc)"
+
+RUN echo "=== amd64 correctness: test_array_ext ===" && ./dynajs tests/test_array_ext.js
+RUN echo "=== amd64 benchmark (ratios are the trustworthy metric under qemu) ===" \
+ && ./dynajs tests/bench_array_ext.js
