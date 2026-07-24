@@ -373,4 +373,29 @@ eq(["a1", "a2", "b3"].dropWhile(/^a/), ["b3"], "dropWhile(regex)");
 eq([1, 2, 3, 4].count(x => x > 2), 2, "matcher still accepts a predicate fn");
 eq([1, 2, 2, 3].count(2), 2, "matcher still accepts a value (SameValueZero)");
 
+/* ---- batch 11: remove/exclude (=reject), removeRange, splitWhen, innerJoin ---- */
+eq([1, 2, 3, 4].remove(x => x % 2 === 0), [1, 3], "remove(pred) == reject");
+eq([1, 2, 1, 3].remove(1), [2, 3], "remove(value)");
+eq([1, 2, 3, 4].exclude(x => x > 2), [1, 2], "exclude(pred) == reject");
+eq(["a1", "b2", "a3"].remove(/^a/), ["b2"], "remove(regex)");
+eq([1, 2, 3, 4, 5, 6, 7, 8].removeRange(2, 3), [1, 2, 6, 7, 8], "removeRange(start, count)");
+eq([1, 2, 3, 4].removeRange(0, 2), [3, 4], "removeRange from front");
+eq([1, 2, 3, 4].removeRange(-2, 2), [1, 2], "removeRange negative start");
+eq([1, 2, 3].removeRange(1, 99), [1], "removeRange count>len clamps");
+eq([1, 2, 3].removeRange(1, 0), [1, 2, 3], "removeRange count 0 → unchanged copy");
+eq([1, 2, 3, 4, 1, 2].splitWhen(x => x > 2), [[1, 2], [3, 4, 1, 2]], "splitWhen(pred) at first match");
+eq([1, 2, 3].splitWhen(x => x > 9), [[1, 2, 3], []], "splitWhen no match → [all, []]");
+eq([1, 2, 3].splitWhen(x => true), [[], [1, 2, 3]], "splitWhen first matches → [[], all]");
+eq([1, 2, 3, 4].splitWhen(3), [[1, 2], [3, 4]], "splitWhen(value)");
+{
+    const records = [{ id: 1, n: "a" }, { id: 2, n: "b" }, { id: 3, n: "c" }];
+    eq(records.innerJoin((r, id) => r.id === id, [1, 3]).map(r => r.n), ["a", "c"], "innerJoin keeps matches");
+    eq(records.innerJoin((r, id) => r.id === id, []).length, 0, "innerJoin with empty other → []");
+    eq([1, 2, 3].innerJoin((a, b) => a === b, [2, 2, 3]), [2, 3], "innerJoin dedups this? no—keeps each this once");
+}
+/* non-mutation */
+const b11 = [1, 2, 3, 4];
+b11.remove(x => true); b11.removeRange(0, 2); b11.splitWhen(x => true); b11.innerJoin((a, b) => true, [1]);
+eq(b11, [1, 2, 3, 4], "batch-11 methods do not mutate the receiver");
+
 print("test_array_ext: all tests passed (" + n + " assertions)");

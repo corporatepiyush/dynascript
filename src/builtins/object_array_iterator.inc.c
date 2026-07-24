@@ -3043,6 +3043,129 @@ static JSValue js_array_ext_indexby(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* removeRange(start, count) -> a copy with `count` elements removed starting at
+ * `start` (negative from the end), i.e. non-mutating splice (Ramda remove). */
+static JSValue js_array_ext_removerange(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv)
+{
+    JSValue obj, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValue *srcp, *dst;
+    JSObject *rp;
+    uint32_t scount;
+    int64_t len, start, count, end, i, w = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (JS_ToInt64Sat(ctx, &start, argc > 0 ? argv[0] : JS_UNDEFINED)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (JS_ToInt64Sat(ctx, &count, argc > 1 ? argv[1] : JS_UNDEFINED)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    if (start < 0) start += len;
+    if (start < 0) start = 0;
+    if (start > len) start = len;
+    if (count < 0) count = 0;
+    end = start + count;
+    if (end > len) end = len;
+    result = js_allocate_fast_array(ctx, len - (end - start));
+    if (JS_IsException(result)) goto done;
+    rp = JS_VALUE_GET_OBJ(result);
+    dst = rp->u.array.u.values;
+    if (js_get_fast_array(ctx, obj, &srcp, &scount) && (int64_t)scount >= len) {
+        for (i = 0; i < start; i++)   dst[w++] = JS_DupValue(ctx, srcp[i]);
+        for (i = end; i < len; i++)   dst[w++] = JS_DupValue(ctx, srcp[i]);
+    } else {
+        for (i = 0; i < start; i++)   if (js_array_ext_getel(ctx, obj, i, &dst[w++])) goto done;
+        for (i = end; i < len; i++)   if (js_array_ext_getel(ctx, obj, i, &dst[w++])) goto done;
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* splitWhen(matcher) -> [ before, fromFirstMatchOnward ] splitting at the first
+ * element the matcher accepts (Ramda splitWhen; matcher = predicate/value/regex).
+ * If none match, [ all, [] ]. */
+static JSValue js_array_ext_splitwhen(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue obj, left = JS_UNDEFINED, right = JS_UNDEFINED, result, ret = JS_EXCEPTION;
+    JSExtMatcher pm = { JS_UNDEFINED, JS_UNDEFINED, 0 };
+    int64_t len, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    if (js_ext_matcher_begin(ctx, &pm, argc > 0 ? argv[0] : JS_UNDEFINED)) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue el;
+        int m;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
+        m = js_ext_matcher_test(ctx, &pm, el);
+        JS_FreeValue(ctx, el);
+        if (m < 0) goto done;
+        if (m) break;
+    }
+    left = js_array_ext_build_range(ctx, obj, 0, i);
+    if (JS_IsException(left)) goto done;
+    right = js_array_ext_build_range(ctx, obj, i, len);
+    if (JS_IsException(right)) goto done;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    JS_DefinePropertyValueInt64(ctx, result, 0, left, JS_PROP_C_W_E);
+    JS_DefinePropertyValueInt64(ctx, result, 1, right, JS_PROP_C_W_E);
+    left = right = JS_UNDEFINED;
+    ret = result;
+ done:
+    js_ext_matcher_end(ctx, &pm);
+    JS_FreeValue(ctx, left);
+    JS_FreeValue(ctx, right);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* innerJoin(pred, other) -> the elements of this for which pred(element, y) holds
+ * for some y in other (Ramda innerJoin). */
+static JSValue js_array_ext_innerjoin(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue obj, other, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValueConst pred = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, olen, i, k, j = 0;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    other = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(other)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &olen, other)) goto done;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue x;
+        int matched = 0;
+        if (js_array_ext_getel(ctx, obj, i, &x)) goto done;
+        for (k = 0; k < olen; k++) {
+            JSValue y, r;
+            JSValueConst args[2];
+            int b;
+            if (js_array_ext_getel(ctx, other, k, &y)) { JS_FreeValue(ctx, x); goto done; }
+            args[0] = x; args[1] = y;
+            r = JS_Call(ctx, pred, JS_UNDEFINED, 2, args);
+            JS_FreeValue(ctx, y);
+            if (JS_IsException(r)) { JS_FreeValue(ctx, x); goto done; }
+            b = JS_ToBool(ctx, r);
+            JS_FreeValue(ctx, r);
+            if (b) { matched = 1; break; }
+        }
+        if (matched) {
+            if (JS_DefinePropertyValueInt64(ctx, result, j++, x, JS_PROP_C_W_E) < 0) goto done;
+        } else {
+            JS_FreeValue(ctx, x);
+        }
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, other);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("isEmpty", 0, js_array_ext_isEmpty ),
     JS_CFUNC_DEF("first", 0, js_array_ext_first ),
@@ -3109,6 +3232,11 @@ static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("scan", 2, js_array_ext_scan ),
     JS_CFUNC_DEF("countBy", 1, js_array_ext_countby ),
     JS_CFUNC_DEF("indexBy", 1, js_array_ext_indexby ),
+    JS_ALIAS_DEF("remove", "reject" ),   /* Sugar remove(matcher) == reject */
+    JS_ALIAS_DEF("exclude", "reject" ),  /* Sugar exclude(matcher) == reject */
+    JS_CFUNC_DEF("removeRange", 2, js_array_ext_removerange ),
+    JS_CFUNC_DEF("splitWhen", 1, js_array_ext_splitwhen ),
+    JS_CFUNC_DEF("innerJoin", 2, js_array_ext_innerjoin ),
 };
 
 static const JSCFunctionListEntry js_array_proto_funcs[] = {
