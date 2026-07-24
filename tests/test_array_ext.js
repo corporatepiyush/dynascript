@@ -1,4 +1,4 @@
-/* test_array_ext.js — SugarJS/RamdaJS `_`-prefixed native Array methods.
+/* test_array_ext.js — native SugarJS/RamdaJS Array methods (unprefixed, non-enumerable).
  * Phase 1, batch 1. Run: dynajs tests/test_array_ext.js
  * These are core-engine builtins (present in every build). */
 
@@ -7,370 +7,370 @@ function assert(c, m) { n++; if (!c) throw new Error("assertion failed: " + m); 
 function eq(a, b, m) { assert(JSON.stringify(a) === JSON.stringify(b), m + " (got " + JSON.stringify(a) + ", want " + JSON.stringify(b) + ")"); }
 
 /* _first / _last */
-eq([1, 2, 3, 4, 5]._first(), 1, "_first() → first element");
-eq([1, 2, 3, 4, 5]._first(2), [1, 2], "_first(n) → first n");
-eq([1, 2, 3]._first(9), [1, 2, 3], "_first(n>len) clamps");
-eq([1, 2, 3]._first(0), [], "_first(0) → []");
-eq([]._first(), undefined, "_first() of empty → undefined");
-eq([1, 2, 3, 4, 5]._last(), 5, "_last() → last element");
-eq([1, 2, 3, 4, 5]._last(2), [4, 5], "_last(n) → last n in order");
-eq([1, 2, 3]._last(9), [1, 2, 3], "_last(n>len) clamps");
-eq([]._last(), undefined, "_last() of empty → undefined");
+eq([1, 2, 3, 4, 5].first(), 1, "first() → first element");
+eq([1, 2, 3, 4, 5].first(2), [1, 2], "first(n) → first n");
+eq([1, 2, 3].first(9), [1, 2, 3], "first(n>len) clamps");
+eq([1, 2, 3].first(0), [], "first(0) → []");
+eq([].first(), undefined, "first() of empty → undefined");
+eq([1, 2, 3, 4, 5].last(), 5, "last() → last element");
+eq([1, 2, 3, 4, 5].last(2), [4, 5], "last(n) → last n in order");
+eq([1, 2, 3].last(9), [1, 2, 3], "last(n>len) clamps");
+eq([].last(), undefined, "last() of empty → undefined");
 
 /* _sum / _average / _mean */
-eq([1, 2, 3, 4, 5]._sum(), 15, "_sum");
-eq([]._sum(), 0, "_sum of empty → 0");
-eq([1, 2, 3, 4]._average(), 2.5, "_average");
-eq([1, 2, 3, 4]._mean(), 2.5, "_mean alias");
-eq([]._average(), 0, "_average of empty → 0");
-eq(["1", "2", "3"]._sum(), 6, "_sum coerces numeric strings");
+eq([1, 2, 3, 4, 5].sum(), 15, "sum");
+eq([].sum(), 0, "sum of empty → 0");
+eq([1, 2, 3, 4].average(), 2.5, "average");
+eq([1, 2, 3, 4].mean(), 2.5, "mean alias");
+eq([].average(), 0, "average of empty → 0");
+eq(["1", "2", "3"].sum(), 6, "sum coerces numeric strings");
 
 /* _compact */
-eq([1, null, 2, undefined, 3]._compact(), [1, 2, 3], "_compact removes null/undefined");
-eq([0, false, "", NaN]._compact(), [0, false, "", NaN], "_compact keeps other falsy");
-eq([]._compact(), [], "_compact of empty → []");
+eq([1, null, 2, undefined, 3].compact(), [1, 2, 3], "compact removes null/undefined");
+eq([0, false, "", NaN].compact(), [0, false, "", NaN], "compact keeps other falsy");
+eq([].compact(), [], "compact of empty → []");
 
 /* _isEmpty */
-assert([]._isEmpty() === true, "_isEmpty of []");
-assert([1]._isEmpty() === false, "_isEmpty of non-empty");
+assert([].isEmpty() === true, "isEmpty of []");
+assert([1].isEmpty() === false, "isEmpty of non-empty");
 
 /* demarcation: `_` methods are NON-ENUMERABLE (for..in / Object.keys unaffected) */
-assert(!Object.keys(Array.prototype).includes("_sum"), "_sum is non-enumerable");
+assert(!Object.keys(Array.prototype).includes("sum"), "sum is non-enumerable");
 let seen = []; for (const k in [1, 2, 3]) seen.push(k);
 eq(seen, ["0", "1", "2"], "for..in over an array sees only indices, not _methods");
-assert(Object.getOwnPropertyNames(Array.prototype).includes("_sum"), "_sum is an own property (present)");
+assert(Object.getOwnPropertyNames(Array.prototype).includes("sum"), "sum is an own property (present)");
 /* works on array-likes via `this` */
-eq(Array.prototype._first.call({ 0: "a", 1: "b", length: 2 }, 2), ["a", "b"], "_first on an array-like");
+eq(Array.prototype.first.call({ 0: "a", 1: "b", length: 2 }, 2), ["a", "b"], "first on an array-like");
 
 /* a re-entrant valueOf arg must not corrupt the result */
-eq([1, 2, 3]._first({ valueOf() { return 2; } }), [1, 2], "_first coerces an object arg");
+eq([1, 2, 3].first({ valueOf() { return 2; } }), [1, 2], "first coerces an object arg");
 
 /* ---- batch 2: _count / _none / _any / _all (matcher variants) ---- */
 /* _count variants: no-arg → length; value (SameValueZero); predicate fn */
-eq([1, 2, 2, 3, 2]._count(), 5, "_count() → length");
-eq([1, 2, 2, 3, 2]._count(2), 3, "_count(value) counts equal");
-eq([1, 2, 3, 4, 5]._count(x => x % 2 === 0), 2, "_count(fn) counts predicate");
-eq([NaN, 1, NaN]._count(NaN), 2, "_count(NaN) uses SameValueZero");
-eq([]._count(x => true), 0, "_count of empty → 0");
+eq([1, 2, 2, 3, 2].count(), 5, "count() → length");
+eq([1, 2, 2, 3, 2].count(2), 3, "count(value) counts equal");
+eq([1, 2, 3, 4, 5].count(x => x % 2 === 0), 2, "count(fn) counts predicate");
+eq([NaN, 1, NaN].count(NaN), 2, "count(NaN) uses SameValueZero");
+eq([].count(x => true), 0, "count of empty → 0");
 /* _none / _any / _all — value variant */
-assert([1, 2, 3]._none(4) === true, "_none(value) true when absent");
-assert([1, 2, 3]._none(2) === false, "_none(value) false when present");
-assert([1, 2, 3]._any(2) === true, "_any(value) true when present");
-assert([1, 2, 3]._any(9) === false, "_any(value) false when absent");
+assert([1, 2, 3].none(4) === true, "none(value) true when absent");
+assert([1, 2, 3].none(2) === false, "none(value) false when present");
+assert([1, 2, 3].any(2) === true, "any(value) true when present");
+assert([1, 2, 3].any(9) === false, "any(value) false when absent");
 /* _none / _any / _all — predicate variant */
-assert([2, 4, 6]._all(x => x % 2 === 0) === true, "_all(fn) true");
-assert([2, 4, 5]._all(x => x % 2 === 0) === false, "_all(fn) false");
-assert([1, 3, 5]._none(x => x % 2 === 0) === true, "_none(fn) true");
-assert([1, 3, 4]._any(x => x % 2 === 0) === true, "_any(fn) true");
+assert([2, 4, 6].all(x => x % 2 === 0) === true, "all(fn) true");
+assert([2, 4, 5].all(x => x % 2 === 0) === false, "all(fn) false");
+assert([1, 3, 5].none(x => x % 2 === 0) === true, "none(fn) true");
+assert([1, 3, 4].any(x => x % 2 === 0) === true, "any(fn) true");
 /* empty-array quantifiers (vacuous truth) */
-assert([]._all(x => false) === true, "_all of empty → true (vacuous)");
-assert([]._any(x => true) === false, "_any of empty → false");
-assert([]._none(x => true) === true, "_none of empty → true");
+assert([].all(x => false) === true, "all of empty → true (vacuous)");
+assert([].any(x => true) === false, "any of empty → false");
+assert([].none(x => true) === true, "none of empty → true");
 
 /* ---- batch 2: _min / _max (mapper variants) ---- */
-eq([3, 1, 4, 1, 5]._min(), 1, "_min() numeric");
-eq([3, 1, 4, 1, 5]._max(), 5, "_max() numeric");
-eq([]._min(), undefined, "_min() of empty → undefined");
-eq([]._max(), undefined, "_max() of empty → undefined");
-eq([{ a: 3 }, { a: 1 }, { a: 2 }]._min("a"), { a: 1 }, "_min(prop) returns the element");
-eq([{ a: 3 }, { a: 1 }, { a: 2 }]._max(p => p.a), { a: 3 }, "_max(fn) returns the element");
-eq([{ a: 1, id: "x" }, { a: 1, id: "y" }]._min("a"), { a: 1, id: "x" }, "_min ties → first");
+eq([3, 1, 4, 1, 5].min(), 1, "min() numeric");
+eq([3, 1, 4, 1, 5].max(), 5, "max() numeric");
+eq([].min(), undefined, "min() of empty → undefined");
+eq([].max(), undefined, "max() of empty → undefined");
+eq([{ a: 3 }, { a: 1 }, { a: 2 }].min("a"), { a: 1 }, "min(prop) returns the element");
+eq([{ a: 3 }, { a: 1 }, { a: 2 }].max(p => p.a), { a: 3 }, "max(fn) returns the element");
+eq([{ a: 1, id: "x" }, { a: 1, id: "y" }].min("a"), { a: 1, id: "x" }, "min ties → first");
 
 /* ---- batch 2: _take / _drop / _takeLast / _dropLast ---- */
 const b = [1, 2, 3, 4, 5];
-eq(b._take(2), [1, 2], "_take(n)");
-eq(b._take(0), [], "_take(0) → []");
-eq(b._take(99), [1, 2, 3, 4, 5], "_take(n>len) clamps");
-eq(b._take(-1), [], "_take(-1) → []");
-eq(b._drop(2), [3, 4, 5], "_drop(n)");
-eq(b._drop(99), [], "_drop(n>len) → []");
-eq(b._takeLast(2), [4, 5], "_takeLast(n)");
-eq(b._takeLast(99), [1, 2, 3, 4, 5], "_takeLast(n>len) clamps");
-eq(b._dropLast(2), [1, 2, 3], "_dropLast(n)");
-eq(b._dropLast(99), [], "_dropLast(n>len) → []");
-eq([]._take(3), [], "_take of empty → []");
+eq(b.take(2), [1, 2], "take(n)");
+eq(b.take(0), [], "take(0) → []");
+eq(b.take(99), [1, 2, 3, 4, 5], "take(n>len) clamps");
+eq(b.take(-1), [], "take(-1) → []");
+eq(b.drop(2), [3, 4, 5], "drop(n)");
+eq(b.drop(99), [], "drop(n>len) → []");
+eq(b.takeLast(2), [4, 5], "takeLast(n)");
+eq(b.takeLast(99), [1, 2, 3, 4, 5], "takeLast(n>len) clamps");
+eq(b.dropLast(2), [1, 2, 3], "dropLast(n)");
+eq(b.dropLast(99), [], "dropLast(n>len) → []");
+eq([].take(3), [], "take of empty → []");
 /* _take/_drop do not mutate the receiver */
-b._drop(2); eq(b, [1, 2, 3, 4, 5], "_drop does not mutate");
+b.drop(2); eq(b, [1, 2, 3, 4, 5], "drop does not mutate");
 
 /* ---- batch 3: _sortBy (mapper + desc + stability variants) ---- */
-eq([3, 1, 2, 10]._sortBy(), [1, 2, 3, 10], "_sortBy() numeric (not lexical)");
-eq(["banana", "apple", "cherry"]._sortBy(), ["apple", "banana", "cherry"], "_sortBy() string");
-eq([{ a: 3 }, { a: 1 }, { a: 2 }]._sortBy("a").map(x => x.a), [1, 2, 3], "_sortBy(prop)");
-eq([{ a: 3 }, { a: 1 }]._sortBy(x => x.a).map(x => x.a), [1, 3], "_sortBy(fn)");
-eq([1, 2, 3]._sortBy(undefined, true), [3, 2, 1], "_sortBy(_, desc)");
+eq([3, 1, 2, 10].sortBy(), [1, 2, 3, 10], "sortBy() numeric (not lexical)");
+eq(["banana", "apple", "cherry"].sortBy(), ["apple", "banana", "cherry"], "sortBy() string");
+eq([{ a: 3 }, { a: 1 }, { a: 2 }].sortBy("a").map(x => x.a), [1, 2, 3], "sortBy(prop)");
+eq([{ a: 3 }, { a: 1 }].sortBy(x => x.a).map(x => x.a), [1, 3], "sortBy(fn)");
+eq([1, 2, 3].sortBy(undefined, true), [3, 2, 1], "sortBy(_, desc)");
 /* stability: equal keys keep original order, asc AND desc */
 const st = [{ k: 1, id: "a" }, { k: 0, id: "b" }, { k: 1, id: "c" }, { k: 0, id: "d" }];
-eq(st._sortBy("k").map(x => x.id), ["b", "d", "a", "c"], "_sortBy stable asc");
-eq(st._sortBy("k", true).map(x => x.id), ["a", "c", "b", "d"], "_sortBy stable desc");
-eq([]._sortBy(), [], "_sortBy of empty → []");
-const so = [3, 1, 2]; so._sortBy(); eq(so, [3, 1, 2], "_sortBy does not mutate");
+eq(st.sortBy("k").map(x => x.id), ["b", "d", "a", "c"], "sortBy stable asc");
+eq(st.sortBy("k", true).map(x => x.id), ["a", "c", "b", "d"], "sortBy stable desc");
+eq([].sortBy(), [], "sortBy of empty → []");
+const so = [3, 1, 2]; so.sortBy(); eq(so, [3, 1, 2], "sortBy does not mutate");
 
 /* ---- batch 3: _groupBy (mapper variants) ---- */
-eq([1, 2, 3, 4, 5, 6]._groupBy(x => x % 2 ? "odd" : "even"), { odd: [1, 3, 5], even: [2, 4, 6] }, "_groupBy(fn)");
-eq([{ t: "x", v: 1 }, { t: "y", v: 2 }, { t: "x", v: 3 }]._groupBy("t"),
-   { x: [{ t: "x", v: 1 }, { t: "x", v: 3 }], y: [{ t: "y", v: 2 }] }, "_groupBy(prop) preserves order");
-eq([]._groupBy(x => x), {}, "_groupBy of empty → {}");
+eq([1, 2, 3, 4, 5, 6].groupBy(x => x % 2 ? "odd" : "even"), { odd: [1, 3, 5], even: [2, 4, 6] }, "groupBy(fn)");
+eq([{ t: "x", v: 1 }, { t: "y", v: 2 }, { t: "x", v: 3 }].groupBy("t"),
+   { x: [{ t: "x", v: 1 }, { t: "x", v: 3 }], y: [{ t: "y", v: 2 }] }, "groupBy(prop) preserves order");
+eq([].groupBy(x => x), {}, "groupBy of empty → {}");
 
 /* ---- batch 3: _shuffle (invariants — randomised) ---- */
 const src = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-const shuf = src._shuffle();
-assert(shuf.length === src.length, "_shuffle preserves length");
-eq([...shuf].sort((a, b) => a - b), src, "_shuffle preserves the multiset");
-eq(src, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "_shuffle does not mutate the original");
-eq([]._shuffle(), [], "_shuffle of empty → []");
-eq([7]._shuffle(), [7], "_shuffle of one → same");
+const shuf = src.shuffle();
+assert(shuf.length === src.length, "shuffle preserves length");
+eq([...shuf].sort((a, b) => a - b), src, "shuffle preserves the multiset");
+eq(src, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "shuffle does not mutate the original");
+eq([].shuffle(), [], "shuffle of empty → []");
+eq([7].shuffle(), [7], "shuffle of one → same");
 
 /* ---- batch 3: _sample (single + n variants) ---- */
-assert(src.includes(src._sample()), "_sample() → an element of the array");
-assert([]._sample() === undefined, "_sample() of empty → undefined");
-const s3 = src._sample(3);
-assert(s3.length === 3 && new Set(s3).size === 3, "_sample(n) → n distinct elements");
-assert(s3.every(x => src.includes(x)), "_sample(n) elements come from the array");
-assert(src._sample(99).length === src.length, "_sample(n>len) → all");
-eq(src._sample(0), [], "_sample(0) → []");
-eq(src, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "_sample does not mutate the original");
+assert(src.includes(src.sample()), "sample() → an element of the array");
+assert([].sample() === undefined, "sample() of empty → undefined");
+const s3 = src.sample(3);
+assert(s3.length === 3 && new Set(s3).size === 3, "sample(n) → n distinct elements");
+assert(s3.every(x => src.includes(x)), "sample(n) elements come from the array");
+assert(src.sample(99).length === src.length, "sample(n>len) → all");
+eq(src.sample(0), [], "sample(0) → []");
+eq(src, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "sample does not mutate the original");
 
 /* ---- batch 4: _unique / _uniq / _uniqBy (SameValueZero + mapper variants) ---- */
-eq([1, 2, 2, 3, 1, 4, 3]._unique(), [1, 2, 3, 4], "_unique dedup, first-occurrence order");
-eq(["a", "b", "a", "c", "b"]._unique(), ["a", "b", "c"], "_unique strings by content");
-eq([1, 1.0, 2]._unique(), [1, 2], "_unique: 1 and 1.0 are SameValueZero-equal");
-{ const u = [0, -0, 1]._unique(); assert(u.length === 2 && Object.is(u[0], 0), "_unique: -0 and +0 dedup to +0"); }
-{ const u = [NaN, NaN, 1]._unique(); assert(u.length === 2 && Number.isNaN(u[0]), "_unique: NaN dedups (SameValueZero)"); }
-{ const a = {}, b = {}; eq([a, b, a]._unique().length, 2, "_unique objects by identity"); }
-eq([1, 2, 3]._uniq(), [1, 2, 3], "_uniq alias");
-eq([{ id: 1 }, { id: 2 }, { id: 1 }]._uniqBy(x => x.id).map(o => o.id), [1, 2], "_uniqBy(fn) keeps first");
-eq([{ t: "a" }, { t: "b" }, { t: "a" }]._unique("t").map(o => o.t), ["a", "b"], "_unique(prop)");
-eq([]._unique(), [], "_unique of empty → []");
+eq([1, 2, 2, 3, 1, 4, 3].unique(), [1, 2, 3, 4], "unique dedup, first-occurrence order");
+eq(["a", "b", "a", "c", "b"].unique(), ["a", "b", "c"], "unique strings by content");
+eq([1, 1.0, 2].unique(), [1, 2], "unique: 1 and 1.0 are SameValueZero-equal");
+{ const u = [0, -0, 1].unique(); assert(u.length === 2 && Object.is(u[0], 0), "unique: -0 and +0 dedup to +0"); }
+{ const u = [NaN, NaN, 1].unique(); assert(u.length === 2 && Number.isNaN(u[0]), "unique: NaN dedups (SameValueZero)"); }
+{ const a = {}, b = {}; eq([a, b, a].unique().length, 2, "unique objects by identity"); }
+eq([1, 2, 3].uniq(), [1, 2, 3], "uniq alias");
+eq([{ id: 1 }, { id: 2 }, { id: 1 }].uniqBy(x => x.id).map(o => o.id), [1, 2], "uniqBy(fn) keeps first");
+eq([{ t: "a" }, { t: "b" }, { t: "a" }].unique("t").map(o => o.t), ["a", "b"], "unique(prop)");
+eq([].unique(), [], "unique of empty → []");
 
 /* ---- batch 4: _intersect / _intersection / _difference / _without / _union ---- */
-eq([1, 2, 3, 4]._intersect([2, 4, 6]), [2, 4], "_intersect");
-eq([1, 2, 3]._intersection([2, 3, 9]), [2, 3], "_intersection alias");
-eq([2, 2, 3]._intersect([2, 3]), [2, 3], "_intersect dedups the result");
-eq([1, 2, 3]._intersect([]), [], "_intersect with empty → []");
-eq([1, 2, 3, 4]._difference([2, 4]), [1, 3], "_difference");
-eq([1, 1, 2, 3]._difference([3]), [1, 2], "_difference dedups the result");
-eq([1, 2, 3]._difference([]), [1, 2, 3], "_difference with empty → this");
-eq([1, 2, 2, 3, 2]._without([2]), [1, 3], "_without removes all occurrences");
-eq([1, 1, 2]._without([2]), [1, 1], "_without keeps this's own duplicates");
-eq([1, 2, 3]._union([3, 4, 5]), [1, 2, 3, 4, 5], "_union dedup, this-then-other order");
-eq([1, 1, 2]._union([2, 3]), [1, 2, 3], "_union dedups within and across");
-eq([]._union([1, 1, 2]), [1, 2], "_union from empty");
+eq([1, 2, 3, 4].intersect([2, 4, 6]), [2, 4], "intersect");
+eq([1, 2, 3].intersection([2, 3, 9]), [2, 3], "intersection alias");
+eq([2, 2, 3].intersect([2, 3]), [2, 3], "intersect dedups the result");
+eq([1, 2, 3].intersect([]), [], "intersect with empty → []");
+eq([1, 2, 3, 4].difference([2, 4]), [1, 3], "difference");
+eq([1, 1, 2, 3].difference([3]), [1, 2], "difference dedups the result");
+eq([1, 2, 3].difference([]), [1, 2, 3], "difference with empty → this");
+eq([1, 2, 2, 3, 2].without([2]), [1, 3], "without removes all occurrences");
+eq([1, 1, 2].without([2]), [1, 1], "without keeps this's own duplicates");
+eq([1, 2, 3].union([3, 4, 5]), [1, 2, 3, 4, 5], "union dedup, this-then-other order");
+eq([1, 1, 2].union([2, 3]), [1, 2, 3], "union dedups within and across");
+eq([].union([1, 1, 2]), [1, 2], "union from empty");
 /* set-ops preserve SameValueZero and don't mutate */
-const setSrc = [1, 2, 3, 4]; setSrc._difference([2]); eq(setSrc, [1, 2, 3, 4], "_difference does not mutate");
+const setSrc = [1, 2, 3, 4]; setSrc.difference([2]); eq(setSrc, [1, 2, 3, 4], "difference does not mutate");
 
 /* ---- batch 4: large-array hash-set correctness (O(n), not O(n²)) ---- */
 {
     const big = [];
     for (let i = 0; i < 20000; i++) big.push(i % 5000);   /* each value appears 4x */
-    const uq = big._unique();
-    assert(uq.length === 5000, "_unique large: 5000 distinct");
-    eq(uq.slice(0, 5), [0, 1, 2, 3, 4], "_unique large: order preserved");
+    const uq = big.unique();
+    assert(uq.length === 5000, "unique large: 5000 distinct");
+    eq(uq.slice(0, 5), [0, 1, 2, 3, 4], "unique large: order preserved");
     const other = []; for (let i = 0; i < 5000; i++) other.push(i * 2);
-    assert(big._intersect(other).length === 2500, "_intersect large correct");
+    assert(big.intersect(other).length === 2500, "intersect large correct");
 }
 
 /* ---- batch 5: _partition / _pluck ---- */
-eq([1, 2, 3, 4, 5, 6]._partition(x => x % 2 === 0), [[2, 4, 6], [1, 3, 5]], "_partition(fn)");
-eq([1, 2, 1, 3, 1]._partition(1), [[1, 1, 1], [2, 3]], "_partition(value)");
-eq([]._partition(x => true), [[], []], "_partition of empty → [[],[]]");
-eq([1, 2, 3]._partition(x => true), [[1, 2, 3], []], "_partition all-match");
-eq([{ n: "a", v: 1 }, { n: "b", v: 2 }, { n: "c", v: 3 }]._pluck("n"), ["a", "b", "c"], "_pluck(key)");
-eq([{ v: 1 }, { v: 2 }]._pluck("missing"), [undefined, undefined], "_pluck missing key → undefined");
-eq([]._pluck("x"), [], "_pluck of empty → []");
-eq([[10, 20], [30, 40]]._pluck(1), [20, 40], "_pluck numeric index");
-const pSrc = [1, 2, 3]; pSrc._partition(x => x > 1); eq(pSrc, [1, 2, 3], "_partition does not mutate");
+eq([1, 2, 3, 4, 5, 6].partition(x => x % 2 === 0), [[2, 4, 6], [1, 3, 5]], "partition(fn)");
+eq([1, 2, 1, 3, 1].partition(1), [[1, 1, 1], [2, 3]], "partition(value)");
+eq([].partition(x => true), [[], []], "partition of empty → [[],[]]");
+eq([1, 2, 3].partition(x => true), [[1, 2, 3], []], "partition all-match");
+eq([{ n: "a", v: 1 }, { n: "b", v: 2 }, { n: "c", v: 3 }].pluck("n"), ["a", "b", "c"], "pluck(key)");
+eq([{ v: 1 }, { v: 2 }].pluck("missing"), [undefined, undefined], "pluck missing key → undefined");
+eq([].pluck("x"), [], "pluck of empty → []");
+eq([[10, 20], [30, 40]].pluck(1), [20, 40], "pluck numeric index");
+const pSrc = [1, 2, 3]; pSrc.partition(x => x > 1); eq(pSrc, [1, 2, 3], "partition does not mutate");
 
 /* ---- batch 6: _zip / _zipWith / _intersperse / _flatten / _transpose ---- */
-eq([1, 2, 3]._zip(["a", "b"]), [[1, "a"], [2, "b"]], "_zip truncates to shorter");
-eq([1, 2]._zip([]), [], "_zip with empty → []");
-eq([1, 2, 3]._zipWith((a, b) => a + b, [10, 20, 30]), [11, 22, 33], "_zipWith(fn, other)");
-eq([1, 2, 3]._zipWith((a, b) => a * b, [10, 20]), [10, 40], "_zipWith truncates");
-eq([1, 2, 3]._intersperse(0), [1, 0, 2, 0, 3], "_intersperse");
-eq([1]._intersperse(0), [1], "_intersperse single → no sep");
-eq([]._intersperse(0), [], "_intersperse empty → []");
-eq([1, [2, [3, [4]]]]._flatten(), [1, 2, 3, 4], "_flatten deep (default)");
-eq([1, [2, [3]]]._flatten(1), [1, 2, [3]], "_flatten(1) one level");
-eq([1, [2, [3]]]._flatten(0), [1, [2, [3]]], "_flatten(0) → unchanged copy");
-eq([1, 2, 3]._flatten(), [1, 2, 3], "_flatten of a flat array");
-eq([[1, 2, 3], [4, 5, 6]]._transpose(), [[1, 4], [2, 5], [3, 6]], "_transpose square");
-eq([[1, 2], [3], [4, 5, 6]]._transpose(), [[1, 3, 4], [2, 5], [6]], "_transpose ragged (skips missing)");
-eq([]._transpose(), [], "_transpose of empty → []");
+eq([1, 2, 3].zip(["a", "b"]), [[1, "a"], [2, "b"]], "zip truncates to shorter");
+eq([1, 2].zip([]), [], "zip with empty → []");
+eq([1, 2, 3].zipWith((a, b) => a + b, [10, 20, 30]), [11, 22, 33], "zipWith(fn, other)");
+eq([1, 2, 3].zipWith((a, b) => a * b, [10, 20]), [10, 40], "zipWith truncates");
+eq([1, 2, 3].intersperse(0), [1, 0, 2, 0, 3], "intersperse");
+eq([1].intersperse(0), [1], "intersperse single → no sep");
+eq([].intersperse(0), [], "intersperse empty → []");
+eq([1, [2, [3, [4]]]].flatten(), [1, 2, 3, 4], "flatten deep (default)");
+eq([1, [2, [3]]].flatten(1), [1, 2, [3]], "flatten(1) one level");
+eq([1, [2, [3]]].flatten(0), [1, [2, [3]]], "flatten(0) → unchanged copy");
+eq([1, 2, 3].flatten(), [1, 2, 3], "flatten of a flat array");
+eq([[1, 2, 3], [4, 5, 6]].transpose(), [[1, 4], [2, 5], [3, 6]], "transpose square");
+eq([[1, 2], [3], [4, 5, 6]].transpose(), [[1, 3, 4], [2, 5], [6]], "transpose ragged (skips missing)");
+eq([].transpose(), [], "transpose of empty → []");
 /* non-mutation */
-const zSrc = [1, 2, 3]; zSrc._flatten(); zSrc._intersperse(0); eq(zSrc, [1, 2, 3], "structural methods do not mutate");
+const zSrc = [1, 2, 3]; zSrc.flatten(); zSrc.intersperse(0); eq(zSrc, [1, 2, 3], "structural methods do not mutate");
 
 /* ---- batch 7: _xprod / _aperture / _splitEvery / _splitAt / _adjust / _update / _move / _swap ---- */
-eq([1, 2]._xprod(["a", "b"]), [[1, "a"], [1, "b"], [2, "a"], [2, "b"]], "_xprod cross product");
-eq([1, 2, 3]._xprod([]), [], "_xprod with empty other → []");
-eq([]._xprod([1, 2]), [], "_xprod from empty → []");
-eq([1, 2, 3, 4, 5]._aperture(2), [[1, 2], [2, 3], [3, 4], [4, 5]], "_aperture(2)");
-eq([1, 2, 3]._aperture(3), [[1, 2, 3]], "_aperture(len) → one window");
-eq([1, 2, 3]._aperture(4), [], "_aperture(n>len) → []");
-eq([1, 2, 3]._aperture(0), [[], [], [], []], "_aperture(0) → len+1 empties (Ramda)");
-eq([1, 2, 3, 4, 5, 6, 7]._splitEvery(3), [[1, 2, 3], [4, 5, 6], [7]], "_splitEvery(3)");
-eq([1, 2, 3, 4]._splitEvery(2), [[1, 2], [3, 4]], "_splitEvery even");
-eq([]._splitEvery(3), [], "_splitEvery of empty → []");
-let threw = false; try { [1, 2, 3]._splitEvery(0); } catch (e) { threw = e instanceof RangeError; }
-assert(threw, "_splitEvery(0) throws RangeError");
-eq([1, 2, 3]._splitAt(1), [[1], [2, 3]], "_splitAt(1)");
-eq([1, 2, 3]._splitAt(0), [[], [1, 2, 3]], "_splitAt(0)");
-eq([1, 2, 3]._splitAt(-1), [[1, 2], [3]], "_splitAt(-1) from end");
-eq([1, 2, 3]._splitAt(9), [[1, 2, 3], []], "_splitAt(n>len)");
-eq([1, 2, 3]._adjust(1, x => x * 10), [1, 20, 3], "_adjust(idx, fn)");
-eq([1, 2, 3]._adjust(-1, x => x * 10), [1, 2, 30], "_adjust negative idx");
-eq([1, 2, 3]._adjust(9, x => x * 10), [1, 2, 3], "_adjust OOB → unchanged copy");
-eq([1, 2, 3]._update(1, 99), [1, 99, 3], "_update(idx, val)");
-eq([1, 2, 3]._update(-1, 99), [1, 2, 99], "_update negative idx");
-eq([1, 2, 3]._update(9, 99), [1, 2, 3], "_update OOB → unchanged copy");
-eq([1, 2, 3, 4]._move(0, 2), [2, 3, 1, 4], "_move(from, to)");
-eq([1, 2, 3, 4]._move(-1, 0), [4, 1, 2, 3], "_move negative indices");
-eq([1, 2, 3, 4]._move(2, 2), [1, 2, 3, 4], "_move(i, i) → unchanged");
-eq([1, 2, 3]._move(9, 0), [1, 2, 3], "_move OOB → unchanged copy");
-eq([1, 2, 3, 4]._swap(0, 3), [4, 2, 3, 1], "_swap(0, 3)");
-eq([1, 2, 3, 4]._swap(-1, 0), [4, 2, 3, 1], "_swap negative idx");
-eq([1, 2, 3]._swap(1, 1), [1, 2, 3], "_swap(i, i) → unchanged");
-eq([1, 2, 3]._swap(9, 0), [1, 2, 3], "_swap OOB → unchanged copy");
+eq([1, 2].xprod(["a", "b"]), [[1, "a"], [1, "b"], [2, "a"], [2, "b"]], "xprod cross product");
+eq([1, 2, 3].xprod([]), [], "xprod with empty other → []");
+eq([].xprod([1, 2]), [], "xprod from empty → []");
+eq([1, 2, 3, 4, 5].aperture(2), [[1, 2], [2, 3], [3, 4], [4, 5]], "aperture(2)");
+eq([1, 2, 3].aperture(3), [[1, 2, 3]], "aperture(len) → one window");
+eq([1, 2, 3].aperture(4), [], "aperture(n>len) → []");
+eq([1, 2, 3].aperture(0), [[], [], [], []], "aperture(0) → len+1 empties (Ramda)");
+eq([1, 2, 3, 4, 5, 6, 7].splitEvery(3), [[1, 2, 3], [4, 5, 6], [7]], "splitEvery(3)");
+eq([1, 2, 3, 4].splitEvery(2), [[1, 2], [3, 4]], "splitEvery even");
+eq([].splitEvery(3), [], "splitEvery of empty → []");
+let threw = false; try { [1, 2, 3].splitEvery(0); } catch (e) { threw = e instanceof RangeError; }
+assert(threw, "splitEvery(0) throws RangeError");
+eq([1, 2, 3].splitAt(1), [[1], [2, 3]], "splitAt(1)");
+eq([1, 2, 3].splitAt(0), [[], [1, 2, 3]], "splitAt(0)");
+eq([1, 2, 3].splitAt(-1), [[1, 2], [3]], "splitAt(-1) from end");
+eq([1, 2, 3].splitAt(9), [[1, 2, 3], []], "splitAt(n>len)");
+eq([1, 2, 3].adjust(1, x => x * 10), [1, 20, 3], "adjust(idx, fn)");
+eq([1, 2, 3].adjust(-1, x => x * 10), [1, 2, 30], "adjust negative idx");
+eq([1, 2, 3].adjust(9, x => x * 10), [1, 2, 3], "adjust OOB → unchanged copy");
+eq([1, 2, 3].update(1, 99), [1, 99, 3], "update(idx, val)");
+eq([1, 2, 3].update(-1, 99), [1, 2, 99], "update negative idx");
+eq([1, 2, 3].update(9, 99), [1, 2, 3], "update OOB → unchanged copy");
+eq([1, 2, 3, 4].move(0, 2), [2, 3, 1, 4], "move(from, to)");
+eq([1, 2, 3, 4].move(-1, 0), [4, 1, 2, 3], "move negative indices");
+eq([1, 2, 3, 4].move(2, 2), [1, 2, 3, 4], "move(i, i) → unchanged");
+eq([1, 2, 3].move(9, 0), [1, 2, 3], "move OOB → unchanged copy");
+eq([1, 2, 3, 4].swap(0, 3), [4, 2, 3, 1], "swap(0, 3)");
+eq([1, 2, 3, 4].swap(-1, 0), [4, 2, 3, 1], "swap negative idx");
+eq([1, 2, 3].swap(1, 1), [1, 2, 3], "swap(i, i) → unchanged");
+eq([1, 2, 3].swap(9, 0), [1, 2, 3], "swap OOB → unchanged copy");
 /* non-mutation of the receiver */
 const b7 = [1, 2, 3, 4];
-b7._xprod([9]); b7._aperture(2); b7._splitEvery(2); b7._splitAt(2);
-b7._adjust(0, x => x * 100); b7._update(0, 100); b7._move(0, 3); b7._swap(0, 3);
+b7.xprod([9]); b7.aperture(2); b7.splitEvery(2); b7.splitAt(2);
+b7.adjust(0, x => x * 100); b7.update(0, 100); b7.move(0, 3); b7.swap(0, 3);
 eq(b7, [1, 2, 3, 4], "batch-7 methods do not mutate the receiver");
 /* re-entrancy: a {valueOf} index arg must not corrupt the result */
 {
     const arr = [10, 20, 30];
     let hits = 0;
     const eviltoInt = { valueOf() { hits++; return 1; } };
-    eq(arr._adjust(eviltoInt, x => x + 1), [10, 21, 30], "_adjust with valueOf idx");
-    eq(arr._update(eviltoInt, 99), [10, 99, 30], "_update with valueOf idx");
-    eq(arr._splitAt(eviltoInt), [[10], [20, 30]], "_splitAt with valueOf idx");
+    eq(arr.adjust(eviltoInt, x => x + 1), [10, 21, 30], "adjust with valueOf idx");
+    eq(arr.update(eviltoInt, 99), [10, 99, 30], "update with valueOf idx");
+    eq(arr.splitAt(eviltoInt), [[10], [20, 30]], "splitAt with valueOf idx");
     assert(hits === 3, "valueOf coerced exactly once per call");
     eq(arr, [10, 20, 30], "receiver intact after valueOf-arg calls");
 }
 /* works on array-likes via `this` */
-eq(Array.prototype._splitAt.call({ 0: "a", 1: "b", 2: "c", length: 3 }, 2), [["a", "b"], ["c"]], "_splitAt on array-like");
+eq(Array.prototype.splitAt.call({ 0: "a", 1: "b", 2: "c", length: 3 }, 2), [["a", "b"], ["c"]], "splitAt on array-like");
 
 /* ---- batch 8: _nth / _init / _tail / _head / while-variants / _append / _prepend ---- */
-eq([10, 20, 30]._nth(1), 20, "_nth(1)");
-eq([10, 20, 30]._nth(-1), 30, "_nth(-1) from end");
-eq([10, 20, 30]._nth(9), undefined, "_nth OOB → undefined");
-eq([10, 20, 30]._nth(-9), undefined, "_nth negative OOB → undefined");
-eq([1, 2, 3, 4]._init(), [1, 2, 3], "_init drops last");
-eq([1]._init(), [], "_init of singleton → []");
-eq([]._init(), [], "_init of empty → []");
-eq([1, 2, 3, 4]._tail(), [2, 3, 4], "_tail drops first");
-eq([1]._tail(), [], "_tail of singleton → []");
-eq([]._tail(), [], "_tail of empty → []");
-eq([1, 2, 3]._head(), 1, "_head alias of _first");
-eq([1, 2, 3, 4, 1]._takeWhile(x => x < 3), [1, 2], "_takeWhile(pred)");
-eq([1, 2, 3]._takeWhile(x => x > 9), [], "_takeWhile none");
-eq([1, 2, 3]._takeWhile(x => true), [1, 2, 3], "_takeWhile all");
-eq([1, 1, 2, 1]._takeWhile(1), [1, 1], "_takeWhile(value) via SameValueZero");
-eq([1, 2, 3, 4, 1]._dropWhile(x => x < 3), [3, 4, 1], "_dropWhile(pred)");
-eq([1, 2, 3]._dropWhile(x => true), [], "_dropWhile all");
-eq([1, 2, 3, 4]._takeLastWhile(x => x > 2), [3, 4], "_takeLastWhile(pred)");
-eq([1, 2, 3, 4]._takeLastWhile(x => x > 9), [], "_takeLastWhile none");
-eq([1, 2, 3, 4]._dropLastWhile(x => x > 2), [1, 2], "_dropLastWhile(pred)");
-eq([1, 2, 3, 4]._dropLastWhile(x => x > 9), [1, 2, 3, 4], "_dropLastWhile none → all");
-eq([1, 2, 3]._append(4), [1, 2, 3, 4], "_append");
-eq([]._append(1), [1], "_append to empty");
-eq([1, 2, 3]._prepend(0), [0, 1, 2, 3], "_prepend");
-eq([]._prepend(1), [1], "_prepend to empty");
-eq([[1]]._append([2]), [[1], [2]], "_append keeps element as-is (no spread)");
-eq([[1]]._prepend([2]), [[2], [1]], "_prepend keeps element as-is (no spread)");
+eq([10, 20, 30].nth(1), 20, "nth(1)");
+eq([10, 20, 30].nth(-1), 30, "nth(-1) from end");
+eq([10, 20, 30].nth(9), undefined, "nth OOB → undefined");
+eq([10, 20, 30].nth(-9), undefined, "nth negative OOB → undefined");
+eq([1, 2, 3, 4].init(), [1, 2, 3], "init drops last");
+eq([1].init(), [], "init of singleton → []");
+eq([].init(), [], "init of empty → []");
+eq([1, 2, 3, 4].tail(), [2, 3, 4], "tail drops first");
+eq([1].tail(), [], "tail of singleton → []");
+eq([].tail(), [], "tail of empty → []");
+eq([1, 2, 3].head(), 1, "head alias of _first");
+eq([1, 2, 3, 4, 1].takeWhile(x => x < 3), [1, 2], "takeWhile(pred)");
+eq([1, 2, 3].takeWhile(x => x > 9), [], "takeWhile none");
+eq([1, 2, 3].takeWhile(x => true), [1, 2, 3], "takeWhile all");
+eq([1, 1, 2, 1].takeWhile(1), [1, 1], "takeWhile(value) via SameValueZero");
+eq([1, 2, 3, 4, 1].dropWhile(x => x < 3), [3, 4, 1], "dropWhile(pred)");
+eq([1, 2, 3].dropWhile(x => true), [], "dropWhile all");
+eq([1, 2, 3, 4].takeLastWhile(x => x > 2), [3, 4], "takeLastWhile(pred)");
+eq([1, 2, 3, 4].takeLastWhile(x => x > 9), [], "takeLastWhile none");
+eq([1, 2, 3, 4].dropLastWhile(x => x > 2), [1, 2], "dropLastWhile(pred)");
+eq([1, 2, 3, 4].dropLastWhile(x => x > 9), [1, 2, 3, 4], "dropLastWhile none → all");
+eq([1, 2, 3].append(4), [1, 2, 3, 4], "append");
+eq([].append(1), [1], "append to empty");
+eq([1, 2, 3].prepend(0), [0, 1, 2, 3], "prepend");
+eq([].prepend(1), [1], "prepend to empty");
+eq([[1]].append([2]), [[1], [2]], "append keeps element as-is (no spread)");
+eq([[1]].prepend([2]), [[2], [1]], "prepend keeps element as-is (no spread)");
 /* non-mutation */
 const b8 = [1, 2, 3];
-b8._init(); b8._tail(); b8._takeWhile(x => true); b8._dropWhile(x => false);
-b8._takeLastWhile(x => true); b8._dropLastWhile(x => false); b8._append(9); b8._prepend(0);
+b8.init(); b8.tail(); b8.takeWhile(x => true); b8.dropWhile(x => false);
+b8.takeLastWhile(x => true); b8.dropLastWhile(x => false); b8.append(9); b8.prepend(0);
 eq(b8, [1, 2, 3], "batch-8 methods do not mutate the receiver");
 /* re-entrancy: a {valueOf} index arg to _nth must not corrupt the receiver */
 {
     const arr = [10, 20, 30];
     const ev = { valueOf() { return -1; } };
-    eq(arr._nth(ev), 30, "_nth with valueOf idx");
+    eq(arr.nth(ev), 30, "nth with valueOf idx");
     eq(arr, [10, 20, 30], "receiver intact after _nth valueOf");
 }
 /* array-like via `this` */
-eq(Array.prototype._tail.call({ 0: "a", 1: "b", 2: "c", length: 3 }), ["b", "c"], "_tail on array-like");
+eq(Array.prototype.tail.call({ 0: "a", 1: "b", 2: "c", length: 3 }), ["b", "c"], "tail on array-like");
 
 /* ---- batch 9: _reject / _insert / _insertAll / _removeAt / _zipObj / _fromPairs ---- */
-eq([1, 2, 3, 4]._reject(x => x % 2 === 0), [1, 3], "_reject(pred) complement of filter");
-eq([1, 2, 1, 3, 1]._reject(1), [2, 3], "_reject(value) via SameValueZero");
-eq([1, 2, 3]._reject(x => false), [1, 2, 3], "_reject none → all");
-eq([1, 2, 3]._reject(x => true), [], "_reject all → []");
-eq([1, 2, 3, 4]._insert(2, "x"), [1, 2, "x", 3, 4], "_insert(idx, elt)");
-eq([1, 2, 3]._insert(0, "x"), ["x", 1, 2, 3], "_insert at front");
-eq([1, 2, 3]._insert(3, "x"), [1, 2, 3, "x"], "_insert at len → append");
-eq([1, 2, 3]._insert(99, "x"), [1, 2, 3, "x"], "_insert idx>len → append (Ramda)");
-eq([1, 2, 3]._insert(-1, "x"), [1, 2, 3, "x"], "_insert idx<0 → append (Ramda)");
-eq([1, 2, 3, 4]._insertAll(2, ["x", "y"]), [1, 2, "x", "y", 3, 4], "_insertAll(idx, elts)");
-eq([1, 2, 3]._insertAll(0, ["a"]), ["a", 1, 2, 3], "_insertAll at front");
-eq([1, 2, 3]._insertAll(9, ["a", "b"]), [1, 2, 3, "a", "b"], "_insertAll idx>len → append");
-eq([1, 2, 3]._insertAll(1, []), [1, 2, 3], "_insertAll empty elts → copy");
-eq([1, 2, 3, 4]._removeAt(1), [1, 3, 4], "_removeAt(idx)");
-eq([1, 2, 3, 4]._removeAt(-1), [1, 2, 3], "_removeAt(-1) from end");
-eq([1, 2, 3]._removeAt(9), [1, 2, 3], "_removeAt OOB → unchanged copy");
-eq([5]._removeAt(0), [], "_removeAt sole element → []");
-eq(["a", "b", "c"]._zipObj([1, 2, 3]), { a: 1, b: 2, c: 3 }, "_zipObj(values)");
-eq(["a", "b", "c"]._zipObj([1, 2]), { a: 1, b: 2 }, "_zipObj truncates to shorter");
-eq([]._zipObj([1, 2]), {}, "_zipObj no keys → {}");
-eq([["a", 1], ["b", 2]]._fromPairs(), { a: 1, b: 2 }, "_fromPairs");
-eq([["a", 1], ["a", 2]]._fromPairs(), { a: 2 }, "_fromPairs later key wins");
-eq([]._fromPairs(), {}, "_fromPairs of empty → {}");
+eq([1, 2, 3, 4].reject(x => x % 2 === 0), [1, 3], "reject(pred) complement of filter");
+eq([1, 2, 1, 3, 1].reject(1), [2, 3], "reject(value) via SameValueZero");
+eq([1, 2, 3].reject(x => false), [1, 2, 3], "reject none → all");
+eq([1, 2, 3].reject(x => true), [], "reject all → []");
+eq([1, 2, 3, 4].insert(2, "x"), [1, 2, "x", 3, 4], "insert(idx, elt)");
+eq([1, 2, 3].insert(0, "x"), ["x", 1, 2, 3], "insert at front");
+eq([1, 2, 3].insert(3, "x"), [1, 2, 3, "x"], "insert at len → append");
+eq([1, 2, 3].insert(99, "x"), [1, 2, 3, "x"], "insert idx>len → append (Ramda)");
+eq([1, 2, 3].insert(-1, "x"), [1, 2, 3, "x"], "insert idx<0 → append (Ramda)");
+eq([1, 2, 3, 4].insertAll(2, ["x", "y"]), [1, 2, "x", "y", 3, 4], "insertAll(idx, elts)");
+eq([1, 2, 3].insertAll(0, ["a"]), ["a", 1, 2, 3], "insertAll at front");
+eq([1, 2, 3].insertAll(9, ["a", "b"]), [1, 2, 3, "a", "b"], "insertAll idx>len → append");
+eq([1, 2, 3].insertAll(1, []), [1, 2, 3], "insertAll empty elts → copy");
+eq([1, 2, 3, 4].removeAt(1), [1, 3, 4], "removeAt(idx)");
+eq([1, 2, 3, 4].removeAt(-1), [1, 2, 3], "removeAt(-1) from end");
+eq([1, 2, 3].removeAt(9), [1, 2, 3], "removeAt OOB → unchanged copy");
+eq([5].removeAt(0), [], "removeAt sole element → []");
+eq(["a", "b", "c"].zipObj([1, 2, 3]), { a: 1, b: 2, c: 3 }, "zipObj(values)");
+eq(["a", "b", "c"].zipObj([1, 2]), { a: 1, b: 2 }, "zipObj truncates to shorter");
+eq([].zipObj([1, 2]), {}, "zipObj no keys → {}");
+eq([["a", 1], ["b", 2]].fromPairs(), { a: 1, b: 2 }, "fromPairs");
+eq([["a", 1], ["a", 2]].fromPairs(), { a: 2 }, "fromPairs later key wins");
+eq([].fromPairs(), {}, "fromPairs of empty → {}");
 /* non-mutation */
 const b9 = [1, 2, 3];
-b9._reject(x => true); b9._insert(1, 9); b9._insertAll(1, [9]); b9._removeAt(0); b9._zipObj([7, 8, 9]);
+b9.reject(x => true); b9.insert(1, 9); b9.insertAll(1, [9]); b9.removeAt(0); b9.zipObj([7, 8, 9]);
 eq(b9, [1, 2, 3], "batch-9 methods do not mutate the receiver");
 /* re-entrancy: a {valueOf} idx to _insert/_removeAt must not corrupt the receiver */
 {
     const arr = [10, 20, 30];
-    eq(arr._insert({ valueOf() { return 1; } }, 99), [10, 99, 20, 30], "_insert with valueOf idx");
-    eq(arr._removeAt({ valueOf() { return 0; } }), [20, 30], "_removeAt with valueOf idx");
+    eq(arr.insert({ valueOf() { return 1; } }, 99), [10, 99, 20, 30], "insert with valueOf idx");
+    eq(arr.removeAt({ valueOf() { return 0; } }), [20, 30], "removeAt with valueOf idx");
     eq(arr, [10, 20, 30], "receiver intact after valueOf-arg calls");
 }
 
 /* ---- batch 10: _median / _product / _scan / _countBy / _indexBy ---- */
-eq([1, 2, 3]._median(), 2, "_median odd length");
-eq([1, 2, 3, 4]._median(), 2.5, "_median even length → avg of two middle");
-eq([7, 2, 10, 9]._median(), 8, "_median unsorted (Ramda vector)");
-eq([2, 9, 7]._median(), 7, "_median unsorted odd");
-assert(Number.isNaN([]._median()), "_median of empty → NaN");
-eq([5]._median(), 5, "_median single");
-eq([2, 4, 6]._product(), 48, "_product");
-eq([]._product(), 1, "_product of empty → 1");
-eq([3]._product(), 3, "_product single");
-eq(["2", "3"]._product(), 6, "_product coerces");
-eq([1, 2, 3, 4]._scan((a, b) => a + b, 0), [0, 1, 3, 6, 10], "_scan sum");
-eq([]._scan((a, b) => a + b, 0), [0], "_scan of empty → [acc]");
-eq([1, 2, 3]._scan((a, b) => a * b, 1), [1, 1, 2, 6], "_scan product");
-eq([1.1, 1.2, 2.3]._countBy(Math.floor), { 1: 2, 2: 1 }, "_countBy(fn)");
-eq(["a", "b", "a", "a"]._countBy(x => x), { a: 3, b: 1 }, "_countBy identity-ish");
-eq([]._countBy(x => x), {}, "_countBy of empty → {}");
-eq([{ id: "a", v: 1 }, { id: "b", v: 2 }, { id: "a", v: 3 }]._indexBy(x => x.id),
-   { a: { id: "a", v: 3 }, b: { id: "b", v: 2 } }, "_indexBy last wins");
-eq([{ id: "x" }]._indexBy("id"), { x: { id: "x" } }, "_indexBy by property key");
-eq([]._indexBy(x => x), {}, "_indexBy of empty → {}");
+eq([1, 2, 3].median(), 2, "median odd length");
+eq([1, 2, 3, 4].median(), 2.5, "median even length → avg of two middle");
+eq([7, 2, 10, 9].median(), 8, "median unsorted (Ramda vector)");
+eq([2, 9, 7].median(), 7, "median unsorted odd");
+assert(Number.isNaN([].median()), "median of empty → NaN");
+eq([5].median(), 5, "median single");
+eq([2, 4, 6].product(), 48, "product");
+eq([].product(), 1, "product of empty → 1");
+eq([3].product(), 3, "product single");
+eq(["2", "3"].product(), 6, "product coerces");
+eq([1, 2, 3, 4].scan((a, b) => a + b, 0), [0, 1, 3, 6, 10], "scan sum");
+eq([].scan((a, b) => a + b, 0), [0], "scan of empty → [acc]");
+eq([1, 2, 3].scan((a, b) => a * b, 1), [1, 1, 2, 6], "scan product");
+eq([1.1, 1.2, 2.3].countBy(Math.floor), { 1: 2, 2: 1 }, "countBy(fn)");
+eq(["a", "b", "a", "a"].countBy(x => x), { a: 3, b: 1 }, "countBy identity-ish");
+eq([].countBy(x => x), {}, "countBy of empty → {}");
+eq([{ id: "a", v: 1 }, { id: "b", v: 2 }, { id: "a", v: 3 }].indexBy(x => x.id),
+   { a: { id: "a", v: 3 }, b: { id: "b", v: 2 } }, "indexBy last wins");
+eq([{ id: "x" }].indexBy("id"), { x: { id: "x" } }, "indexBy by property key");
+eq([].indexBy(x => x), {}, "indexBy of empty → {}");
 /* non-mutation */
 const b10 = [3, 1, 2];
-b10._median(); b10._product(); b10._scan((a, b) => a + b, 0); b10._countBy(x => x); b10._indexBy(x => x);
+b10.median(); b10.product(); b10.scan((a, b) => a + b, 0); b10.countBy(x => x); b10.indexBy(x => x);
 eq(b10, [3, 1, 2], "batch-10 methods do not mutate the receiver");
 /* _median must not be corrupted by a re-entrant valueOf element */
 {
     let hits = 0;
     const arr = [3, 1, { valueOf() { hits++; return 2; } }];
-    eq(arr._median(), 2, "_median with a valueOf element");
-    assert(hits === 1, "_median coerces the element once");
+    eq(arr.median(), 2, "median with a valueOf element");
+    assert(hits === 1, "median coerces the element once");
 }
 
 /* ---- overloaded matcher dispatch: RegExp matcher across all matcher methods ---- */
-eq(["apple", "banana", "cherry", "avocado"]._count(/^a/), 2, "_count(regex) tests each element");
-eq(["apple", "banana", "cherry"]._reject(/^a/), ["banana", "cherry"], "_reject(regex)");
-eq([1, 22, 333, 4444]._partition(/../), [[22, 333, 4444], [1]], "_partition(regex) coerces to string");
-assert(["ab", "cd"]._any(/c/) === true, "_any(regex)");
-assert(["ab", "cd"]._all(/[a-d]/) === true, "_all(regex)");
-assert(["ab", "cd"]._none(/z/) === true, "_none(regex)");
-eq(["a1", "a2", "b3"]._takeWhile(/^a/), ["a1", "a2"], "_takeWhile(regex)");
-eq(["a1", "a2", "b3"]._dropWhile(/^a/), ["b3"], "_dropWhile(regex)");
+eq(["apple", "banana", "cherry", "avocado"].count(/^a/), 2, "count(regex) tests each element");
+eq(["apple", "banana", "cherry"].reject(/^a/), ["banana", "cherry"], "reject(regex)");
+eq([1, 22, 333, 4444].partition(/../), [[22, 333, 4444], [1]], "partition(regex) coerces to string");
+assert(["ab", "cd"].any(/c/) === true, "any(regex)");
+assert(["ab", "cd"].all(/[a-d]/) === true, "all(regex)");
+assert(["ab", "cd"].none(/z/) === true, "none(regex)");
+eq(["a1", "a2", "b3"].takeWhile(/^a/), ["a1", "a2"], "takeWhile(regex)");
+eq(["a1", "a2", "b3"].dropWhile(/^a/), ["b3"], "dropWhile(regex)");
 /* a function matcher and a value matcher still dispatch correctly (no regression) */
-eq([1, 2, 3, 4]._count(x => x > 2), 2, "matcher still accepts a predicate fn");
-eq([1, 2, 2, 3]._count(2), 2, "matcher still accepts a value (SameValueZero)");
+eq([1, 2, 3, 4].count(x => x > 2), 2, "matcher still accepts a predicate fn");
+eq([1, 2, 2, 3].count(2), 2, "matcher still accepts a value (SameValueZero)");
 
 print("test_array_ext: all tests passed (" + n + " assertions)");

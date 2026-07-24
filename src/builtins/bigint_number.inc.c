@@ -3737,7 +3737,7 @@ static JSValue js_typed_array_ext_reduce(JSContext *ctx, JSValueConst this_val,
     }
     case JS_CLASS_BIG_INT64_ARRAY:
     case JS_CLASS_BIG_UINT64_ARRAY:
-        return JS_ThrowTypeError(ctx, "_sum/_min/_max/_mean: BigInt typed arrays are not supported");
+        return JS_ThrowTypeError(ctx, "sum/min/max/mean: BigInt typed arrays are not supported");
     default: /* int8/uint8/uint8c/int16/uint16/uint32/float16: scalar loop */
         if (magic == 0 || magic == 3) {
             double s = 0;
@@ -3776,9 +3776,9 @@ static JSValue js_typed_array_ext_dot(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
     if (p->class_id != q->class_id)
-        return JS_ThrowTypeError(ctx, "_dot: both typed arrays must be the same type");
+        return JS_ThrowTypeError(ctx, "dot: both typed arrays must be the same type");
     if (p->u.array.count != q->u.array.count)
-        return JS_ThrowRangeError(ctx, "_dot: both typed arrays must have equal length");
+        return JS_ThrowRangeError(ctx, "dot: both typed arrays must have equal length");
     simd_init();
     n = p->u.array.count;
     if (n == 0)
@@ -3792,7 +3792,7 @@ static JSValue js_typed_array_ext_dot(JSContext *ctx, JSValueConst this_val,
         return JS_NewFloat64(ctx, simd.i32_dot(p->u.array.u.int32_ptr, q->u.array.u.int32_ptr, n));
     case JS_CLASS_BIG_INT64_ARRAY:
     case JS_CLASS_BIG_UINT64_ARRAY:
-        return JS_ThrowTypeError(ctx, "_dot: BigInt typed arrays are not supported");
+        return JS_ThrowTypeError(ctx, "dot: BigInt typed arrays are not supported");
     default:
         acc = 0;
         for (i = 0; i < n; i++)
@@ -3802,12 +3802,12 @@ static JSValue js_typed_array_ext_dot(JSContext *ctx, JSValueConst this_val,
 }
 
 static const JSCFunctionListEntry js_typed_array_base_proto_funcs[] = {
-    JS_CFUNC_DEF("_dot", 1, js_typed_array_ext_dot ),
-    JS_CFUNC_MAGIC_DEF("_sum", 0, js_typed_array_ext_reduce, 0 ),
-    JS_CFUNC_MAGIC_DEF("_min", 0, js_typed_array_ext_reduce, 1 ),
-    JS_CFUNC_MAGIC_DEF("_max", 0, js_typed_array_ext_reduce, 2 ),
-    JS_CFUNC_MAGIC_DEF("_mean", 0, js_typed_array_ext_reduce, 3 ),
-    JS_ALIAS_DEF("_average", "_mean" ),
+    JS_CFUNC_DEF("dot", 1, js_typed_array_ext_dot ),
+    JS_CFUNC_MAGIC_DEF("sum", 0, js_typed_array_ext_reduce, 0 ),
+    JS_CFUNC_MAGIC_DEF("min", 0, js_typed_array_ext_reduce, 1 ),
+    JS_CFUNC_MAGIC_DEF("max", 0, js_typed_array_ext_reduce, 2 ),
+    JS_CFUNC_MAGIC_DEF("mean", 0, js_typed_array_ext_reduce, 3 ),
+    JS_ALIAS_DEF("average", "mean" ),
     JS_CGETSET_DEF("length", js_typed_array_get_length, NULL ),
     JS_CFUNC_DEF("at", 1, js_typed_array_at ),
     JS_CFUNC_DEF("with", 2, js_typed_array_with ),
