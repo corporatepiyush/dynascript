@@ -475,6 +475,21 @@ LIBS+=-ldl
 endif
 LIBS+=$(EXTRA_LIBS)
 
+# OpenLibm (JuliaMath) as the math backend for cross-platform BIT-REPRODUCIBLE
+# Math.* / libm results -- the same reason Julia bundles it. Opt-in experiment;
+# vendored under third_party/openlibm -- run:
+#   git clone https://github.com/JuliaMath/openlibm third_party/openlibm \
+#     && $(MAKE) -C third_party/openlibm
+# It provides the standard C symbol names (sin/cos/pow/...), so prepending its
+# static archive before -lm makes the linker resolve libm from it -- NO engine
+# code change. Default build is untouched. See CLAUDE.md "Deterministic libm".
+ifdef CONFIG_OPENLIBM
+OPENLIBM_DIR?=third_party/openlibm
+CFLAGS+=-DCONFIG_OPENLIBM -I$(OPENLIBM_DIR)/include
+LIBS:=$(OPENLIBM_DIR)/libopenlibm.a $(LIBS)
+HOST_LIBS:=$(OPENLIBM_DIR)/libopenlibm.a $(HOST_LIBS)
+endif
+
 # Opt-in io_uring backend for the dynajs:http async reactor (Linux only; needs
 # liburing-dev). Falls back to epoll when unset. No effect on non-Linux hosts.
 ifdef CONFIG_IO_URING
