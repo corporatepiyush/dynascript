@@ -1,0 +1,17 @@
+# Linux ASan + LeakSanitizer image to leak-audit the `_`-prefixed extension
+# methods (LSan is unavailable on arm64-apple-darwin; it works here). Any JSValue
+# an extension method fails to free on any path shows as an unreachable leak.
+#   docker build --platform linux/arm64 -f docker/Dockerfile.asanleak -t dyna:asanleak .
+FROM debian:trixie-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends clang lld make libc6-dev ca-certificates \
+      $(apt-cache search --names-only '^libclang-rt-[0-9]+-dev$' | awk '{print $1}' | sort -V | tail -1) \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN make clean || true
+RUN make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y CONFIG_ASAN=y -j"$(nproc)" dynajs
+ENV ASAN_OPTIONS=detect_leaks=1:exitcode=99
+RUN echo "=== ASan+LSan: test_array_ext ===" && ./dynajs tests/test_array_ext.js
+RUN echo "=== ASan+LSan: test_typedarray_ext ===" && ./dynajs tests/test_typedarray_ext.js
+RUN echo "=== ASan+LSan: leak churn (200x every method incl. throw paths) ===" && ./dynajs tests/leak_ext.js

@@ -130,4 +130,43 @@ assert(src._sample(99).length === src.length, "_sample(n>len) → all");
 eq(src._sample(0), [], "_sample(0) → []");
 eq(src, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "_sample does not mutate the original");
 
+/* ---- batch 4: _unique / _uniq / _uniqBy (SameValueZero + mapper variants) ---- */
+eq([1, 2, 2, 3, 1, 4, 3]._unique(), [1, 2, 3, 4], "_unique dedup, first-occurrence order");
+eq(["a", "b", "a", "c", "b"]._unique(), ["a", "b", "c"], "_unique strings by content");
+eq([1, 1.0, 2]._unique(), [1, 2], "_unique: 1 and 1.0 are SameValueZero-equal");
+{ const u = [0, -0, 1]._unique(); assert(u.length === 2 && Object.is(u[0], 0), "_unique: -0 and +0 dedup to +0"); }
+{ const u = [NaN, NaN, 1]._unique(); assert(u.length === 2 && Number.isNaN(u[0]), "_unique: NaN dedups (SameValueZero)"); }
+{ const a = {}, b = {}; eq([a, b, a]._unique().length, 2, "_unique objects by identity"); }
+eq([1, 2, 3]._uniq(), [1, 2, 3], "_uniq alias");
+eq([{ id: 1 }, { id: 2 }, { id: 1 }]._uniqBy(x => x.id).map(o => o.id), [1, 2], "_uniqBy(fn) keeps first");
+eq([{ t: "a" }, { t: "b" }, { t: "a" }]._unique("t").map(o => o.t), ["a", "b"], "_unique(prop)");
+eq([]._unique(), [], "_unique of empty → []");
+
+/* ---- batch 4: _intersect / _intersection / _difference / _without / _union ---- */
+eq([1, 2, 3, 4]._intersect([2, 4, 6]), [2, 4], "_intersect");
+eq([1, 2, 3]._intersection([2, 3, 9]), [2, 3], "_intersection alias");
+eq([2, 2, 3]._intersect([2, 3]), [2, 3], "_intersect dedups the result");
+eq([1, 2, 3]._intersect([]), [], "_intersect with empty → []");
+eq([1, 2, 3, 4]._difference([2, 4]), [1, 3], "_difference");
+eq([1, 1, 2, 3]._difference([3]), [1, 2], "_difference dedups the result");
+eq([1, 2, 3]._difference([]), [1, 2, 3], "_difference with empty → this");
+eq([1, 2, 2, 3, 2]._without([2]), [1, 3], "_without removes all occurrences");
+eq([1, 1, 2]._without([2]), [1, 1], "_without keeps this's own duplicates");
+eq([1, 2, 3]._union([3, 4, 5]), [1, 2, 3, 4, 5], "_union dedup, this-then-other order");
+eq([1, 1, 2]._union([2, 3]), [1, 2, 3], "_union dedups within and across");
+eq([]._union([1, 1, 2]), [1, 2], "_union from empty");
+/* set-ops preserve SameValueZero and don't mutate */
+const setSrc = [1, 2, 3, 4]; setSrc._difference([2]); eq(setSrc, [1, 2, 3, 4], "_difference does not mutate");
+
+/* ---- batch 4: large-array hash-set correctness (O(n), not O(n²)) ---- */
+{
+    const big = [];
+    for (let i = 0; i < 20000; i++) big.push(i % 5000);   /* each value appears 4x */
+    const uq = big._unique();
+    assert(uq.length === 5000, "_unique large: 5000 distinct");
+    eq(uq.slice(0, 5), [0, 1, 2, 3, 4], "_unique large: order preserved");
+    const other = []; for (let i = 0; i < 5000; i++) other.push(i * 2);
+    assert(big._intersect(other).length === 2500, "_intersect large correct");
+}
+
 print("test_array_ext: all tests passed (" + n + " assertions)");

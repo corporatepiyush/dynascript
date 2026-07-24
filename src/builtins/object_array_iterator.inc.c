@@ -1053,6 +1053,9 @@ static const JSCFunctionListEntry js_array_unscopables_funcs[] = {
  * ========================================================================== */
 
 static uint64_t xorshift64star(uint64_t *pstate); /* the Math.random PRNG, below */
+/* the Map/Set value hasher + -0 normaliser (symbol.inc.c, later in the unity build) */
+static uint32_t map_hash_key(JSValueConst key, int hash_bits);
+static JSValueConst map_normalize_key_const(JSContext *ctx, JSValueConst key);
 
 /* read element i of a (possibly array-like) object; *pval is owned, set to
  * JS_UNDEFINED for a missing index. returns -1 (exception) or 0. */
@@ -1622,8 +1625,10 @@ static JSValue js_array_ext_groupby(JSContext *ctx, JSValueConst this_val,
             }
         }
         JS_FreeAtom(ctx, atom);
-        if (js_get_length64(ctx, &blen, bucket) ||
-            JS_SetPropertyInt64(ctx, bucket, blen, el) < 0) { /* el consumed */
+        if (js_get_length64(ctx, &blen, bucket)) {
+            JS_FreeValue(ctx, el); JS_FreeValue(ctx, bucket); goto fail;
+        }
+        if (JS_SetPropertyInt64(ctx, bucket, blen, el) < 0) { /* el consumed */
             JS_FreeValue(ctx, bucket); goto fail;
         }
         JS_FreeValue(ctx, bucket);
@@ -1704,6 +1709,272 @@ static JSValue js_array_ext_sample(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* ============================================================================
+ * DynValSet: a small open-addressing hash set of JSValues with SameValueZero
+ * membership, reusing the engine's Map value-hasher. Owns its keys (dup on add,
+ * free on destroy). Sized up front from a count hint (load factor <= 0.5, so no
+ * resize and probing always terminates). Empty slots use JS_UNINITIALIZED, which
+ * no array element or JS return value can ever be. The shared primitive behind
+ * _unique/_uniqBy and the set operations. See SUGAR_RAMDA_NATIVE.md.
+ * ========================================================================== */
+typedef struct {
+    JSValue *keys;     /* owned; JS_UNINITIALIZED = empty slot */
+    uint32_t mask;     /* slots - 1 (slots is a power of two) */
+    uint32_t count;
+    int hash_bits;
+} DynValSet;
+
+static int dyn_valset_init(JSContext *ctx, DynValSet *s, int64_t hint)
+{
+    int bits = 3;
+    uint32_t slots, i;
+    /* size from the hint but CAP the initial table (a high-duplicate source has
+     * far fewer distinct keys than elements — oversizing to 2*len wastes an
+     * init+free pass over millions of empty slots); dyn_valset_resize grows it
+     * on demand for genuinely large distinct sets. */
+    while (((int64_t)1 << bits) < hint * 2 && bits < 16)
+        bits++;
+    slots = (uint32_t)1 << bits;
+    s->keys = js_malloc(ctx, (size_t)slots * sizeof(JSValue));
+    if (!s->keys)
+        return -1;
+    for (i = 0; i < slots; i++)
+        s->keys[i] = JS_UNINITIALIZED;
+    s->mask = slots - 1;
+    s->hash_bits = bits;
+    s->count = 0;
+    return 0;
+}
+
+static void dyn_valset_free(JSContext *ctx, DynValSet *s)
+{
+    uint32_t i;
+    if (!s->keys)
+        return;
+    for (i = 0; i <= s->mask; i++)
+        JS_FreeValue(ctx, s->keys[i]); /* no-op for the UNINITIALIZED slots */
+    js_free(ctx, s->keys);
+    s->keys = NULL;
+}
+
+/* double the table and rehash (moves the owned keys, no dup/free). 0 or -1. */
+static int dyn_valset_resize(JSContext *ctx, DynValSet *s)
+{
+    int new_bits = s->hash_bits + 1;
+    uint32_t new_slots, new_mask, i;
+    JSValue *nk;
+    if (new_bits > 30)
+        return 0; /* absurdly large: stay put (load still well below 1) */
+    new_slots = (uint32_t)1 << new_bits;
+    new_mask = new_slots - 1;
+    nk = js_malloc(ctx, (size_t)new_slots * sizeof(JSValue));
+    if (!nk)
+        return -1;
+    for (i = 0; i < new_slots; i++)
+        nk[i] = JS_UNINITIALIZED;
+    for (i = 0; i <= s->mask; i++) {
+        JSValue k = s->keys[i];
+        uint32_t h;
+        if (JS_VALUE_GET_TAG(k) == JS_TAG_UNINITIALIZED)
+            continue;
+        h = map_hash_key(k, new_bits) & new_mask;
+        while (JS_VALUE_GET_TAG(nk[h]) != JS_TAG_UNINITIALIZED)
+            h = (h + 1) & new_mask;
+        nk[h] = k; /* ownership moves with the value */
+    }
+    js_free(ctx, s->keys);
+    s->keys = nk;
+    s->mask = new_mask;
+    s->hash_bits = new_bits;
+    return 0;
+}
+
+/* add `key` (borrowed) -> 1 if newly inserted, 0 if already present, -1 on OOM.
+ * Grows the table only on an actual insert at load >= 0.5 (a duplicate returns
+ * early and never resizes). No user JS runs (hashing + SameValueZero only), so
+ * the caller's source stays valid across the call. */
+static int dyn_valset_add(JSContext *ctx, DynValSet *s, JSValueConst key)
+{
+    JSValueConst nk = map_normalize_key_const(ctx, key);
+    uint32_t h = map_hash_key(nk, s->hash_bits) & s->mask;
+    for (;;) {
+        JSValue slot = s->keys[h];
+        if (JS_VALUE_GET_TAG(slot) == JS_TAG_UNINITIALIZED)
+            break; /* not present: this is the insertion point */
+        if (JS_SameValueZero(ctx, slot, nk))
+            return 0; /* already present */
+        h = (h + 1) & s->mask;
+    }
+    if (s->count >= ((s->mask + 1) >> 1)) { /* load would reach 0.5 -> grow first */
+        if (dyn_valset_resize(ctx, s))
+            return -1;
+        h = map_hash_key(nk, s->hash_bits) & s->mask;
+        while (JS_VALUE_GET_TAG(s->keys[h]) != JS_TAG_UNINITIALIZED)
+            h = (h + 1) & s->mask;
+    }
+    s->keys[h] = JS_DupValue(ctx, nk);
+    s->count++;
+    return 1;
+}
+
+static int dyn_valset_has(JSContext *ctx, DynValSet *s, JSValueConst key)
+{
+    JSValueConst nk = map_normalize_key_const(ctx, key);
+    uint32_t h = map_hash_key(nk, s->hash_bits) & s->mask;
+    for (;;) {
+        JSValue slot = s->keys[h];
+        if (JS_VALUE_GET_TAG(slot) == JS_TAG_UNINITIALIZED)
+            return 0;
+        if (JS_SameValueZero(ctx, slot, nk))
+            return 1;
+        h = (h + 1) & s->mask;
+    }
+}
+
+/* _unique(map?) / _uniq / _uniqBy(fn) -> a new array with duplicates removed
+ * (SameValueZero on the mapped value; identity / function / property-name),
+ * keeping the first occurrence's element in original order. */
+static JSValue js_array_ext_unique(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj, result, ret = JS_EXCEPTION;
+    JSValueConst map = argc > 0 ? argv[0] : JS_UNDEFINED;
+    DynValSet seen;
+    int64_t len, i, j = 0;
+
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj))
+        goto done0;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result))
+        goto done0;
+    if (dyn_valset_init(ctx, &seen, len)) { JS_ThrowOutOfMemory(ctx); JS_FreeValue(ctx, result); goto done0; }
+    for (i = 0; i < len; i++) {
+        JSValue el, key;
+        int added;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto fail;
+        key = js_array_ext_mapval(ctx, map, el);
+        if (JS_IsException(key)) { JS_FreeValue(ctx, el); goto fail; }
+        added = dyn_valset_add(ctx, &seen, key);
+        JS_FreeValue(ctx, key);
+        if (added < 0) { JS_FreeValue(ctx, el); goto fail; }
+        if (added) {
+            if (JS_DefinePropertyValueInt64(ctx, result, j++, el, JS_PROP_C_W_E) < 0) goto fail;
+        } else {
+            JS_FreeValue(ctx, el);
+        }
+    }
+    ret = result;
+    result = JS_UNDEFINED;
+ fail:
+    dyn_valset_free(ctx, &seen);
+    JS_FreeValue(ctx, result);
+ done0:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _intersect(other)/_intersection, _difference(other), _without(other)
+ * (magic 0/1/2). Builds a SameValueZero set from `other`, then filters `this`.
+ * intersect/difference dedup the result; without keeps this's duplicates. */
+static JSValue js_array_ext_setop(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv, int magic)
+{
+    JSValue obj, other, result, ret = JS_EXCEPTION;
+    DynValSet set, seen;
+    int have_seen = 0;
+    int64_t len, olen, i, j = 0;
+
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    other = JS_ToObject(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(other)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &olen, other)) goto done;
+    if (dyn_valset_init(ctx, &set, olen)) { JS_ThrowOutOfMemory(ctx); goto done; }
+    for (i = 0; i < olen; i++) {
+        JSValue oe;
+        int r;
+        if (js_array_ext_getel(ctx, other, i, &oe)) goto fail_set;
+        r = dyn_valset_add(ctx, &set, oe);
+        JS_FreeValue(ctx, oe);
+        if (r < 0) goto fail_set;
+    }
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto fail_set;
+    if (magic != 2) { /* intersect/difference dedup the result */
+        if (dyn_valset_init(ctx, &seen, len)) { JS_ThrowOutOfMemory(ctx); JS_FreeValue(ctx, result); goto fail_set; }
+        have_seen = 1;
+    }
+    for (i = 0; i < len; i++) {
+        JSValue el;
+        int in_other, keep;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto fail_result;
+        in_other = dyn_valset_has(ctx, &set, el);
+        keep = (magic == 0) ? in_other : !in_other; /* intersect vs difference/without */
+        if (!keep) { JS_FreeValue(ctx, el); continue; }
+        if (have_seen) {
+            int added = dyn_valset_add(ctx, &seen, el);
+            if (added < 0) { JS_FreeValue(ctx, el); goto fail_result; } /* OOM */
+            if (added == 0) { JS_FreeValue(ctx, el); continue; }        /* duplicate */
+        }
+        if (JS_DefinePropertyValueInt64(ctx, result, j++, el, JS_PROP_C_W_E) < 0) goto fail_result;
+    }
+    ret = result;
+    result = JS_UNDEFINED;
+ fail_result:
+    if (have_seen) dyn_valset_free(ctx, &seen);
+    JS_FreeValue(ctx, result);
+ fail_set:
+    dyn_valset_free(ctx, &set);
+ done:
+    JS_FreeValue(ctx, other);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _union(other) -> the elements of this then other, SameValueZero-deduped. */
+static JSValue js_array_ext_union(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv)
+{
+    JSValue obj, other, result, ret = JS_EXCEPTION;
+    DynValSet seen;
+    int64_t len, olen, i, j = 0, pass;
+
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    other = JS_ToObject(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(other)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    if (js_get_length64(ctx, &olen, other)) goto done;
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    if (dyn_valset_init(ctx, &seen, len + olen)) { JS_ThrowOutOfMemory(ctx); JS_FreeValue(ctx, result); goto done; }
+    for (pass = 0; pass < 2; pass++) {
+        JSValueConst src = pass == 0 ? obj : other;
+        int64_t n = pass == 0 ? len : olen;
+        for (i = 0; i < n; i++) {
+            JSValue el;
+            int added;
+            if (js_array_ext_getel(ctx, src, i, &el)) goto fail;
+            added = dyn_valset_add(ctx, &seen, el);
+            if (added < 0) { JS_FreeValue(ctx, el); goto fail; }
+            if (added) {
+                if (JS_DefinePropertyValueInt64(ctx, result, j++, el, JS_PROP_C_W_E) < 0) goto fail;
+            } else {
+                JS_FreeValue(ctx, el);
+            }
+        }
+    }
+    ret = result;
+    result = JS_UNDEFINED;
+ fail:
+    dyn_valset_free(ctx, &seen);
+    JS_FreeValue(ctx, result);
+ done:
+    JS_FreeValue(ctx, other);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("_isEmpty", 0, js_array_ext_isEmpty ),
     JS_CFUNC_DEF("_first", 0, js_array_ext_first ),
@@ -1726,6 +1997,14 @@ static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("_groupBy", 1, js_array_ext_groupby ),
     JS_CFUNC_DEF("_shuffle", 0, js_array_ext_shuffle ),
     JS_CFUNC_DEF("_sample", 0, js_array_ext_sample ),
+    JS_CFUNC_DEF("_unique", 1, js_array_ext_unique ),
+    JS_ALIAS_DEF("_uniq", "_unique" ),
+    JS_CFUNC_DEF("_uniqBy", 1, js_array_ext_unique ),
+    JS_CFUNC_MAGIC_DEF("_intersect", 1, js_array_ext_setop, 0 ),
+    JS_ALIAS_DEF("_intersection", "_intersect" ),
+    JS_CFUNC_MAGIC_DEF("_difference", 1, js_array_ext_setop, 1 ),
+    JS_CFUNC_MAGIC_DEF("_without", 1, js_array_ext_setop, 2 ),
+    JS_CFUNC_DEF("_union", 1, js_array_ext_union ),
 };
 
 static const JSCFunctionListEntry js_array_proto_funcs[] = {

@@ -65,6 +65,21 @@ row("_groupBy",
     () => nums._groupBy(x => x % 10),
     () => nums.reduce((acc, x) => { const k = x % 10; (acc[k] || (acc[k] = [])).push(x); return acc; }, {}));
 
+/* batch 4: dedup + set-ops. Compare vs the idiomatic Set-based JS (both O(n)). */
+const dup = new Array(N);
+for (let i = 0; i < N; i++) dup[i] = i % 50000;   /* each value ~20x */
+const other = []; for (let i = 0; i < 50000; i++) other.push(i * 2);
+
+row("_unique",
+    () => dup._unique(),
+    () => [...new Set(dup)]);
+row("_intersect",
+    () => dup._intersect(other),
+    () => { const s = new Set(other); return [...new Set(dup)].filter(x => s.has(x)); });
+row("_union",
+    () => dup._union(other),
+    () => [...new Set([...dup, ...other])]);
+
 /* ---- TypedArray SIMD reductions vs a scalar JS loop over the buffer ---- */
 print("=== TypedArray `_` SIMD reductions vs JS loop, N=" + N + " ===");
 const f64 = new Float64Array(N);
