@@ -327,4 +327,37 @@ eq(b9, [1, 2, 3], "batch-9 methods do not mutate the receiver");
     eq(arr, [10, 20, 30], "receiver intact after valueOf-arg calls");
 }
 
+/* ---- batch 10: _median / _product / _scan / _countBy / _indexBy ---- */
+eq([1, 2, 3]._median(), 2, "_median odd length");
+eq([1, 2, 3, 4]._median(), 2.5, "_median even length → avg of two middle");
+eq([7, 2, 10, 9]._median(), 8, "_median unsorted (Ramda vector)");
+eq([2, 9, 7]._median(), 7, "_median unsorted odd");
+assert(Number.isNaN([]._median()), "_median of empty → NaN");
+eq([5]._median(), 5, "_median single");
+eq([2, 4, 6]._product(), 48, "_product");
+eq([]._product(), 1, "_product of empty → 1");
+eq([3]._product(), 3, "_product single");
+eq(["2", "3"]._product(), 6, "_product coerces");
+eq([1, 2, 3, 4]._scan((a, b) => a + b, 0), [0, 1, 3, 6, 10], "_scan sum");
+eq([]._scan((a, b) => a + b, 0), [0], "_scan of empty → [acc]");
+eq([1, 2, 3]._scan((a, b) => a * b, 1), [1, 1, 2, 6], "_scan product");
+eq([1.1, 1.2, 2.3]._countBy(Math.floor), { 1: 2, 2: 1 }, "_countBy(fn)");
+eq(["a", "b", "a", "a"]._countBy(x => x), { a: 3, b: 1 }, "_countBy identity-ish");
+eq([]._countBy(x => x), {}, "_countBy of empty → {}");
+eq([{ id: "a", v: 1 }, { id: "b", v: 2 }, { id: "a", v: 3 }]._indexBy(x => x.id),
+   { a: { id: "a", v: 3 }, b: { id: "b", v: 2 } }, "_indexBy last wins");
+eq([{ id: "x" }]._indexBy("id"), { x: { id: "x" } }, "_indexBy by property key");
+eq([]._indexBy(x => x), {}, "_indexBy of empty → {}");
+/* non-mutation */
+const b10 = [3, 1, 2];
+b10._median(); b10._product(); b10._scan((a, b) => a + b, 0); b10._countBy(x => x); b10._indexBy(x => x);
+eq(b10, [3, 1, 2], "batch-10 methods do not mutate the receiver");
+/* _median must not be corrupted by a re-entrant valueOf element */
+{
+    let hits = 0;
+    const arr = [3, 1, { valueOf() { hits++; return 2; } }];
+    eq(arr._median(), 2, "_median with a valueOf element");
+    assert(hits === 1, "_median coerces the element once");
+}
+
 print("test_array_ext: all tests passed (" + n + " assertions)");

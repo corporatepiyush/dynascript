@@ -2806,6 +2806,173 @@ static JSValue js_array_ext_frompairs(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+static int js_array_ext_cmp_double(const void *a, const void *b)
+{
+    double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/* _median() -> the median of the elements coerced to numbers; NaN if empty.
+ * Coerces every element into a C buffer FIRST (valueOf may run JS), then sorts
+ * and reduces purely in C. */
+static JSValue js_array_ext_median(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue obj, ret = JS_EXCEPTION;
+    double *buf = NULL, med;
+    int64_t len, i;
+    (void)argc; (void)argv;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    if (len == 0) { ret = JS_NewFloat64(ctx, NAN); goto done; }
+    buf = js_malloc(ctx, sizeof(double) * len);
+    if (!buf) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue v;
+        double d;
+        int r;
+        if (js_array_ext_getel(ctx, obj, i, &v)) goto done;
+        r = JS_ToFloat64(ctx, &d, v);
+        JS_FreeValue(ctx, v);
+        if (r) goto done;
+        buf[i] = d;
+    }
+    qsort(buf, len, sizeof(double), js_array_ext_cmp_double);
+    med = (len & 1) ? buf[len / 2] : (buf[len / 2 - 1] + buf[len / 2]) / 2.0;
+    ret = JS_NewFloat64(ctx, med);
+ done:
+    js_free(ctx, buf);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _product() -> the product of the elements coerced to numbers; 1 if empty. */
+static JSValue js_array_ext_product(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue obj, ret = JS_EXCEPTION;
+    int64_t len, i;
+    double acc = 1;
+    (void)argc; (void)argv;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue v;
+        double d;
+        int r;
+        if (js_array_ext_getel(ctx, obj, i, &v)) goto done;
+        r = JS_ToFloat64(ctx, &d, v);
+        JS_FreeValue(ctx, v);
+        if (r) goto done;
+        acc *= d;
+    }
+    ret = JS_NewFloat64(ctx, acc);
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _scan(fn, acc) -> [acc, fn(acc,x0), fn(...,x1), ...] — reduce keeping every
+ * intermediate (Ramda scan); result length is len+1. */
+static JSValue js_array_ext_scan(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    JSValue obj, result, acc, ret = JS_EXCEPTION;
+    JSValueConst fn = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    acc = JS_DupValue(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    result = JS_NewArray(ctx);
+    if (JS_IsException(result)) { JS_FreeValue(ctx, acc); goto done; }
+    if (JS_DefinePropertyValueInt64(ctx, result, 0, JS_DupValue(ctx, acc), JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, acc); JS_FreeValue(ctx, result); goto done; }
+    for (i = 0; i < len; i++) {
+        JSValue el, nv;
+        JSValueConst args[2];
+        if (js_array_ext_getel(ctx, obj, i, &el)) { JS_FreeValue(ctx, acc); JS_FreeValue(ctx, result); goto done; }
+        args[0] = acc; args[1] = el;
+        nv = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
+        JS_FreeValue(ctx, el);
+        JS_FreeValue(ctx, acc);
+        if (JS_IsException(nv)) { JS_FreeValue(ctx, result); goto done; }
+        acc = nv;
+        if (JS_DefinePropertyValueInt64(ctx, result, i + 1, JS_DupValue(ctx, acc), JS_PROP_C_W_E) < 0) { JS_FreeValue(ctx, acc); JS_FreeValue(ctx, result); goto done; }
+    }
+    JS_FreeValue(ctx, acc);
+    ret = result;
+ done:
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _countBy(fn) -> object mapping each key (fn(el), or a property/identity) to
+ * the count of elements with that key (Ramda countBy). */
+static JSValue js_array_ext_countby(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue obj, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValueConst fn = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    result = JS_NewObject(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue el, key, cur;
+        JSAtom a;
+        int32_t c = 0;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
+        key = js_array_ext_mapval(ctx, fn, el);
+        JS_FreeValue(ctx, el);
+        if (JS_IsException(key)) goto done;
+        a = JS_ValueToAtom(ctx, key);
+        JS_FreeValue(ctx, key);
+        if (a == JS_ATOM_NULL) goto done;
+        cur = JS_GetProperty(ctx, result, a);
+        if (JS_IsException(cur)) { JS_FreeAtom(ctx, a); goto done; }
+        if (!JS_IsUndefined(cur) && JS_ToInt32(ctx, &c, cur)) { JS_FreeValue(ctx, cur); JS_FreeAtom(ctx, a); goto done; }
+        JS_FreeValue(ctx, cur);
+        if (JS_DefinePropertyValue(ctx, result, a, JS_NewInt32(ctx, c + 1), JS_PROP_C_W_E) < 0) { JS_FreeAtom(ctx, a); goto done; }
+        JS_FreeAtom(ctx, a);
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
+/* _indexBy(fn) -> object mapping each key (fn(el), or a property/identity) to
+ * the LAST element with that key (Ramda indexBy). */
+static JSValue js_array_ext_indexby(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue obj, result = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSValueConst fn = argc > 0 ? argv[0] : JS_UNDEFINED;
+    int64_t len, i;
+    obj = JS_ToObject(ctx, this_val);
+    if (js_get_length64(ctx, &len, obj)) { JS_FreeValue(ctx, obj); return JS_EXCEPTION; }
+    result = JS_NewObject(ctx);
+    if (JS_IsException(result)) goto done;
+    for (i = 0; i < len; i++) {
+        JSValue el, key;
+        JSAtom a;
+        if (js_array_ext_getel(ctx, obj, i, &el)) goto done;
+        key = js_array_ext_mapval(ctx, fn, el);
+        if (JS_IsException(key)) { JS_FreeValue(ctx, el); goto done; }
+        a = JS_ValueToAtom(ctx, key);
+        JS_FreeValue(ctx, key);
+        if (a == JS_ATOM_NULL) { JS_FreeValue(ctx, el); goto done; }
+        if (JS_DefinePropertyValue(ctx, result, a, el, JS_PROP_C_W_E) < 0) { JS_FreeAtom(ctx, a); goto done; } /* consumes el; last wins */
+        JS_FreeAtom(ctx, a);
+    }
+    ret = result; result = JS_UNDEFINED;
+ done:
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, obj);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("_isEmpty", 0, js_array_ext_isEmpty ),
     JS_CFUNC_DEF("_first", 0, js_array_ext_first ),
@@ -2867,6 +3034,11 @@ static const JSCFunctionListEntry js_array_ext_funcs[] = {
     JS_CFUNC_DEF("_removeAt", 1, js_array_ext_removeat ),
     JS_CFUNC_DEF("_zipObj", 1, js_array_ext_zipobj ),
     JS_CFUNC_DEF("_fromPairs", 0, js_array_ext_frompairs ),
+    JS_CFUNC_DEF("_median", 0, js_array_ext_median ),
+    JS_CFUNC_DEF("_product", 0, js_array_ext_product ),
+    JS_CFUNC_DEF("_scan", 2, js_array_ext_scan ),
+    JS_CFUNC_DEF("_countBy", 1, js_array_ext_countby ),
+    JS_CFUNC_DEF("_indexBy", 1, js_array_ext_indexby ),
 };
 
 static const JSCFunctionListEntry js_array_proto_funcs[] = {
