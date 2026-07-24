@@ -1187,6 +1187,29 @@ static JSValue js_array_ext_sum_avg(JSContext *ctx, JSValueConst this_val,
     obj = JS_ToObject(ctx, this_val);
     if (js_get_length64(ctx, &len, obj))
         goto done;
+    {   /* fast path: a contiguous all-numeric fast array. The homogeneity scan
+         * and the sum loop read only tags/payloads and run NO user JS, so
+         * holding arrp across them cannot use-after-free. */
+        JSValue *arrp;
+        uint32_t count;
+        if (js_get_fast_array(ctx, obj, &arrp, &count) && (int64_t)count == len) {
+            int homogeneous = 1;
+            for (i = 0; i < len; i++) {
+                int t = JS_VALUE_GET_TAG(arrp[i]);
+                if (t != JS_TAG_INT && !JS_TAG_IS_FLOAT64(t)) { homogeneous = 0; break; }
+            }
+            if (homogeneous) {
+                for (i = 0; i < len; i++) {
+                    JSValue v = arrp[i];
+                    acc += (JS_VALUE_GET_TAG(v) == JS_TAG_INT)
+                             ? (double)JS_VALUE_GET_INT(v) : JS_VALUE_GET_FLOAT64(v);
+                }
+                if (magic == 1) acc = len ? acc / (double)len : 0;
+                ret = JS_NewFloat64(ctx, acc);
+                goto done;
+            }
+        }
+    }
     for (i = 0; i < len; i++) {
         JSValue v;
         double d;
@@ -1353,6 +1376,33 @@ static JSValue js_array_ext_minmax(JSContext *ctx, JSValueConst this_val,
     obj = JS_ToObject(ctx, this_val);
     if (js_get_length64(ctx, &len, obj))
         goto fail;
+    if (JS_IsUndefined(map)) {
+        /* fast path: no mapper + a contiguous all-numeric fast array. No user JS
+         * runs, so holding arrp is safe; returns the winning element directly. */
+        JSValue *arrp;
+        uint32_t count;
+        if (js_get_fast_array(ctx, obj, &arrp, &count) && (int64_t)count == len && len > 0) {
+            int homogeneous = 1;
+            for (i = 0; i < len; i++) {
+                int t = JS_VALUE_GET_TAG(arrp[i]);
+                if (t != JS_TAG_INT && !JS_TAG_IS_FLOAT64(t)) { homogeneous = 0; break; }
+            }
+            if (homogeneous) {
+                int64_t bi = 0;
+                double bk = (JS_VALUE_GET_TAG(arrp[0]) == JS_TAG_INT)
+                              ? (double)JS_VALUE_GET_INT(arrp[0]) : JS_VALUE_GET_FLOAT64(arrp[0]);
+                for (i = 1; i < len; i++) {
+                    JSValue v = arrp[i];
+                    double d = (JS_VALUE_GET_TAG(v) == JS_TAG_INT)
+                                 ? (double)JS_VALUE_GET_INT(v) : JS_VALUE_GET_FLOAT64(v);
+                    if (magic == 0 ? d < bk : d > bk) { bk = d; bi = i; }
+                }
+                ret = JS_DupValue(ctx, arrp[bi]);
+                JS_FreeValue(ctx, obj);
+                return ret;
+            }
+        }
+    }
     for (i = 0; i < len; i++) {
         JSValue el, key;
         double d;
