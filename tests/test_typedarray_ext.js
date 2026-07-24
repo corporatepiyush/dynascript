@@ -57,6 +57,17 @@ near(new Float16Array([1.5, 2.5, 3.0])._sum(), 7.0, "f16 _sum", 1e-2);
     eq(BigInt(b._sum()), is, "i32 _sum large exact");
 }
 
+/* ---- _dot (SIMD dot product) ---- */
+near(new Float64Array([1, 2, 3])._dot(new Float64Array([4, 5, 6])), 32, "f64 _dot");
+eq(new Int32Array([1, 2, 3])._dot(new Int32Array([4, 5, 6])), 32, "i32 _dot exact");
+near(new Float32Array([1, 2])._dot(new Float32Array([3, 4])), 11, "f32 _dot", 1e-5);
+eq(new Uint8Array([1, 2, 3])._dot(new Uint8Array([1, 1, 1])), 6, "u8 _dot (scalar)");
+eq(new Float64Array([])._dot(new Float64Array([])), 0, "_dot empty → 0");
+{ let t = false; try { new Float64Array([1, 2])._dot(new Float64Array([1])); } catch { t = true; } assert(t, "_dot length mismatch → RangeError"); }
+{ let t = false; try { new Float64Array([1])._dot(new Int32Array([1])); } catch { t = true; } assert(t, "_dot type mismatch → TypeError"); }
+{ let t = false; try { new Float64Array([1])._dot([1]); } catch { t = true; } assert(t, "_dot non-TypedArray → TypeError"); }
+{ const N = 1000; const a = new Float64Array(N), b = new Float64Array(N); let e = 0; for (let i = 0; i < N; i++) { a[i] = i * 0.5; b[i] = (i % 3) - 1; e += a[i] * b[i]; } near(a._dot(b), e, "f64 _dot large (SIMD)", 1e-6); }
+
 /* ---- edge cases ---- */
 eq(new Float64Array([])._sum(), 0, "empty _sum → 0");
 eq(new Float64Array([])._min(), undefined, "empty _min → undefined");

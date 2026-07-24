@@ -3755,7 +3755,54 @@ static JSValue js_typed_array_ext_reduce(JSContext *ctx, JSValueConst this_val,
     }
 }
 
+/* _dot(other) -> SIMD dot product of two same-type, equal-length TypedArrays
+ * (Float64/Float32/Int32 via simd.f64_dot/simd.dot/simd.i32_dot; other numeric
+ * types via a scalar loop; BigInt throws). */
+static JSValue js_typed_array_ext_dot(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSObject *p, *q;
+    size_t n, i;
+    double acc;
+
+    p = get_typed_array(ctx, this_val);
+    if (!p)
+        return JS_EXCEPTION;
+    q = get_typed_array(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (!q)
+        return JS_EXCEPTION;
+    if (typed_array_is_oob(p) || typed_array_is_oob(q)) {
+        JS_ThrowTypeErrorArrayBufferOOB(ctx);
+        return JS_EXCEPTION;
+    }
+    if (p->class_id != q->class_id)
+        return JS_ThrowTypeError(ctx, "_dot: both typed arrays must be the same type");
+    if (p->u.array.count != q->u.array.count)
+        return JS_ThrowRangeError(ctx, "_dot: both typed arrays must have equal length");
+    simd_init();
+    n = p->u.array.count;
+    if (n == 0)
+        return JS_NewInt32(ctx, 0);
+    switch (p->class_id) {
+    case JS_CLASS_FLOAT64_ARRAY:
+        return JS_NewFloat64(ctx, simd.f64_dot(p->u.array.u.double_ptr, q->u.array.u.double_ptr, n));
+    case JS_CLASS_FLOAT32_ARRAY:
+        return JS_NewFloat64(ctx, simd.dot(p->u.array.u.float_ptr, q->u.array.u.float_ptr, n));
+    case JS_CLASS_INT32_ARRAY:
+        return JS_NewFloat64(ctx, simd.i32_dot(p->u.array.u.int32_ptr, q->u.array.u.int32_ptr, n));
+    case JS_CLASS_BIG_INT64_ARRAY:
+    case JS_CLASS_BIG_UINT64_ARRAY:
+        return JS_ThrowTypeError(ctx, "_dot: BigInt typed arrays are not supported");
+    default:
+        acc = 0;
+        for (i = 0; i < n; i++)
+            acc += js_ta_read_double(p, i) * js_ta_read_double(q, i);
+        return JS_NewFloat64(ctx, acc);
+    }
+}
+
 static const JSCFunctionListEntry js_typed_array_base_proto_funcs[] = {
+    JS_CFUNC_DEF("_dot", 1, js_typed_array_ext_dot ),
     JS_CFUNC_MAGIC_DEF("_sum", 0, js_typed_array_ext_reduce, 0 ),
     JS_CFUNC_MAGIC_DEF("_min", 0, js_typed_array_ext_reduce, 1 ),
     JS_CFUNC_MAGIC_DEF("_max", 0, js_typed_array_ext_reduce, 2 ),
