@@ -19,6 +19,10 @@ RUN make clean || true
 # build the engine + native modules (compiles the real x86 SIMD kernels)
 RUN make CONFIG_CLANG=y CONFIG_NATIVE_MODULES=y -j"$(nproc)"
 
-RUN echo "=== amd64 correctness: test_array_ext ===" && ./dynajs tests/test_array_ext.js
-RUN echo "=== amd64 benchmark (ratios are the trustworthy metric under qemu) ===" \
+RUN echo "=== SIMD dispatch selected ===" \
+ && printf '#include "dyna-simd-kernels.h"\n#include <stdio.h>\nint main(void){simd_init();unsigned long long c=cpu_features();printf("caps=0x%%llx SSE42=%%d AVX2=%%d AVX512=%%d NEON=%%d\\n",c,!!(c&CPU_SSE42),!!(c&CPU_AVX2),!!(c&CPU_AVX512F),!!(c&CPU_NEON));return 0;}' > /tmp/caps.c \
+ && clang -O2 -Isrc /tmp/caps.c .obj/dyna-simd-*.o -lpthread -lm -o /tmp/caps && /tmp/caps
+RUN echo "=== correctness: test_array_ext ===" && ./dynajs tests/test_array_ext.js
+RUN echo "=== correctness: test_typedarray_ext (SIMD reductions) ===" && ./dynajs tests/test_typedarray_ext.js
+RUN echo "=== benchmark (ratios are the trustworthy metric under qemu) ===" \
  && ./dynajs tests/bench_array_ext.js

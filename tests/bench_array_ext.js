@@ -65,4 +65,24 @@ row("_groupBy",
     () => nums._groupBy(x => x % 10),
     () => nums.reduce((acc, x) => { const k = x % 10; (acc[k] || (acc[k] = [])).push(x); return acc; }, {}));
 
+/* ---- TypedArray SIMD reductions vs a scalar JS loop over the buffer ---- */
+print("=== TypedArray `_` SIMD reductions vs JS loop, N=" + N + " ===");
+const f64 = new Float64Array(N);
+for (let i = 0; i < N; i++) f64[i] = (i * 2654435761 % 100000) * 0.5;
+const i32 = new Int32Array(N);
+for (let i = 0; i < N; i++) i32[i] = (i * 2654435761) | 0;
+
+row("f64 _sum(SIMD)",
+    () => f64._sum(),
+    () => { let s = 0; for (let i = 0; i < f64.length; i++) s += f64[i]; return s; });
+row("f64 _min(SIMD)",
+    () => f64._min(),
+    () => { let m = Infinity; for (let i = 0; i < f64.length; i++) if (f64[i] < m) m = f64[i]; return m; });
+row("f64 _max(SIMD)",
+    () => f64._max(),
+    () => { let m = -Infinity; for (let i = 0; i < f64.length; i++) if (f64[i] > m) m = f64[i]; return m; });
+row("i32 _sum(SIMD)",
+    () => i32._sum(),
+    () => { let s = 0; for (let i = 0; i < i32.length; i++) s += i32[i]; return s; });
+
 print("done");

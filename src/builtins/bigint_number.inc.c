@@ -3664,7 +3664,103 @@ static const JSCFunctionListEntry js_typed_array_base_funcs[] = {
     JS_CGETSET_DEF("[Symbol.species]", js_get_this, NULL ),
 };
 
+#include "dyna-simd-kernels.h" /* multi-ISA SIMD reductions (core-linked) */
+
+/* read TypedArray element i as a double (non-SIMD numeric element types) */
+static double js_ta_read_double(JSObject *p, size_t i)
+{
+    switch (p->class_id) {
+    case JS_CLASS_INT8_ARRAY:    return p->u.array.u.int8_ptr[i];
+    case JS_CLASS_UINT8_ARRAY:
+    case JS_CLASS_UINT8C_ARRAY:  return p->u.array.u.uint8_ptr[i];
+    case JS_CLASS_INT16_ARRAY:   return p->u.array.u.int16_ptr[i];
+    case JS_CLASS_UINT16_ARRAY:  return p->u.array.u.uint16_ptr[i];
+    case JS_CLASS_UINT32_ARRAY:  return p->u.array.u.uint32_ptr[i];
+    case JS_CLASS_INT32_ARRAY:   return p->u.array.u.int32_ptr[i];
+    case JS_CLASS_FLOAT16_ARRAY: return fromfp16(p->u.array.u.fp16_ptr[i]);
+    case JS_CLASS_FLOAT32_ARRAY: return p->u.array.u.float_ptr[i];
+    case JS_CLASS_FLOAT64_ARRAY: return p->u.array.u.double_ptr[i];
+    default:                     return 0;
+    }
+}
+
+/* SIMD-accelerated numeric reductions on TypedArrays (see SUGAR_RAMDA_NATIVE.md).
+ * magic: 0=_sum 1=_min 2=_max 3=_mean. Float64/Float32/Int32 arrays run the
+ * multi-ISA SIMD kernels over their contiguous buffers; other numeric element
+ * types use a tight scalar loop; BigInt typed arrays throw. */
+static JSValue js_typed_array_ext_reduce(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv, int magic)
+{
+    JSObject *p;
+    size_t n, i;
+    double d;
+    (void)argc; (void)argv;
+
+    p = get_typed_array(ctx, this_val);
+    if (!p)
+        return JS_EXCEPTION;
+    if (typed_array_is_oob(p)) {
+        JS_ThrowTypeErrorArrayBufferOOB(ctx);
+        return JS_EXCEPTION;
+    }
+    simd_init(); /* idempotent (pthread_once): select the best kernels */
+    n = p->u.array.count;
+    if (n == 0) {
+        if (magic == 0) return JS_NewInt32(ctx, 0);     /* sum of empty = 0 */
+        if (magic == 3) return JS_NewFloat64(ctx, NAN); /* mean of empty = NaN */
+        return JS_UNDEFINED;                            /* min/max of empty */
+    }
+    switch (p->class_id) {
+    case JS_CLASS_FLOAT64_ARRAY: {
+        const double *x = p->u.array.u.double_ptr;
+        if (magic == 1) d = simd.f64_min(x, n);
+        else if (magic == 2) d = simd.f64_max(x, n);
+        else { d = simd.f64_sum(x, n); if (magic == 3) d /= (double)n; }
+        return JS_NewFloat64(ctx, d);
+    }
+    case JS_CLASS_FLOAT32_ARRAY: {
+        const float *x = p->u.array.u.float_ptr;
+        if (magic == 1) d = simd.min(x, n);
+        else if (magic == 2) d = simd.max(x, n);
+        else { d = simd.sum(x, n); if (magic == 3) d /= (double)n; }
+        return JS_NewFloat64(ctx, d);
+    }
+    case JS_CLASS_INT32_ARRAY: {
+        const int32_t *x = p->u.array.u.int32_ptr;
+        if (magic == 1) return JS_NewInt32(ctx, simd.i32_min(x, n));
+        if (magic == 2) return JS_NewInt32(ctx, simd.i32_max(x, n));
+        {
+            int64_t s = simd.i32_sum(x, n);
+            if (magic == 3) return JS_NewFloat64(ctx, (double)s / (double)n);
+            return JS_NewInt64(ctx, s);
+        }
+    }
+    case JS_CLASS_BIG_INT64_ARRAY:
+    case JS_CLASS_BIG_UINT64_ARRAY:
+        return JS_ThrowTypeError(ctx, "_sum/_min/_max/_mean: BigInt typed arrays are not supported");
+    default: /* int8/uint8/uint8c/int16/uint16/uint32/float16: scalar loop */
+        if (magic == 0 || magic == 3) {
+            double s = 0;
+            for (i = 0; i < n; i++) s += js_ta_read_double(p, i);
+            if (magic == 3) s /= (double)n;
+            return JS_NewFloat64(ctx, s);
+        } else {
+            double best = js_ta_read_double(p, 0);
+            for (i = 1; i < n; i++) {
+                double v = js_ta_read_double(p, i);
+                if (magic == 1 ? v < best : v > best) best = v;
+            }
+            return JS_NewFloat64(ctx, best);
+        }
+    }
+}
+
 static const JSCFunctionListEntry js_typed_array_base_proto_funcs[] = {
+    JS_CFUNC_MAGIC_DEF("_sum", 0, js_typed_array_ext_reduce, 0 ),
+    JS_CFUNC_MAGIC_DEF("_min", 0, js_typed_array_ext_reduce, 1 ),
+    JS_CFUNC_MAGIC_DEF("_max", 0, js_typed_array_ext_reduce, 2 ),
+    JS_CFUNC_MAGIC_DEF("_mean", 0, js_typed_array_ext_reduce, 3 ),
+    JS_ALIAS_DEF("_average", "_mean" ),
     JS_CGETSET_DEF("length", js_typed_array_get_length, NULL ),
     JS_CFUNC_DEF("at", 1, js_typed_array_at ),
     JS_CFUNC_DEF("with", 2, js_typed_array_with ),
