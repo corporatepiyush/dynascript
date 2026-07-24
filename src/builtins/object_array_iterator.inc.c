@@ -5463,25 +5463,50 @@ static JSValue js_string_ext_codes(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* Loop vectorization hint. Guarded to clang so gcc's -Wall (-Wunknown-pragmas)
+ * stays quiet; the loops it decorates are elementwise, unit-stride, no aliasing
+ * (restrict) and no early exit, so the backend can widen them to the baseline
+ * vector ISA. */
+#if defined(__clang__) && !defined(DYN_NO_VEC)
+#define DYN_VECTORIZE_LOOP _Pragma("clang loop vectorize(enable) interleave(enable)")
+#else
+#define DYN_VECTORIZE_LOOP
+#endif
+
 /* reverse() -> the string with its code units reversed (astral pairs, like
- * "".split('').reverse().join(''), are split — code-unit semantics). */
+ * "".split('').reverse().join(''), are split — code-unit semantics). Direct
+ * reversed copy into a fresh flat string (restrict + vectorizable). */
 static JSValue js_string_ext_reverse(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv)
 {
-    JSValue val, ret;
-    JSString *p;
-    StringBuffer b_s, *b = &b_s;
-    int i;
+    JSValue val;
+    JSString *p, *str;
+    uint32_t i, len;
     (void)argc; (void)argv;
     val = JS_ToStringCheckObject(ctx, this_val);
     if (JS_IsException(val)) return val;
     p = JS_VALUE_GET_STRING(val);
-    if (string_buffer_init2(ctx, b, p->len, p->is_wide_char)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
-    for (i = (int)p->len - 1; i >= 0; i--)
-        string_buffer_putc16(b, string_get(p, i));
-    ret = string_buffer_end(b);
+    len = p->len;
+    if (len <= 1)                       /* '' and single chars reverse to themselves */
+        return val;
+    str = js_alloc_string(ctx, len, p->is_wide_char);
+    if (!str) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    if (p->is_wide_char) {
+        const uint16_t *restrict src = p->u.str16;
+        uint16_t *restrict dst = str->u.str16;
+        DYN_VECTORIZE_LOOP
+        for (i = 0; i < len; i++)
+            dst[i] = src[len - 1 - i];
+    } else {
+        const uint8_t *restrict src = p->u.str8;
+        uint8_t *restrict dst = str->u.str8;
+        DYN_VECTORIZE_LOOP
+        for (i = 0; i < len; i++)
+            dst[i] = src[len - 1 - i];
+        dst[len] = 0;                   /* narrow strings carry a NUL terminator */
+    }
     JS_FreeValue(ctx, val);
-    return ret;
+    return JS_MKPTR(JS_TAG_STRING, str);
 }
 
 /* insert(str, index=end) -> a copy with str inserted at the code-unit index
@@ -5632,6 +5657,235 @@ static JSValue js_string_ext_compact(JSContext *ctx, JSValueConst this_val,
     return ret;
 }
 
+/* ---- Sugar case / inflection helpers (ASCII case classes drive the camelCase
+ * hump rules exactly as Sugar/Rails' regexes do; non-ASCII letters are never
+ * transition points; case folding of every code point is full-Unicode via
+ * lre_case_conv). ---- */
+static inline int js_str_upper_ascii(uint32_t c) { return c >= 'A' && c <= 'Z'; }
+static inline int js_str_lower_ascii(uint32_t c) { return c >= 'a' && c <= 'z'; }
+static inline int js_str_digit_ascii(uint32_t c) { return c >= '0' && c <= '9'; }
+/* a delimiter that inflections fold into a single separator: '-', '_', or ws */
+static inline int js_str_infl_delim(uint32_t c) { return c == '-' || c == '_' || lre_is_space(c); }
+
+/* shift(n=0) -> every UTF-16 code unit shifted by n (mod 2^16), matching Sugar's
+ * charCodeAt/fromCharCode semantics (astral pairs shift per code unit). */
+static JSValue js_string_ext_shift(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    int32_t n = 0;
+    uint32_t i, len;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (argc > 0 && !JS_IsUndefined(argv[0]) && JS_ToInt32(ctx, &n, argv[0])) {
+        JS_FreeValue(ctx, val); return JS_EXCEPTION;
+    }
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (n == 0 || len == 0) return val;
+    if (string_buffer_init2(ctx, b, len, 1)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    for (i = 0; i < len; i++)
+        string_buffer_putc16(b, (uint16_t)((uint32_t)string_get(p, i) + (uint32_t)n));
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* pad(num, padding=' ') -> center-pad to `num` code units: floor to the front,
+ * ceil to the back (Sugar). Returns the string unchanged when already >= num or
+ * when padding coerces to empty. */
+static JSValue js_string_ext_pad(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+{
+    JSValue val, padv = JS_UNDEFINED, ret = JS_EXCEPTION;
+    JSString *p, *pad = NULL;
+    StringBuffer b_s, *b = &b_s;
+    int32_t num = 0;
+    uint32_t len, plen = 0, total, front, back, i;
+    int wide, have_pad = (argc > 1 && !JS_IsUndefined(argv[1]));
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    if (argc > 0 && !JS_IsUndefined(argv[0]) && JS_ToInt32(ctx, &num, argv[0])) goto done;
+    if (have_pad) {
+        padv = JS_ToString(ctx, argv[1]);
+        if (JS_IsException(padv)) goto done;
+        pad = JS_VALUE_GET_STRING(padv);
+        plen = pad->len;
+    }
+    p = JS_VALUE_GET_STRING(val);
+    len = p->len;
+    if (num <= 0 || (uint32_t)num <= len || (have_pad && plen == 0)) {
+        ret = JS_DupValue(ctx, val);            /* nothing to pad */
+        goto done;
+    }
+    total = (uint32_t)num - len;
+    front = total / 2;
+    back = total - front;
+    wide = p->is_wide_char || (pad && pad->is_wide_char);
+    if (string_buffer_init2(ctx, b, num, wide)) goto done;
+    for (i = 0; i < front; i++)
+        string_buffer_putc16(b, have_pad ? string_get(pad, i % plen) : ' ');
+    string_buffer_concat(b, p, 0, len);
+    for (i = 0; i < back; i++)
+        string_buffer_putc16(b, have_pad ? string_get(pad, i % plen) : ' ');   /* each side pads from pad[0] */
+    ret = string_buffer_end(b);
+ done:
+    JS_FreeValue(ctx, padv);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* True when c ends a word for capitalize(all): whitespace or ASCII punctuation
+ * other than an apostrophe (so "o'clock" -> "O'clock", not "O'Clock"). Letters,
+ * digits and non-ASCII code points continue a word. */
+static int js_str_capitalize_boundary(uint32_t c)
+{
+    if (lre_is_space(c)) return 1;
+    if (c < 0x80) {
+        if (js_str_lower_ascii(c) || js_str_upper_ascii(c) || js_str_digit_ascii(c) || c == '\'')
+            return 0;
+        return 1;                               /* other ASCII punctuation */
+    }
+    return 0;                                   /* non-ASCII: treat as a letter */
+}
+
+/* capitalize(lower=false, all=false) -> uppercase the first letter of the string
+ * (Sugar). lower=true also lowercases the rest; all=true capitalizes the first
+ * letter of every word. */
+static JSValue js_string_ext_capitalize(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv)
+{
+    JSValue val;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    int lower, all, cap_next = 1, seen_first = 0, i, j, l;
+    uint32_t res[LRE_CC_RES_LEN_MAX];
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    lower = (argc > 0) ? JS_ToBool(ctx, argv[0]) : 0;
+    all   = (argc > 1) ? JS_ToBool(ctx, argv[1]) : 0;
+    p = JS_VALUE_GET_STRING(val);
+    if (p->len == 0) return val;
+    if (string_buffer_init(ctx, b, p->len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    for (i = 0; i < (int)p->len;) {
+        uint32_t c = string_getc(p, &i);
+        int boundary = js_str_capitalize_boundary(c);
+        int cap = 0;
+        if (cap_next && !boundary) {            /* c is a word-initial letter */
+            cap = all ? 1 : !seen_first;        /* every word, or only the first */
+            seen_first = 1;
+            cap_next = 0;
+        }
+        if (boundary)                           /* next non-boundary starts a word */
+            cap_next = 1;
+        if (cap)
+            l = lre_case_conv(res, c, 0);       /* uppercase the word-initial letter */
+        else if (lower)
+            l = lre_case_conv(res, c, 1);       /* lowercase the rest */
+        else { res[0] = c; l = 1; }
+        for (j = 0; j < l; j++)
+            if (string_buffer_putc(b, res[j])) { string_buffer_free(b); JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    }
+    JS_FreeValue(ctx, val);
+    return string_buffer_end(b);
+}
+
+/* Writes the "inflected" form of p into b, using sep as the word separator:
+ * camelCase humps (Sugar/Rails rules `[a-z\d][A-Z]` and `[A-Z]+[A-Z][a-z]`) and
+ * runs of delimiters (`- _` / whitespace) collapse to a single sep, and every
+ * code point is lowercased. Used by underscore('_') / dasherize('-') / spacify(' '). */
+static int js_string_infl_into(JSContext *ctx, StringBuffer *b, JSString *p, int sep)
+{
+    int i = 0, len = (int)p->len, prev_cls = 0, emitted_sep = 0, m, l;
+    uint32_t res[LRE_CC_RES_LEN_MAX];
+    while (i < len) {
+        uint32_t c = string_getc(p, &i);
+        int cls = js_str_upper_ascii(c) ? 2 : (js_str_lower_ascii(c) || js_str_digit_ascii(c)) ? 1 : 0;
+        if (js_str_infl_delim(c)) {
+            if (!emitted_sep) { if (string_buffer_putc8(b, (uint8_t)sep)) return -1; emitted_sep = 1; }
+            prev_cls = 0;
+            continue;
+        }
+        if (cls == 2) {                          /* uppercase ASCII: hump boundary? */
+            int hump = (prev_cls == 1);          /* rule A: lower/digit -> Upper */
+            if (!hump && prev_cls == 2) {        /* rule B: UPPER+ then Upper+lower */
+                int k = i; uint32_t nx = (k < len) ? string_getc(p, &k) : 0;
+                hump = js_str_lower_ascii(nx);
+            }
+            if (hump && !emitted_sep) { if (string_buffer_putc8(b, (uint8_t)sep)) return -1; }
+        }
+        l = lre_case_conv(res, c, 1);            /* lowercase the code point */
+        for (m = 0; m < l; m++)
+            if (string_buffer_putc(b, res[m])) return -1;
+        emitted_sep = 0;
+        prev_cls = cls;
+    }
+    return 0;
+}
+
+/* underscore() / dasherize() / spacify() -> snake_case / kebab-case / spaced,
+ * lowercased, from camelCase, dashes, underscores and whitespace. magic = sep. */
+static JSValue js_string_ext_inflect(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv, int sep)
+{
+    JSValue val, ret;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    (void)argc; (void)argv;
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    if (p->len == 0) return val;
+    if (string_buffer_init(ctx, b, p->len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    if (js_string_infl_into(ctx, b, p, sep)) { string_buffer_free(b); JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    ret = string_buffer_end(b);
+    JS_FreeValue(ctx, val);
+    return ret;
+}
+
+/* camelize(upper=true) -> UpperCamelCase (upper) or lowerCamelCase (upper=false).
+ * Word boundaries are the same delimiter/hump rules as underscore(); the first
+ * letter of every word is uppercased, the rest lowercased, separators removed. */
+static JSValue js_string_ext_camelize(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+    JSValue val;
+    JSString *p;
+    StringBuffer b_s, *b = &b_s;
+    int i = 0, len, prev_cls = 0, cap_next, m, l;
+    int upper = (argc > 0 && !JS_IsUndefined(argv[0])) ? JS_ToBool(ctx, argv[0]) : 1;
+    uint32_t res[LRE_CC_RES_LEN_MAX];
+    val = JS_ToStringCheckObject(ctx, this_val);
+    if (JS_IsException(val)) return val;
+    p = JS_VALUE_GET_STRING(val);
+    len = (int)p->len;
+    if (len == 0) return val;
+    if (string_buffer_init(ctx, b, len)) { JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+    cap_next = upper;                            /* first letter: upper iff UpperCamel */
+    while (i < len) {
+        uint32_t c = string_getc(p, &i);
+        int cls = js_str_upper_ascii(c) ? 2 : (js_str_lower_ascii(c) || js_str_digit_ascii(c)) ? 1 : 0;
+        if (js_str_infl_delim(c)) { cap_next = 1; prev_cls = 0; continue; }
+        if (cls == 2) {                          /* a hump also starts a new word */
+            int hump = (prev_cls == 1);
+            if (!hump && prev_cls == 2) {
+                int k = i; uint32_t nx = (k < len) ? string_getc(p, &k) : 0;
+                hump = js_str_lower_ascii(nx);
+            }
+            if (hump) cap_next = 1;
+        }
+        l = lre_case_conv(res, c, cap_next ? 0 : 1);   /* upper on word-initial, else lower */
+        for (m = 0; m < l; m++)
+            if (string_buffer_putc(b, res[m])) { string_buffer_free(b); JS_FreeValue(ctx, val); return JS_EXCEPTION; }
+        cap_next = 0;
+        prev_cls = cls;
+    }
+    JS_FreeValue(ctx, val);
+    return string_buffer_end(b);
+}
+
 static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_DEF("isEmpty", 0, js_string_ext_isEmpty ),
     JS_CFUNC_DEF("isBlank", 0, js_string_ext_isBlank ),
@@ -5646,6 +5900,13 @@ static const JSCFunctionListEntry js_string_ext_funcs[] = {
     JS_CFUNC_MAGIC_DEF("remove", 1, js_string_ext_remove, 0 ),
     JS_CFUNC_MAGIC_DEF("removeAll", 1, js_string_ext_remove, 1 ),
     JS_CFUNC_DEF("compact", 0, js_string_ext_compact ),
+    JS_CFUNC_DEF("shift", 1, js_string_ext_shift ),
+    JS_CFUNC_DEF("pad", 2, js_string_ext_pad ),
+    JS_CFUNC_DEF("capitalize", 2, js_string_ext_capitalize ),
+    JS_CFUNC_MAGIC_DEF("underscore", 0, js_string_ext_inflect, '_' ),
+    JS_CFUNC_MAGIC_DEF("dasherize", 0, js_string_ext_inflect, '-' ),
+    JS_CFUNC_MAGIC_DEF("spacify", 0, js_string_ext_inflect, ' ' ),
+    JS_CFUNC_DEF("camelize", 1, js_string_ext_camelize ),
 };
 
 static const JSCFunctionListEntry js_string_proto_funcs[] = {

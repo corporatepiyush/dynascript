@@ -134,4 +134,105 @@ eq("hello".insert({ toString() { return "!" } }, { valueOf() { return 2 } }), "h
     assert(nb.length >= 64 && ![...nb].some(c => c.charCodeAt(0) > 255), "NBSP test string is long + narrow");
 }
 
+/* ---- batch 3: shift / pad / capitalize / underscore / dasherize / spacify / camelize ---- */
+eq("a".shift(1), "b", "shift +1");
+eq("hello".shift(1), "ifmmp", "shift word");
+eq("ifmmp".shift(-1), "hello", "shift -1 reverses +1");
+eq("abc".shift(0), "abc", "shift 0 is identity");
+eq("".shift(5), "", "shift empty");
+{   /* shift wraps mod 2^16, per fromCharCode */
+    const s = String.fromCharCode(0xFFFF).shift(1);
+    assert(s.charCodeAt(0) === 0, "shift wraps 0xFFFF+1 -> 0");
+}
+
+eq("wasabi".pad(8, "-"), "-wasabi-", "pad center dash");
+eq("hi".pad(5), " hi  ", "pad center space (floor front, ceil back)");
+eq("hi".pad(6), "  hi  ", "pad even");
+eq("hello".pad(3), "hello", "pad no-op when already long enough");
+eq("x".pad(5, "ab"), "abxab", "pad multi-char cycles");
+eq("x".pad(5, ""), "x", "pad empty padding is a no-op");
+
+eq("HELLO".capitalize(true), "Hello", "capitalize(lower) downcases rest");
+eq("hello world".capitalize(), "Hello world", "capitalize default: first letter only");
+eq("hello world".capitalize(false, true), "Hello World", "capitalize(all) every word");
+eq("hello WORLD".capitalize(), "Hello WORLD", "capitalize default leaves rest untouched");
+eq("o'clock".capitalize(false, true), "O'clock", "capitalize keeps apostrophe intra-word");
+eq("rew-mid".capitalize(false, true), "Rew-Mid", "capitalize(all) treats dash as boundary");
+eq("élan".capitalize(), "Élan", "capitalize unicode first letter");
+eq("".capitalize(), "", "capitalize empty");
+eq("123abc".capitalize(true), "123abc", "capitalize leading digits");
+
+eq("capsLock".dasherize(), "caps-lock", "dasherize camel");
+eq("a-farewell-to-arms".underscore(), "a_farewell_to_arms", "underscore dashes");
+eq("helloWorld".underscore(), "hello_world", "underscore camel");
+eq("HTMLParser".underscore(), "html_parser", "underscore acronym boundary");
+eq("innerHTML".underscore(), "inner_html", "underscore trailing acronym");
+eq("camelCase".spacify(), "camel case", "spacify");
+eq("The   Quick".underscore(), "the_quick", "underscore collapses whitespace runs");
+eq("moz-border-radius".camelize(false), "mozBorderRadius", "camelize lower");
+eq("moz-border-radius".camelize(), "MozBorderRadius", "camelize upper (default)");
+eq("hello_world".camelize(), "HelloWorld", "camelize from snake");
+eq("".underscore(), "", "underscore empty");
+
+{   /* differential oracle: a JS reference mirroring the C hump/collapse rules,
+     * fuzzed over random ASCII/BMP tokens (code-unit semantics match). NOTE: a
+     * DOCUMENTED divergence from Sugar — we collapse EVERY delimiter run
+     * (including literal '_') to one separator, giving cleaner snake_case. */
+    const cls = c => /[A-Z]/.test(c) ? 2 : /[a-z0-9]/.test(c) ? 1 : 0;
+    const isDelim = c => c === "-" || c === "_" || /\s/.test(c);
+    function inflectRef(s, sep) {
+        let out = "", prevCls = 0, gotSep = 0;
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (isDelim(c)) { if (!gotSep) { out += sep; gotSep = 1; } prevCls = 0; continue; }
+            const cl = cls(c);
+            if (cl === 2) {
+                let hump = prevCls === 1;
+                if (!hump && prevCls === 2) hump = /[a-z]/.test(s[i + 1] || "");
+                if (hump && !gotSep) out += sep;
+            }
+            out += c.toLowerCase();
+            gotSep = 0; prevCls = cl;
+        }
+        return out;
+    }
+    function camelRef(s, upper = true) {
+        let out = "", prevCls = 0, cap = upper ? 1 : 0;
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (isDelim(c)) { cap = 1; prevCls = 0; continue; }
+            const cl = cls(c);
+            if (cl === 2) {
+                let hump = prevCls === 1;
+                if (!hump && prevCls === 2) hump = /[a-z]/.test(s[i + 1] || "");
+                if (hump) cap = 1;
+            }
+            out += cap ? c.toUpperCase() : c.toLowerCase();
+            cap = 0; prevCls = cl;
+        }
+        return out;
+    }
+    const toks = ["Foo", "bar", "HTML", "id", "42", "-", "_", " ", "aB", "Xy", "café".slice(0,3)];
+    let rng = 987654321;
+    const rand = () => (rng = (rng * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let t = 0; t < 3000; t++) {
+        let s = "";
+        const nt = 1 + ((rng >> 5) % 6);
+        for (let k = 0; k < nt; k++) s += toks[(rand() * toks.length) | 0];
+        eq(s.underscore(), inflectRef(s, "_"), "underscore differential t=" + t + " [" + s + "]");
+        eq(s.dasherize(), inflectRef(s, "-"), "dasherize differential t=" + t);
+        eq(s.spacify(), inflectRef(s, " "), "spacify differential t=" + t);
+        eq(s.camelize(), camelRef(s, true), "camelize upper differential t=" + t);
+        eq(s.camelize(false), camelRef(s, false), "camelize lower differential t=" + t);
+    }
+}
+
+{   /* reentrancy: a valueOf arg must not corrupt the receiver (coerce-first) */
+    let hits = 0;
+    const eviln = { valueOf() { hits++; return 2; } };
+    eq("abcd".shift(eviln), "cdef", "shift coerces object arg via valueOf");
+    assert(hits === 1, "shift valueOf ran exactly once");
+    eq("x".pad({ valueOf() { return 5; } }, "-"), "--x--", "pad coerces num arg");
+}
+
 print("test_string_ext: all tests passed (" + n + " assertions)");
