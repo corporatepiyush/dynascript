@@ -1957,6 +1957,862 @@ static JSValue js_object_ext_tap(JSContext *ctx, JSValueConst this_val,
     return JS_DupValue(ctx, x);
 }
 
+/* ===== Object static batch 2 — deep clone / equals / merge / path ===== */
+
+/* Shallow copy of a container: a fresh Array (same length, dup'd elements) if v
+ * is an array, else a fresh plain object with v's own enumerable props. */
+static JSValue js_shallow_clone_container(JSContext *ctx, JSValueConst v)
+{
+    if (JS_IsArray(ctx, v) > 0) {
+        JSValue res;
+        int64_t len, i;
+        if (js_get_length64(ctx, &len, v)) return JS_EXCEPTION;
+        res = JS_NewArray(ctx);
+        if (JS_IsException(res)) return res;
+        for (i = 0; i < len; i++) {
+            JSValue el = JS_GetPropertyInt64(ctx, v, i);
+            if (JS_IsException(el)) { JS_FreeValue(ctx, res); return JS_EXCEPTION; }
+            if (JS_SetPropertyInt64(ctx, res, i, el) < 0) { JS_FreeValue(ctx, res); return JS_EXCEPTION; }
+        }
+        return res;
+    } else {
+        JSValue res = JS_NewObject(ctx);
+        if (JS_IsException(res)) return res;
+        if (JS_CopyDataProperties(ctx, res, v, JS_UNDEFINED, TRUE)) {
+            JS_FreeValue(ctx, res);
+            return JS_EXCEPTION;
+        }
+        return res;
+    }
+}
+
+/* Ramda clone: deep-copies plain objects and arrays (recursively), and Date /
+ * RegExp via their constructors. Primitives, functions and other exotics are
+ * returned by reference (documented divergence — Ramda deep-copies more). */
+static JSValue js_deep_clone(JSContext *ctx, JSValueConst v, int depth)
+{
+    int t;
+    (void)depth;
+    if (js_check_stack_overflow(ctx->rt, 0))
+        return JS_ThrowStackOverflow(ctx);
+    t = js_value_type_code(ctx, v);
+    switch (t) {
+    case OTYPE_ARRAY: {
+        JSValue res;
+        int64_t len, i;
+        if (js_get_length64(ctx, &len, v)) return JS_EXCEPTION;
+        res = JS_NewArray(ctx);
+        if (JS_IsException(res)) return res;
+        for (i = 0; i < len; i++) {
+            JSValue el = JS_GetPropertyInt64(ctx, v, i);
+            JSValue c;
+            if (JS_IsException(el)) { JS_FreeValue(ctx, res); return JS_EXCEPTION; }
+            c = js_deep_clone(ctx, el, depth + 1);
+            JS_FreeValue(ctx, el);
+            if (JS_IsException(c)) { JS_FreeValue(ctx, res); return JS_EXCEPTION; }
+            if (JS_SetPropertyInt64(ctx, res, i, c) < 0) { JS_FreeValue(ctx, res); return JS_EXCEPTION; }
+        }
+        return res;
+    }
+    case OTYPE_OBJECT: {
+        JSValue res;
+        JSPropertyEnum *props = NULL;
+        uint32_t len, i;
+        res = JS_NewObject(ctx);
+        if (JS_IsException(res)) return res;
+        if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, JS_VALUE_GET_OBJ(v),
+                                           JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK)) {
+            JS_FreeValue(ctx, res);
+            return JS_EXCEPTION;
+        }
+        for (i = 0; i < len; i++) {
+            JSValue el = JS_GetProperty(ctx, v, props[i].atom);
+            JSValue c;
+            if (JS_IsException(el)) goto obj_fail;
+            c = js_deep_clone(ctx, el, depth + 1);
+            JS_FreeValue(ctx, el);
+            if (JS_IsException(c)) goto obj_fail;
+            if (JS_DefinePropertyValue(ctx, res, props[i].atom, c, JS_PROP_C_W_E) < 0)
+                goto obj_fail;
+        }
+        JS_FreePropertyEnum(ctx, props, len);
+        return res;
+    obj_fail:
+        JS_FreePropertyEnum(ctx, props, len);
+        JS_FreeValue(ctx, res);
+        return JS_EXCEPTION;
+    }
+    case OTYPE_DATE: {
+        JSValue g, ctor, ms, res;
+        double d;
+        if (JS_ToFloat64(ctx, &d, v)) return JS_EXCEPTION;
+        g = JS_GetGlobalObject(ctx);
+        ctor = JS_GetPropertyStr(ctx, g, "Date");
+        JS_FreeValue(ctx, g);
+        if (JS_IsException(ctor)) return JS_EXCEPTION;
+        ms = JS_NewFloat64(ctx, d);
+        res = JS_CallConstructor(ctx, ctor, 1, (JSValueConst *)&ms);
+        JS_FreeValue(ctx, ms);
+        JS_FreeValue(ctx, ctor);
+        return res;
+    }
+    case OTYPE_REGEXP: {
+        JSValue g, ctor, res;
+        g = JS_GetGlobalObject(ctx);
+        ctor = JS_GetPropertyStr(ctx, g, "RegExp");
+        JS_FreeValue(ctx, g);
+        if (JS_IsException(ctor)) return JS_EXCEPTION;
+        res = JS_CallConstructor(ctx, ctor, 1, (JSValueConst *)&v);
+        JS_FreeValue(ctx, ctor);
+        return res;
+    }
+    default:
+        return JS_DupValue(ctx, v);
+    }
+}
+
+/* Ramda equals: deep structural equality for primitives (SameValueZero, so
+ * NaN==NaN), arrays, plain objects/arguments, Date (by time) and RegExp (by
+ * source+flags). Other exotics (Map/Set/wrappers) compare by reference
+ * (documented divergence). */
+static int js_deep_equals(JSContext *ctx, JSValueConst a, JSValueConst b, int depth)
+{
+    int ta, tb;
+    if (js_check_stack_overflow(ctx->rt, 0)) {
+        JS_ThrowStackOverflow(ctx);
+        return -1;
+    }
+    /* SameValue for the base case: NaN equals NaN, but +0 and -0 differ
+     * (matches Ramda `equals`). */
+    if (js_same_value(ctx, a, b))
+        return 1;
+    ta = js_value_type_code(ctx, a);
+    tb = js_value_type_code(ctx, b);
+    if (ta != tb)
+        return 0;
+    switch (ta) {
+    case OTYPE_ARRAY: {
+        int64_t la, lb, i;
+        if (js_get_length64(ctx, &la, a) || js_get_length64(ctx, &lb, b))
+            return -1;
+        if (la != lb) return 0;
+        for (i = 0; i < la; i++) {
+            JSValue va = JS_GetPropertyInt64(ctx, a, i);
+            JSValue vb;
+            int r;
+            if (JS_IsException(va)) return -1;
+            vb = JS_GetPropertyInt64(ctx, b, i);
+            if (JS_IsException(vb)) { JS_FreeValue(ctx, va); return -1; }
+            r = js_deep_equals(ctx, va, vb, depth + 1);
+            JS_FreeValue(ctx, va);
+            JS_FreeValue(ctx, vb);
+            if (r <= 0) return r;
+        }
+        return 1;
+    }
+    case OTYPE_OBJECT:
+    case OTYPE_ARGUMENTS: {
+        JSPropertyEnum *pa = NULL, *pb = NULL;
+        uint32_t na, nb, i;
+        int ret = 1;
+        if (JS_GetOwnPropertyNamesInternal(ctx, &pa, &na, JS_VALUE_GET_OBJ(a),
+                                           JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK))
+            return -1;
+        if (JS_GetOwnPropertyNamesInternal(ctx, &pb, &nb, JS_VALUE_GET_OBJ(b),
+                                           JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK)) {
+            JS_FreePropertyEnum(ctx, pa, na);
+            return -1;
+        }
+        if (na != nb) { ret = 0; goto obj_done; }
+        for (i = 0; i < na; i++) {
+            JSPropertyDescriptor desc;
+            JSValue va, vb;
+            int r, own;
+            own = JS_GetOwnPropertyInternal(ctx, &desc, JS_VALUE_GET_OBJ(b), pa[i].atom);
+            if (own < 0) { ret = -1; goto obj_done; }
+            if (own == 0) { ret = 0; goto obj_done; }   /* b lacks a's own key */
+            js_free_desc(ctx, &desc);
+            va = JS_GetProperty(ctx, a, pa[i].atom);
+            if (JS_IsException(va)) { ret = -1; goto obj_done; }
+            vb = JS_GetProperty(ctx, b, pa[i].atom);
+            if (JS_IsException(vb)) { JS_FreeValue(ctx, va); ret = -1; goto obj_done; }
+            r = js_deep_equals(ctx, va, vb, depth + 1);
+            JS_FreeValue(ctx, va);
+            JS_FreeValue(ctx, vb);
+            if (r <= 0) { ret = r; goto obj_done; }
+        }
+    obj_done:
+        JS_FreePropertyEnum(ctx, pa, na);
+        JS_FreePropertyEnum(ctx, pb, nb);
+        return ret;
+    }
+    case OTYPE_DATE: {
+        double da, db;
+        if (JS_ToFloat64(ctx, &da, a) || JS_ToFloat64(ctx, &db, b))
+            return -1;
+        return (da == db) || (isnan(da) && isnan(db));
+    }
+    case OTYPE_REGEXP: {
+        JSValue sa, sb, fa, fb;
+        int r = 0;
+        sa = JS_GetPropertyStr(ctx, a, "source");
+        sb = JS_GetPropertyStr(ctx, b, "source");
+        fa = JS_GetPropertyStr(ctx, a, "flags");
+        fb = JS_GetPropertyStr(ctx, b, "flags");
+        if (!JS_IsException(sa) && !JS_IsException(sb) &&
+            !JS_IsException(fa) && !JS_IsException(fb))
+            r = js_same_value(ctx, sa, sb) && js_same_value(ctx, fa, fb);
+        JS_FreeValue(ctx, sa); JS_FreeValue(ctx, sb);
+        JS_FreeValue(ctx, fa); JS_FreeValue(ctx, fb);
+        return r;
+    }
+    default:
+        return 0;   /* different references of an unsupported exotic */
+    }
+}
+
+static JSValue js_object_ext_clone(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    return js_deep_clone(ctx, argc > 0 ? argv[0] : JS_UNDEFINED, 0);
+}
+
+static JSValue js_object_ext_equals(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    int r = js_deep_equals(ctx, argc > 0 ? argv[0] : JS_UNDEFINED,
+                           argc > 1 ? argv[1] : JS_UNDEFINED, 0);
+    if (r < 0) return JS_EXCEPTION;
+    return JS_NewBool(ctx, r);
+}
+
+static JSValue js_object_ext_identical(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    return JS_NewBool(ctx, js_same_value(ctx, argc > 0 ? argv[0] : JS_UNDEFINED,
+                                         argc > 1 ? argv[1] : JS_UNDEFINED));
+}
+
+/* Resolve obj[path...] where path is an array of keys or a dotted string.
+ * Value is owned; JS_UNDEFINED if a step is nullish/missing; JS_EXCEPTION on
+ * a real error. */
+static JSValue js_object_path_get(JSContext *ctx, JSValueConst obj, JSValueConst path)
+{
+    JSValue cur = JS_DupValue(ctx, obj);
+    if (JS_IsString(path)) {
+        const char *s = JS_ToCString(ctx, path);
+        const char *p;
+        if (!s) { JS_FreeValue(ctx, cur); return JS_EXCEPTION; }
+        p = s;
+        while (*p) {
+            const char *dot = strchr(p, '.');
+            const char *e = dot ? dot : p + strlen(p);
+            JSAtom atom;
+            JSValue next;
+            if (JS_IsNull(cur) || JS_IsUndefined(cur)) {
+                JS_FreeValue(ctx, cur); JS_FreeCString(ctx, s); return JS_UNDEFINED;
+            }
+            atom = JS_NewAtomLen(ctx, p, e - p);
+            if (atom == JS_ATOM_NULL) { JS_FreeValue(ctx, cur); JS_FreeCString(ctx, s); return JS_EXCEPTION; }
+            next = JS_GetProperty(ctx, cur, atom);
+            JS_FreeAtom(ctx, atom);
+            JS_FreeValue(ctx, cur);
+            if (JS_IsException(next)) { JS_FreeCString(ctx, s); return JS_EXCEPTION; }
+            cur = next;
+            p = dot ? dot + 1 : e;
+        }
+        JS_FreeCString(ctx, s);
+        return cur;
+    } else {
+        int64_t len, i;
+        if (js_get_length64(ctx, &len, path)) { JS_FreeValue(ctx, cur); return JS_EXCEPTION; }
+        for (i = 0; i < len; i++) {
+            JSValue k, next;
+            JSAtom atom;
+            if (JS_IsNull(cur) || JS_IsUndefined(cur)) { JS_FreeValue(ctx, cur); return JS_UNDEFINED; }
+            k = JS_GetPropertyInt64(ctx, path, i);
+            if (JS_IsException(k)) { JS_FreeValue(ctx, cur); return JS_EXCEPTION; }
+            atom = JS_ValueToAtom(ctx, k);
+            JS_FreeValue(ctx, k);
+            if (atom == JS_ATOM_NULL) { JS_FreeValue(ctx, cur); return JS_EXCEPTION; }
+            next = JS_GetProperty(ctx, cur, atom);
+            JS_FreeAtom(ctx, atom);
+            JS_FreeValue(ctx, cur);
+            if (JS_IsException(next)) return JS_EXCEPTION;
+            cur = next;
+        }
+        return cur;
+    }
+}
+
+/* prop(k, obj) / propOr(default, k, obj) — magic 1 selects the *Or variant. */
+static JSValue js_object_ext_prop(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst def = magic ? argv[0] : JS_UNDEFINED;
+    JSValueConst key = argv[magic ? 1 : 0];
+    JSValueConst obj = argv[magic ? 2 : 1];
+    JSAtom atom;
+    JSValue v;
+    atom = JS_ValueToAtom(ctx, key);
+    if (atom == JS_ATOM_NULL) return JS_EXCEPTION;
+    v = JS_GetProperty(ctx, obj, atom);
+    JS_FreeAtom(ctx, atom);
+    if (JS_IsException(v)) return v;
+    if (magic && JS_IsUndefined(v)) { JS_FreeValue(ctx, v); return JS_DupValue(ctx, def); }
+    return v;
+}
+
+/* path(path, obj) / pathOr(default, path, obj) — magic 1 selects *Or. */
+static JSValue js_object_ext_path(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst def = magic ? argv[0] : JS_UNDEFINED;
+    JSValueConst path = argv[magic ? 1 : 0];
+    JSValueConst obj = argv[magic ? 2 : 1];
+    JSValue v = js_object_path_get(ctx, obj, path);
+    if (JS_IsException(v)) return v;
+    if (magic && JS_IsUndefined(v)) { JS_FreeValue(ctx, v); return JS_DupValue(ctx, def); }
+    return v;
+}
+
+/* props(keys, obj) -> [obj[k] for k in keys]. */
+static JSValue js_object_ext_props(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValueConst keys = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst obj = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValue res;
+    int64_t len, i;
+    if (js_get_length64(ctx, &len, keys)) return JS_EXCEPTION;
+    res = JS_NewArray(ctx);
+    if (JS_IsException(res)) return res;
+    for (i = 0; i < len; i++) {
+        JSValue k = JS_GetPropertyInt64(ctx, keys, i);
+        JSAtom atom;
+        JSValue v;
+        if (JS_IsException(k)) goto fail;
+        atom = JS_ValueToAtom(ctx, k);
+        JS_FreeValue(ctx, k);
+        if (atom == JS_ATOM_NULL) goto fail;
+        v = JS_GetProperty(ctx, obj, atom);
+        JS_FreeAtom(ctx, atom);
+        if (JS_IsException(v)) goto fail;
+        if (JS_SetPropertyInt64(ctx, res, i, v) < 0) goto fail;
+    }
+    return res;
+ fail:
+    JS_FreeValue(ctx, res);
+    return JS_EXCEPTION;
+}
+
+/* paths(pathList, obj) -> [path(p, obj) for p in pathList]. */
+static JSValue js_object_ext_paths(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv)
+{
+    JSValueConst list = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst obj = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValue res;
+    int64_t len, i;
+    if (js_get_length64(ctx, &len, list)) return JS_EXCEPTION;
+    res = JS_NewArray(ctx);
+    if (JS_IsException(res)) return res;
+    for (i = 0; i < len; i++) {
+        JSValue p = JS_GetPropertyInt64(ctx, list, i);
+        JSValue v;
+        if (JS_IsException(p)) goto fail;
+        v = js_object_path_get(ctx, obj, p);
+        JS_FreeValue(ctx, p);
+        if (JS_IsException(v)) goto fail;
+        if (JS_SetPropertyInt64(ctx, res, i, v) < 0) goto fail;
+    }
+    return res;
+ fail:
+    JS_FreeValue(ctx, res);
+    return JS_EXCEPTION;
+}
+
+static void js_free_atoms(JSContext *ctx, JSAtom *atoms, int n);
+
+/* Normalize a path (dotted string or array) into an owned JSAtom array; the
+ * caller frees it with js_free_atoms. Returns 0 on success, -1 on error. */
+static int js_path_to_atoms(JSContext *ctx, JSValueConst path,
+                            JSAtom **out, int *out_len)
+{
+    JSAtom *atoms = NULL;
+    int n = 0, cap = 0;
+    *out = NULL; *out_len = 0;
+    if (JS_IsString(path)) {
+        const char *s = JS_ToCString(ctx, path), *p;
+        if (!s) return -1;
+        p = s;
+        while (*p) {
+            const char *dot = strchr(p, '.');
+            const char *e = dot ? dot : p + strlen(p);
+            JSAtom a;
+            if (n >= cap) {
+                int ncap = cap ? cap * 2 : 4;
+                JSAtom *na = js_realloc(ctx, atoms, sizeof(JSAtom) * ncap);
+                if (!na) { JS_FreeCString(ctx, s); goto fail; }
+                atoms = na; cap = ncap;
+            }
+            a = JS_NewAtomLen(ctx, p, e - p);
+            if (a == JS_ATOM_NULL) { JS_FreeCString(ctx, s); goto fail; }
+            atoms[n++] = a;
+            if (!dot) break;
+            p = dot + 1;
+        }
+        JS_FreeCString(ctx, s);
+    } else {
+        int64_t len, i;
+        if (js_get_length64(ctx, &len, path)) return -1;
+        if (len > 0) {
+            atoms = js_malloc(ctx, sizeof(JSAtom) * len);
+            if (!atoms) return -1;
+            cap = (int)len;
+            for (i = 0; i < len; i++) {
+                JSValue k = JS_GetPropertyInt64(ctx, path, i);
+                JSAtom a;
+                if (JS_IsException(k)) goto fail;
+                a = JS_ValueToAtom(ctx, k);
+                JS_FreeValue(ctx, k);
+                if (a == JS_ATOM_NULL) goto fail;
+                atoms[n++] = a;
+            }
+        }
+    }
+    *out = atoms; *out_len = n;
+    return 0;
+ fail:
+    js_free_atoms(ctx, atoms, n);
+    return -1;
+}
+
+static void js_free_atoms(JSContext *ctx, JSAtom *atoms, int n)
+{
+    int i;
+    for (i = 0; i < n; i++) JS_FreeAtom(ctx, atoms[i]);
+    js_free(ctx, atoms);
+}
+
+/* hasPath(path, obj) — every level exists as an own property. */
+static JSValue js_object_ext_hasPath(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv)
+{
+    JSAtom *atoms;
+    int n, i, ok = 1;
+    JSValue cur;
+    if (js_path_to_atoms(ctx, argc > 0 ? argv[0] : JS_UNDEFINED, &atoms, &n))
+        return JS_EXCEPTION;
+    cur = JS_DupValue(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    for (i = 0; i < n; i++) {
+        JSPropertyDescriptor desc;
+        int own;
+        JSValue next;
+        if (!JS_IsObject(cur)) { ok = 0; break; }
+        own = JS_GetOwnPropertyInternal(ctx, &desc, JS_VALUE_GET_OBJ(cur), atoms[i]);
+        if (own < 0) { JS_FreeValue(ctx, cur); js_free_atoms(ctx, atoms, n); return JS_EXCEPTION; }
+        if (own == 0) { ok = 0; break; }
+        js_free_desc(ctx, &desc);
+        next = JS_GetProperty(ctx, cur, atoms[i]);
+        JS_FreeValue(ctx, cur);
+        if (JS_IsException(next)) { js_free_atoms(ctx, atoms, n); return JS_EXCEPTION; }
+        cur = next;
+    }
+    JS_FreeValue(ctx, cur);
+    js_free_atoms(ctx, atoms, n);
+    return JS_NewBool(ctx, ok);
+}
+
+/* has(prop, obj) — own property (Ramda). hasIn(prop, obj) — the `in` operator. */
+static JSValue js_object_ext_has(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst obj = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSAtom atom;
+    int r;
+    if (!JS_IsObject(obj)) return JS_FALSE;
+    atom = JS_ValueToAtom(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (atom == JS_ATOM_NULL) return JS_EXCEPTION;
+    if (magic) {                              /* hasIn: prototype chain */
+        r = JS_HasProperty(ctx, obj, atom);
+    } else {                                  /* has: own only */
+        JSPropertyDescriptor desc;
+        r = JS_GetOwnPropertyInternal(ctx, &desc, JS_VALUE_GET_OBJ(obj), atom);
+        if (r > 0) js_free_desc(ctx, &desc);
+    }
+    JS_FreeAtom(ctx, atom);
+    if (r < 0) return JS_EXCEPTION;
+    return JS_NewBool(ctx, r);
+}
+
+/* keysIn / valuesIn — enumerable properties incl. inherited (magic 1=values). */
+static JSValue js_object_ext_keysIn(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    JSValue obj, res, proto;
+    JSAtom *seen = NULL;
+    int seen_n = 0, seen_cap = 0;
+    int64_t out_i = 0;
+    obj = JS_ToObject(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(obj)) return obj;
+    res = JS_NewArray(ctx);
+    if (JS_IsException(res)) { JS_FreeValue(ctx, obj); return res; }
+    proto = JS_DupValue(ctx, obj);
+    while (JS_IsObject(proto)) {
+        JSPropertyEnum *props = NULL;
+        uint32_t len, i;
+        JSValue nextproto;
+        if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, JS_VALUE_GET_OBJ(proto),
+                                           JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK))
+            goto fail;
+        for (i = 0; i < len; i++) {
+            JSAtom a = props[i].atom;
+            int j, dup = 0;
+            JSValue item;
+            for (j = 0; j < seen_n; j++) if (seen[j] == a) { dup = 1; break; }
+            if (dup) continue;
+            if (seen_n >= seen_cap) {
+                int ncap = seen_cap ? seen_cap * 2 : 8;
+                JSAtom *ns = js_realloc(ctx, seen, sizeof(JSAtom) * ncap);
+                if (!ns) { JS_FreePropertyEnum(ctx, props, len); goto fail; }
+                seen = ns; seen_cap = ncap;
+            }
+            seen[seen_n++] = JS_DupAtom(ctx, a);
+            if (magic) {
+                item = JS_GetProperty(ctx, obj, a);
+                if (JS_IsException(item)) { JS_FreePropertyEnum(ctx, props, len); goto fail; }
+            } else {
+                item = JS_AtomToString(ctx, a);
+            }
+            if (JS_SetPropertyInt64(ctx, res, out_i++, item) < 0) {
+                JS_FreePropertyEnum(ctx, props, len); goto fail;
+            }
+        }
+        JS_FreePropertyEnum(ctx, props, len);
+        nextproto = JS_GetPrototype(ctx, proto);
+        JS_FreeValue(ctx, proto);
+        if (JS_IsException(nextproto)) { proto = JS_NULL; goto fail; }
+        proto = nextproto;
+    }
+    JS_FreeValue(ctx, proto);
+    js_free_atoms(ctx, seen, seen_n);
+    JS_FreeValue(ctx, obj);
+    return res;
+ fail:
+    JS_FreeValue(ctx, proto);
+    js_free_atoms(ctx, seen, seen_n);
+    JS_FreeValue(ctx, res);
+    JS_FreeValue(ctx, obj);
+    return JS_EXCEPTION;
+}
+
+/* propEq(val, k, obj) / eqProps(k, a, b) — magic 1 selects eqProps. */
+static JSValue js_object_ext_propEq(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv, int magic)
+{
+    JSAtom atom;
+    JSValue va, vb;
+    int r;
+    if (magic) {   /* eqProps(k, a, b): equals(a[k], b[k]) */
+        atom = JS_ValueToAtom(ctx, argv[0]);
+        if (atom == JS_ATOM_NULL) return JS_EXCEPTION;
+        va = JS_GetProperty(ctx, argv[1], atom);
+        if (JS_IsException(va)) { JS_FreeAtom(ctx, atom); return JS_EXCEPTION; }
+        vb = JS_GetProperty(ctx, argv[2], atom);
+        JS_FreeAtom(ctx, atom);
+        if (JS_IsException(vb)) { JS_FreeValue(ctx, va); return JS_EXCEPTION; }
+    } else {       /* propEq(val, k, obj): equals(obj[k], val) */
+        atom = JS_ValueToAtom(ctx, argv[1]);
+        if (atom == JS_ATOM_NULL) return JS_EXCEPTION;
+        va = JS_GetProperty(ctx, argv[2], atom);
+        JS_FreeAtom(ctx, atom);
+        if (JS_IsException(va)) return JS_EXCEPTION;
+        vb = JS_DupValue(ctx, argv[0]);
+    }
+    r = js_deep_equals(ctx, va, vb, 0);
+    JS_FreeValue(ctx, va);
+    JS_FreeValue(ctx, vb);
+    if (r < 0) return JS_EXCEPTION;
+    return JS_NewBool(ctx, r);
+}
+
+/* pathEq(val, path, obj): equals(path(path, obj), val). */
+static JSValue js_object_ext_pathEq(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSValue v = js_object_path_get(ctx, argc > 2 ? argv[2] : JS_UNDEFINED,
+                                   argc > 1 ? argv[1] : JS_UNDEFINED);
+    int r;
+    if (JS_IsException(v)) return v;
+    r = js_deep_equals(ctx, v, argc > 0 ? argv[0] : JS_UNDEFINED, 0);
+    JS_FreeValue(ctx, v);
+    if (r < 0) return JS_EXCEPTION;
+    return JS_NewBool(ctx, r);
+}
+
+/* where(spec, obj): every spec[k] is a predicate that obj[k] must satisfy.
+ * whereEq(spec, obj): every obj[k] deep-equals spec[k]. magic 1 = whereEq. */
+static JSValue js_object_ext_where(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst spec = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst obj = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValue specobj;
+    JSPropertyEnum *props = NULL;
+    uint32_t len, i;
+    int result = 1;
+    specobj = JS_ToObject(ctx, spec);
+    if (JS_IsException(specobj)) return specobj;
+    if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, JS_VALUE_GET_OBJ(specobj),
+                                       JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK)) {
+        JS_FreeValue(ctx, specobj);
+        return JS_EXCEPTION;
+    }
+    for (i = 0; i < len && result; i++) {
+        JSValue sv = JS_GetProperty(ctx, specobj, props[i].atom);
+        JSValue ov;
+        if (JS_IsException(sv)) { result = -1; break; }
+        ov = JS_GetProperty(ctx, obj, props[i].atom);
+        if (JS_IsException(ov)) { JS_FreeValue(ctx, sv); result = -1; break; }
+        if (magic) {
+            int r = js_deep_equals(ctx, ov, sv, 0);
+            if (r < 0) result = -1; else if (r == 0) result = 0;
+        } else {
+            JSValue ret = JS_Call(ctx, sv, JS_UNDEFINED, 1, (JSValueConst *)&ov);
+            if (JS_IsException(ret)) result = -1;
+            else { if (!JS_ToBool(ctx, ret)) result = 0; JS_FreeValue(ctx, ret); }
+        }
+        JS_FreeValue(ctx, sv);
+        JS_FreeValue(ctx, ov);
+    }
+    JS_FreePropertyEnum(ctx, props, len);
+    JS_FreeValue(ctx, specobj);
+    if (result < 0) return JS_EXCEPTION;
+    return JS_NewBool(ctx, result);
+}
+
+/* Shallow merge: both keep the LEFT object's key order (Ramda), only the
+ * conflict value differs. mergeRight(a,b) -> b wins; mergeLeft(a,b) -> a wins.
+ * magic 0 = mergeRight/merge, 1 = mergeLeft. */
+static JSValue js_object_ext_merge(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv, int magic)
+{
+    JSValueConst a = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValueConst b = argc > 1 ? argv[1] : JS_UNDEFINED;
+    JSValue res, oa = JS_UNDEFINED, ob = JS_UNDEFINED;
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) return res;
+    oa = JS_ToObject(ctx, a);
+    if (JS_IsException(oa)) goto fail;
+    ob = JS_ToObject(ctx, b);
+    if (JS_IsException(ob)) goto fail;
+    /* left keys first, in left order */
+    if (JS_CopyDataProperties(ctx, res, oa, JS_UNDEFINED, TRUE)) goto fail;
+    if (magic == 0) {
+        /* mergeRight: right overwrites, right-only keys appended */
+        if (JS_CopyDataProperties(ctx, res, ob, JS_UNDEFINED, TRUE)) goto fail;
+    } else {
+        /* mergeLeft: add only right's keys that the left lacks */
+        JSPropertyEnum *props = NULL;
+        uint32_t len, i;
+        if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, JS_VALUE_GET_OBJ(ob),
+                                           JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK))
+            goto fail;
+        for (i = 0; i < len; i++) {
+            JSPropertyDescriptor desc;
+            int has = JS_GetOwnPropertyInternal(ctx, &desc, JS_VALUE_GET_OBJ(res), props[i].atom);
+            if (has < 0) { JS_FreePropertyEnum(ctx, props, len); goto fail; }
+            if (has) { js_free_desc(ctx, &desc); continue; }
+            {
+                JSValue v = JS_GetProperty(ctx, ob, props[i].atom);
+                if (JS_IsException(v)) { JS_FreePropertyEnum(ctx, props, len); goto fail; }
+                if (JS_DefinePropertyValue(ctx, res, props[i].atom, v, JS_PROP_C_W_E) < 0) {
+                    JS_FreePropertyEnum(ctx, props, len); goto fail;
+                }
+            }
+        }
+        JS_FreePropertyEnum(ctx, props, len);
+    }
+    JS_FreeValue(ctx, oa);
+    JS_FreeValue(ctx, ob);
+    return res;
+ fail:
+    JS_FreeValue(ctx, oa);
+    JS_FreeValue(ctx, ob);
+    JS_FreeValue(ctx, res);
+    return JS_EXCEPTION;
+}
+
+/* Deep merge of two plain objects. right_wins picks the loser's value only when
+ * the pair is not two plain objects (which recurse). */
+static JSValue js_deep_merge(JSContext *ctx, JSValueConst l, JSValueConst r,
+                             int depth, int right_wins)
+{
+    JSValue res;
+    JSPropertyEnum *props = NULL;
+    uint32_t len, i;
+    if (js_check_stack_overflow(ctx->rt, 0))
+        return JS_ThrowStackOverflow(ctx);
+    res = JS_NewObject(ctx);
+    if (JS_IsException(res)) return res;
+    if (JS_CopyDataProperties(ctx, res, l, JS_UNDEFINED, TRUE)) goto fail;
+    if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, JS_VALUE_GET_OBJ(r),
+                                       JS_GPN_ENUM_ONLY | JS_GPN_STRING_MASK))
+        goto fail;
+    for (i = 0; i < len; i++) {
+        JSAtom a = props[i].atom;
+        JSValue rv, lv;
+        JSPropertyDescriptor desc;
+        int has_l;
+        rv = JS_GetProperty(ctx, r, a);
+        if (JS_IsException(rv)) goto fail2;
+        has_l = JS_GetOwnPropertyInternal(ctx, &desc, JS_VALUE_GET_OBJ(res), a);
+        if (has_l < 0) { JS_FreeValue(ctx, rv); goto fail2; }
+        if (has_l == 0) {
+            if (JS_DefinePropertyValue(ctx, res, a, rv, JS_PROP_C_W_E) < 0) goto fail2;
+            continue;
+        }
+        js_free_desc(ctx, &desc);
+        lv = JS_GetProperty(ctx, res, a);
+        if (JS_IsException(lv)) { JS_FreeValue(ctx, rv); goto fail2; }
+        if (js_value_type_code(ctx, lv) == OTYPE_OBJECT &&
+            js_value_type_code(ctx, rv) == OTYPE_OBJECT) {
+            JSValue merged = js_deep_merge(ctx, lv, rv, depth + 1, right_wins);
+            JS_FreeValue(ctx, lv);
+            JS_FreeValue(ctx, rv);
+            if (JS_IsException(merged)) goto fail2;
+            if (JS_DefinePropertyValue(ctx, res, a, merged, JS_PROP_C_W_E) < 0) goto fail2;
+        } else if (right_wins) {
+            JS_FreeValue(ctx, lv);
+            if (JS_DefinePropertyValue(ctx, res, a, rv, JS_PROP_C_W_E) < 0) goto fail2;
+        } else {
+            JS_FreeValue(ctx, lv);   /* keep left (already in res) */
+            JS_FreeValue(ctx, rv);
+        }
+    }
+    JS_FreePropertyEnum(ctx, props, len);
+    return res;
+ fail2:
+    JS_FreePropertyEnum(ctx, props, len);
+ fail:
+    JS_FreeValue(ctx, res);
+    return JS_EXCEPTION;
+}
+
+static JSValue js_object_ext_mergeDeep(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv, int magic)
+{
+    /* magic 0 = mergeDeepRight (right wins), 1 = mergeDeepLeft (left wins) */
+    JSValue oa, ob, res;
+    oa = JS_ToObject(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
+    if (JS_IsException(oa)) return oa;
+    ob = JS_ToObject(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (JS_IsException(ob)) { JS_FreeValue(ctx, oa); return ob; }
+    res = js_deep_merge(ctx, oa, ob, 0, magic ? 0 : 1);
+    JS_FreeValue(ctx, oa);
+    JS_FreeValue(ctx, ob);
+    return res;
+}
+
+/* assocPath recursion — see js_object_ext_assocPath. Missing intermediates are
+ * created as plain objects (documented divergence: Ramda auto-creates arrays
+ * for integer keys into undefined). */
+static JSValue js_assoc_path(JSContext *ctx, JSAtom *atoms, int i, int n,
+                             JSValueConst val, JSValueConst cur)
+{
+    JSValue container, child, newchild;
+    if (i == n)
+        return JS_DupValue(ctx, val);
+    if (JS_IsObject(cur))
+        container = js_shallow_clone_container(ctx, cur);
+    else
+        container = JS_NewObject(ctx);
+    if (JS_IsException(container)) return container;
+    if (JS_IsObject(cur)) {
+        child = JS_GetProperty(ctx, cur, atoms[i]);
+        if (JS_IsException(child)) { JS_FreeValue(ctx, container); return JS_EXCEPTION; }
+    } else {
+        child = JS_UNDEFINED;
+    }
+    newchild = js_assoc_path(ctx, atoms, i + 1, n, val, child);
+    JS_FreeValue(ctx, child);
+    if (JS_IsException(newchild)) { JS_FreeValue(ctx, container); return JS_EXCEPTION; }
+    if (JS_DefinePropertyValue(ctx, container, atoms[i], newchild, JS_PROP_C_W_E) < 0) {
+        JS_FreeValue(ctx, container);
+        return JS_EXCEPTION;
+    }
+    return container;
+}
+
+/* assocPath(path, val, obj) -> immutable deep set. */
+static JSValue js_object_ext_assocPath(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+    JSAtom *atoms;
+    int n;
+    JSValue res;
+    if (js_path_to_atoms(ctx, argc > 0 ? argv[0] : JS_UNDEFINED, &atoms, &n))
+        return JS_EXCEPTION;
+    res = js_assoc_path(ctx, atoms, 0, n, argc > 1 ? argv[1] : JS_UNDEFINED,
+                        argc > 2 ? argv[2] : JS_UNDEFINED);
+    js_free_atoms(ctx, atoms, n);
+    return res;
+}
+
+static JSValue js_dissoc_path(JSContext *ctx, JSAtom *atoms, int i, int n,
+                              JSValueConst cur)
+{
+    JSValue container, child, newchild;
+    JSPropertyDescriptor desc;
+    int own;
+    if (!JS_IsObject(cur))
+        return JS_DupValue(ctx, cur);
+    if (i == n - 1) {          /* delete the final key from a shallow clone */
+        container = js_shallow_clone_container(ctx, cur);
+        if (JS_IsException(container)) return container;
+        if (JS_DeleteProperty(ctx, container, atoms[i], 0) < 0) {
+            JS_FreeValue(ctx, container);
+            return JS_EXCEPTION;
+        }
+        return container;
+    }
+    own = JS_GetOwnPropertyInternal(ctx, &desc, JS_VALUE_GET_OBJ(cur), atoms[i]);
+    if (own < 0) return JS_EXCEPTION;
+    if (own == 0)              /* path does not exist -> return unchanged copy */
+        return JS_DupValue(ctx, cur);
+    js_free_desc(ctx, &desc);
+    child = JS_GetProperty(ctx, cur, atoms[i]);
+    if (JS_IsException(child)) return JS_EXCEPTION;
+    newchild = js_dissoc_path(ctx, atoms, i + 1, n, child);
+    JS_FreeValue(ctx, child);
+    if (JS_IsException(newchild)) return JS_EXCEPTION;
+    container = js_shallow_clone_container(ctx, cur);
+    if (JS_IsException(container)) { JS_FreeValue(ctx, newchild); return JS_EXCEPTION; }
+    if (JS_DefinePropertyValue(ctx, container, atoms[i], newchild, JS_PROP_C_W_E) < 0) {
+        JS_FreeValue(ctx, container);
+        return JS_EXCEPTION;
+    }
+    return container;
+}
+
+/* dissocPath(path, obj) -> immutable deep delete. */
+static JSValue js_object_ext_dissocPath(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv)
+{
+    JSAtom *atoms;
+    int n;
+    JSValue res;
+    if (js_path_to_atoms(ctx, argc > 0 ? argv[0] : JS_UNDEFINED, &atoms, &n))
+        return JS_EXCEPTION;
+    if (n == 0)
+        res = JS_DupValue(ctx, argc > 1 ? argv[1] : JS_UNDEFINED);
+    else
+        res = js_dissoc_path(ctx, atoms, 0, n, argc > 1 ? argv[1] : JS_UNDEFINED);
+    js_free_atoms(ctx, atoms, n);
+    return res;
+}
+
 static const JSCFunctionListEntry js_object_ext_funcs[] = {
     /* Sugar type guards + Ramda type/nil */
     JS_CFUNC_MAGIC_DEF("isObject",    1, js_object_ext_istype, OTYPE_OBJECT ),
@@ -1989,6 +2845,33 @@ static const JSCFunctionListEntry js_object_ext_funcs[] = {
     JS_CFUNC_DEF("assoc",             3, js_object_ext_assoc ),
     JS_CFUNC_DEF("dissoc",            2, js_object_ext_dissoc ),
     JS_CFUNC_DEF("tap",               2, js_object_ext_tap ),
+    /* batch 2: deep clone / equals / merge / path */
+    JS_CFUNC_DEF("clone",             1, js_object_ext_clone ),
+    JS_CFUNC_DEF("equals",            2, js_object_ext_equals ),
+    JS_CFUNC_DEF("identical",         2, js_object_ext_identical ),
+    JS_CFUNC_MAGIC_DEF("prop",        2, js_object_ext_prop, 0 ),
+    JS_CFUNC_MAGIC_DEF("propOr",      3, js_object_ext_prop, 1 ),
+    JS_CFUNC_DEF("props",             2, js_object_ext_props ),
+    JS_CFUNC_MAGIC_DEF("path",        2, js_object_ext_path, 0 ),
+    JS_CFUNC_MAGIC_DEF("pathOr",      3, js_object_ext_path, 1 ),
+    JS_CFUNC_DEF("paths",             2, js_object_ext_paths ),
+    JS_CFUNC_DEF("assocPath",         3, js_object_ext_assocPath ),
+    JS_CFUNC_DEF("dissocPath",        2, js_object_ext_dissocPath ),
+    JS_CFUNC_DEF("hasPath",           2, js_object_ext_hasPath ),
+    JS_CFUNC_MAGIC_DEF("has",         2, js_object_ext_has, 0 ),
+    JS_CFUNC_MAGIC_DEF("hasIn",       2, js_object_ext_has, 1 ),
+    JS_CFUNC_MAGIC_DEF("keysIn",      1, js_object_ext_keysIn, 0 ),
+    JS_CFUNC_MAGIC_DEF("valuesIn",    1, js_object_ext_keysIn, 1 ),
+    JS_CFUNC_MAGIC_DEF("propEq",      3, js_object_ext_propEq, 0 ),
+    JS_CFUNC_MAGIC_DEF("eqProps",     3, js_object_ext_propEq, 1 ),
+    JS_CFUNC_DEF("pathEq",            3, js_object_ext_pathEq ),
+    JS_CFUNC_MAGIC_DEF("where",       2, js_object_ext_where, 0 ),
+    JS_CFUNC_MAGIC_DEF("whereEq",     2, js_object_ext_where, 1 ),
+    JS_CFUNC_MAGIC_DEF("mergeRight",  2, js_object_ext_merge, 0 ),
+    JS_CFUNC_MAGIC_DEF("merge",       2, js_object_ext_merge, 0 ),
+    JS_CFUNC_MAGIC_DEF("mergeLeft",   2, js_object_ext_merge, 1 ),
+    JS_CFUNC_MAGIC_DEF("mergeDeepRight", 2, js_object_ext_mergeDeep, 0 ),
+    JS_CFUNC_MAGIC_DEF("mergeDeepLeft",  2, js_object_ext_mergeDeep, 1 ),
 };
 
 static const JSCFunctionListEntry js_object_funcs[] = {
